@@ -150,13 +150,15 @@ Landed on the `phase0/qt6-groundwork` branch:
 - `CMakePresets.json`, verified with CMake 4.3.1 on Windows (only the Windows
   preset is offered) and 3.28.3 on Linux (only the Linux presets are offered);
 - a Linux configure baseline: `linux-core` configures from a clean build
-  directory on Ubuntu 24.04 and builds `gnc-core-utils`.
+  directory on Ubuntu 24.04 and builds `gnc-core-utils`;
+- `vcpkg.json`, which resolves on Windows to qtbase 6.11.3 (widgets, sql,
+  sqlite, testlib, windeployqt) and qtwebengine 6.11.3 (pdf, webengine), and
+  requests nothing on Linux, where Qt comes from the distribution.
 
 Blocked until the toolchain allows verification:
 
-- **vcpkg manifest.** It would declare Qt 6, which triggers both the dependency
-  policy in `README.dependencies` and the GPLv3 relicense decision above, so it
-  needs maintainer approval before it can be written.
+- **Building the Qt tier.** The manifest resolves, but installing it means
+  building Qt from source on Windows, which has not been attempted here.
 - **Windows CI job.** The MSYS2 installation available here has no compiler, so
   such a workflow could not be shown to pass and was not committed.
 - **Event-loop spike and the `gnc-html` document/widget split.** Both need Qt 6

@@ -954,6 +954,7 @@ set(toplvl_DIST_local ${gnucash_DOCS}
     doxygen_main_page.c
     CMakeLists.txt
     CMakePresets.json
+    vcpkg.json
     README)
 
 

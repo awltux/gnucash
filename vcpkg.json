@@ -1,0 +1,17 @@
+{
+  "name": "gnucash",
+  "version-string": "5.17",
+  "description": "Dependencies for the Qt 6 presentation tier on Windows. Linux and macOS take Qt from the distribution or Homebrew, so this manifest is intentionally scoped to Windows.",
+  "homepage": "https://www.gnucash.org/",
+  "builtin-baseline": "84297877a7c1a155661ea562462f1b72fab080d1",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "platform": "windows"
+    },
+    {
+      "name": "qtwebengine",
+      "platform": "windows"
+    }
+  ]
+}

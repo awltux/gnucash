@@ -193,4 +193,5 @@ xcuserdata/
 messages.mo
 /.settings/
 /build/
+vcpkg_installed/
 *.LCK
