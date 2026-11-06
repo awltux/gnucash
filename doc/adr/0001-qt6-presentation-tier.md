@@ -159,7 +159,9 @@ Landed on the `phase0/qt6-groundwork` branch:
 - `gnucash/html/gnc-html-url.{h,cpp}`, which moves the URL type registry, URL
   building and URL parsing out of the `GtkBin`-backed widget into a unit that
   includes only glib. `gnc_html_parse_url()` keeps its signature and delegates,
-  so the vtable and every caller are unchanged.
+  so the vtable and every caller are unchanged. A test in
+  `gnucash/html/test/` compiles that unit against `gnc-engine` and `gtest`
+  only, so it cannot silently re-acquire a GTK dependency.
 
 In progress:
 
