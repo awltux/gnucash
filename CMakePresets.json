@@ -69,10 +69,12 @@
       "name": "linux-core",
       "inherits": "linux",
       "displayName": "Linux core libraries only",
-      "description": "WITH_GNUCASH=OFF: libgnucash and its tests without GTK or WebKit. Fastest way to validate engine and backend changes.",
+      "description": "WITH_GNUCASH=OFF: libgnucash and its tests without GTK or WebKit. aqbanking and OFX are also disabled because both are importers that live under gnucash/. This is the fastest loop for engine and backend work.",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "WITH_GNUCASH": "OFF"
+        "WITH_GNUCASH": "OFF",
+        "WITH_AQBANKING": "OFF",
+        "WITH_OFX": "OFF"
       }
     },
     {
