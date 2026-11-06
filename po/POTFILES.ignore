@@ -6,4 +6,6 @@
 doc/adr/spike-engine-qt/main.cpp
 doc/adr/spike-event-loop/main.cpp
 doc/adr/spike-report-pane/main.cpp
+doc/adr/spike-report-pane/make-html.scm
 doc/adr/spike-shell/main.cpp
+qt/main.cpp
