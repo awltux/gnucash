@@ -33,3 +33,4 @@ One file per decision, numbered, immutable once accepted.
 | [0007](0007-windows-toolchain-mingw.md) | Windows toolchain is MinGW-w64 through MSYS2 | Accepted |
 | [0008](0008-windows-ci-exercises-setup.md) | Windows CI exercises the documented setup and the spike | Accepted |
 | [0009](0009-backend-registration-in-qt.md) | A Qt process registers a backend by loading its module | Accepted |
+| [0010](0010-qt-tier-enters-the-build.md) | The Qt tier enters the build as an opt-in target | Accepted |

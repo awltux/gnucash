@@ -19,6 +19,7 @@ read the ADRs.
 | [0007](adr/0007-windows-toolchain-mingw.md) | Windows toolchain is MinGW-w64 through MSYS2 |
 | [0008](adr/0008-windows-ci-exercises-setup.md) | Windows CI exercises the documented setup and the spike |
 | [0009](adr/0009-backend-registration-in-qt.md) | A Qt process registers a backend by loading its module |
+| [0010](adr/0010-qt-tier-enters-the-build.md) | The Qt tier enters the build as an opt-in target |
 
 ## Phases and exit gates
 
@@ -69,8 +70,9 @@ Updated as work lands. Last update: 2026-11-06.
 | vcpkg source build of Qt | Abandoned | 4+ hours then `libiconv` configure failed (exit 77) and the retry wedged; kept only as an experiment, see [0006](adr/0006-prebuilt-qt-for-development.md) |
 | Qt loads a book through the engine | Done | `spike-engine-qt` opens `sample1.gnucash`, 104 accounts, exit 0; see [0009](adr/0009-backend-registration-in-qt.md) |
 | Report pane renders HTML | Done | Report engine produces the document, `QWebEngineView` renders it headlessly (241 bytes in, 246 out, ok=1) |
-| Shell hosts engine and report pane | Done, hosting only | 104 accounts, 5 top-level, pane ok, exit 0; no GLib events flow yet |
-| Phase 1 headless shell | In progress | Engine and pane coexist; report is not yet rendered for the loaded book |
+| Qt tier in the build | Done | `-DWITH_QT=ON` builds `bin/gnucash-qt`; default build untouched |
+| Engine events reach Qt | Done | Rename on the GLib thread observed in a Qt slot (`event_on_qt_thread=1`), exit 0 |
+| Phase 2 read-only shell | Started | Target exists with an account tree and report pane; no menus, actions or editing |
 
 ## Risks
 
