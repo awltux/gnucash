@@ -9,7 +9,11 @@ set(doc_noinst_DATA
         gnucash-cli.1.in tip_of_the_day.list.c README.txt
         qt6-migration-plan.md
         adr/0001-qt6-presentation-tier.md
-        adr/0002-event-loop-integration.md)
+        adr/0002-event-loop-integration.md
+        adr/0003-windows-dependencies-vcpkg.md
+        adr/0004-html-layer-separation.md
+        adr/0005-windows-ci-scope.md
+        adr/README.md)
 
 install(FILES ${doc_DATA} DESTINATION  ${CMAKE_INSTALL_DOCDIR})
 
