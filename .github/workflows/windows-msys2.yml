@@ -1,0 +1,52 @@
+name: windows-msys2
+
+# Exercises the Windows development setup documented in doc/dev-setup-windows.md:
+# install the packages the document names, check the Qt floor it states, then
+# build and run the event-loop spike. This catches the two failures that
+# documentation alone cannot: a package disappearing from MSYS2, and the
+# documented versions drifting away from what the packages actually provide.
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  dev-setup:
+    runs-on: windows-latest
+    name: MSYS2 development setup and spike
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install the documented packages
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-glib2
+
+      - name: Check the documented Qt floor
+        shell: msys2 {0}
+        run: |
+          qt=$(pkg-config --modversion Qt6Core)
+          glib=$(pkg-config --modversion glib-2.0)
+          echo "Qt6Core $qt, glib-2.0 $glib"
+          major=${qt%%.*}
+          rest=${qt#*.}
+          minor=${rest%%.*}
+          if [ "$major" -lt 6 ] || { [ "$major" -eq 6 ] && [ "$minor" -lt 4 ]; }; then
+            echo "::error::Qt $qt is below the floor of 6.4 documented in doc/dev-setup-windows.md"
+            exit 1
+          fi
+
+      - name: Build and run the event-loop spike
+        shell: msys2 {0}
+        run: |
+          cd doc/adr/spike-event-loop
+          g++ -std=c++17 -O1 main.cpp -o spike.exe $(pkg-config --cflags --libs Qt6Core glib-2.0)
+          ./spike.exe
