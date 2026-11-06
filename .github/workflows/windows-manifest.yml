@@ -1,0 +1,50 @@
+name: windows-vcpkg-manifest
+
+# A full GnuCash build on Windows is not possible from stock MSYS2 packages:
+# there is no mingw-w64 Guile and no libdbi, which is why upstream's
+# gnucash-on-windows environment builds both from patched source with jhbuild.
+# What CI can check cheaply is the part that will silently rot otherwise: that
+# vcpkg.json still resolves against a real registry.
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-manifest:
+    runs-on: windows-latest
+    name: Resolve the Qt 6 vcpkg manifest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Clone vcpkg
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+          # builtin-baseline pins a commit that is older than the clone's HEAD,
+          # so fetch it explicitly; a shallow clone does not contain it.
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C "$env:RUNNER_TEMP\vcpkg" fetch --depth 1 origin $baseline
+
+      - name: Bootstrap vcpkg
+        run: '& "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics'
+
+      - name: Resolve dependencies for x64-windows
+        run: |
+          $out = & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install --dry-run --triplet x64-windows --x-install-root="$env:RUNNER_TEMP\installed" 2>&1
+          $out | Write-Host
+          $text = $out | Out-String
+          foreach ($port in 'qtbase', 'qtwebengine') {
+            if ($text -notmatch [regex]::Escape($port)) {
+              throw "vcpkg did not resolve $port; the manifest or the baseline is broken."
+            }
+          }
+
+      - name: List CMake presets
+        run: |
+          $out = & cmake --list-presets 2>&1
+          $out | Write-Host
+          if (($out | Out-String) -notmatch 'windows-msys2-debug') {
+            throw 'The Windows configure preset is missing.'
+          }

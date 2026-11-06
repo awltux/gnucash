@@ -153,14 +153,18 @@ Landed on the `phase0/qt6-groundwork` branch:
   directory on Ubuntu 24.04 and builds `gnc-core-utils`;
 - `vcpkg.json`, which resolves on Windows to qtbase 6.11.3 (widgets, sql,
   sqlite, testlib, windeployqt) and qtwebengine 6.11.3 (pdf, webengine), and
-  requests nothing on Linux, where Qt comes from the distribution.
+  requests nothing on Linux, where Qt comes from the distribution;
+- `.github/workflows/windows-manifest.yml`, which keeps that manifest honest.
 
 Blocked until the toolchain allows verification:
 
 - **Building the Qt tier.** The manifest resolves, but installing it means
   building Qt from source on Windows, which has not been attempted here.
-- **Windows CI job.** The MSYS2 installation available here has no compiler, so
-  such a workflow could not be shown to pass and was not committed.
+- **A Windows build in CI.** Stock MSYS2 cannot build GnuCash: it ships no
+  mingw-w64 Guile (the only Guile packages are MSYS-runtime) and no libdbi at
+  all. That is precisely why `gnucash-on-windows` builds both from patched
+  source with jhbuild, and why the CI job above verifies the manifest instead
+  of compiling the application.
 - **Event-loop spike and the `gnc-html` document/widget split.** Both need Qt 6
   and a tree that builds the GUI.
 
