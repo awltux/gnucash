@@ -26,7 +26,9 @@ set(doc_noinst_DATA
         adr/spike-report-pane/CMakeLists.txt
         adr/spike-report-pane/README.md
         adr/spike-report-pane/main.cpp
-        adr/spike-report-pane/make-html.scm)
+        adr/spike-report-pane/make-html.scm
+        adr/spike-shell/README.md
+        adr/spike-shell/main.cpp)
 
 install(FILES ${doc_DATA} DESTINATION  ${CMAKE_INSTALL_DOCDIR})
 

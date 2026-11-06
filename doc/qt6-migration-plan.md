@@ -69,7 +69,8 @@ Updated as work lands. Last update: 2026-11-06.
 | vcpkg source build of Qt | Abandoned | 4+ hours then `libiconv` configure failed (exit 77) and the retry wedged; kept only as an experiment, see [0006](adr/0006-prebuilt-qt-for-development.md) |
 | Qt loads a book through the engine | Done | `spike-engine-qt` opens `sample1.gnucash`, 104 accounts, exit 0; see [0009](adr/0009-backend-registration-in-qt.md) |
 | Report pane renders HTML | Done | Report engine produces the document, `QWebEngineView` renders it headlessly (241 bytes in, 246 out, ok=1) |
-| Phase 1 headless shell | In progress | Engine integration done; report pane proven at the transfer level |
+| Shell hosts engine and report pane | Done, hosting only | 104 accounts, 5 top-level, pane ok, exit 0; no GLib events flow yet |
+| Phase 1 headless shell | In progress | Engine and pane coexist; report is not yet rendered for the loaded book |
 
 ## Risks
 
