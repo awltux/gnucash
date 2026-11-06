@@ -1,2 +1,8 @@
 # These are files that we don't want to translate, because they are
 # in experimental status.
+
+# Spike programs kept next to the ADRs as evidence. They are not built, not
+# shipped, and their strings must never reach the translators.
+doc/adr/spike-engine-qt/main.cpp
+doc/adr/spike-event-loop/main.cpp
+doc/adr/spike-report-pane/main.cpp
