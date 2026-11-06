@@ -1,0 +1,178 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/.build/${presetName}",
+      "description": "Shared settings: Ninja generator, build trees under the gitignored .build/ directory (hidden, so gettext does not scan them), compile_commands.json for editors.",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/.build/inst/${presetName}"
+      }
+    },
+    {
+      "name": "linux",
+      "hidden": true,
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "inherits": "linux",
+      "displayName": "Linux Debug",
+      "description": "Day-to-day development build. Debug symbols, no optimization.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-release",
+      "inherits": "linux",
+      "displayName": "Linux Release",
+      "description": "Optimized build, used to catch release-only warnings.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "linux-asan",
+      "inherits": "linux",
+      "displayName": "Linux AddressSanitizer",
+      "description": "AddressSanitizer configuration used by the CI Asan job. Add -DLEAKS=ON to report leaks.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Asan"
+      }
+    },
+    {
+      "name": "linux-coverage",
+      "inherits": "linux",
+      "displayName": "Linux coverage",
+      "description": "Mirrors .github/workflows/coverage.yml. Build the lcov-* targets after running the tests.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "COVERAGE": "ON",
+        "WITH_PYTHON": "ON"
+      }
+    },
+    {
+      "name": "linux-core",
+      "inherits": "linux",
+      "displayName": "Linux core libraries only",
+      "description": "WITH_GNUCASH=OFF: libgnucash and its tests without GTK or WebKit. Fastest way to validate engine and backend changes.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "WITH_GNUCASH": "OFF"
+      }
+    },
+    {
+      "name": "macos-debug",
+      "inherits": "base",
+      "displayName": "macOS Debug",
+      "description": "Requires the dependencies described in README.dependencies.",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-msys2-debug",
+      "inherits": "base",
+      "displayName": "Windows Debug (MSYS2 MINGW64)",
+      "description": "Run from an MSYS2 MINGW64 shell: MINGW64 detection, bash discovery and runtime DLL staging in CMakeLists.txt all depend on that environment. MSVC is not supported until the Qt 6 tier lands; see doc/adr/0001-qt6-presentation-tier.md.",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
+    },
+    {
+      "name": "linux-asan",
+      "configurePreset": "linux-asan"
+    },
+    {
+      "name": "linux-coverage",
+      "configurePreset": "linux-coverage"
+    },
+    {
+      "name": "linux-core",
+      "configurePreset": "linux-core",
+      "targets": [
+        "all",
+        "testbuild"
+      ]
+    },
+    {
+      "name": "macos-debug",
+      "configurePreset": "macos-debug"
+    },
+    {
+      "name": "windows-msys2-debug",
+      "configurePreset": "windows-msys2-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "base-tests",
+      "hidden": true,
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "stopOnFailure": false
+      }
+    },
+    {
+      "name": "linux-debug",
+      "inherits": "base-tests",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "linux-asan",
+      "inherits": "base-tests",
+      "configurePreset": "linux-asan"
+    },
+    {
+      "name": "linux-core",
+      "inherits": "base-tests",
+      "configurePreset": "linux-core"
+    },
+    {
+      "name": "macos-debug",
+      "inherits": "base-tests",
+      "configurePreset": "macos-debug"
+    },
+    {
+      "name": "windows-msys2-debug",
+      "inherits": "base-tests",
+      "configurePreset": "windows-msys2-debug"
+    }
+  ]
+}

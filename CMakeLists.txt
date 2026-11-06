@@ -952,6 +952,7 @@ set(toplvl_DIST_local ${gnucash_DOCS}
     doxygen.cfg.in
     doxygen_main_page.c
     CMakeLists.txt
+    CMakePresets.json
     README)
 
 
