@@ -155,7 +155,16 @@ Landed on the `phase0/qt6-groundwork` branch:
   sqlite, testlib, windeployqt) and qtwebengine 6.11.3 (pdf, webengine), and
   requests nothing on Linux, where Qt comes from the distribution;
 - `.github/workflows/windows-manifest.yml`, which keeps that manifest honest;
-- a working GLib/Qt event-loop bridge, verified by a spike (appendix below).
+- a working GLib/Qt event-loop bridge, verified by a spike (appendix below);
+- `gnucash/html/gnc-html-url.{h,cpp}`, which moves the URL type registry, URL
+  building and URL parsing out of the `GtkBin`-backed widget into a unit that
+  includes only glib. `gnc_html_parse_url()` keeps its signature and delegates,
+  so the vtable and every caller are unchanged.
+
+In progress:
+
+- the vcpkg `qtbase` build on Windows (see below); the spike has so far been
+  built and run only against the distribution Qt on Linux.
 
 Blocked until the toolchain allows verification:
 
