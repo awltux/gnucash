@@ -35,6 +35,8 @@ else ()
   set(html_EXTRA_DIST gnc-html-webkit1.hpp gnc-html-webkit1.cpp)
 endif()
 
+add_subdirectory(test)
+
 
 
 set (gnc_html_SCHEME html.scm)
@@ -48,7 +50,9 @@ gnc_add_scheme_targets(scm-gnc-html
     DEPENDS "${GUILE_DEPENDS}"
     MAKE_LINKS)
 
-set_dist_list(html_DIST CMakeLists.txt ${html_HEADERS} ${html_SOURCES} gnc-html.i ${html_EXTRA_DIST} html.scm)
+set_local_dist(html_DIST_local CMakeLists.txt ${html_HEADERS} ${html_SOURCES}
+  gnc-html.i ${html_EXTRA_DIST} html.scm)
+set(html_DIST ${html_DIST_local} ${test_gnc_html_DIST} PARENT_SCOPE)
 
 add_library (gnc-html
   ${html_SOURCES}
