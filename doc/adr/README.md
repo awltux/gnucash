@@ -29,3 +29,4 @@ One file per decision, numbered, immutable once accepted.
 | [0003](0003-windows-dependencies-vcpkg.md) | Windows dependencies come from a vcpkg manifest | Accepted |
 | [0004](0004-html-layer-separation.md) | Separate URL handling from the GTK widget before adding a renderer | Accepted |
 | [0005](0005-windows-ci-scope.md) | Windows CI verifies the manifest, not the build | Accepted, temporary |
+| [0006](0006-prebuilt-qt-for-development.md) | Prebuilt Qt for development; the manifest stays the contract | Accepted |

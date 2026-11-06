@@ -14,7 +14,9 @@ set(doc_noinst_DATA
         adr/0004-html-layer-separation.md
         adr/0005-windows-ci-scope.md
         adr/0006-prebuilt-qt-for-development.md
-        adr/README.md)
+        adr/README.md
+        adr/spike-event-loop/README.md
+        adr/spike-event-loop/main.cpp)
 
 install(FILES ${doc_DATA} DESTINATION  ${CMAKE_INSTALL_DOCDIR})
 
