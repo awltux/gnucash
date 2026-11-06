@@ -79,6 +79,11 @@ Reading order for an unfamiliar change: the nearest `CMakeLists.txt`, then the
 module's public header, then an existing test in the sibling `test/` directory,
 then the Guile counterpart if the feature is scriptable.
 
+Design decisions are recorded in `doc/adr/` (one decision per file, immutable
+once accepted; `doc/adr/README.md` is the index). Phases, status and risks for
+the Qt 6 migration live in `doc/qt6-migration-plan.md`, because status changes
+and decisions do not.
+
 ---
 
 ## 3. Branch, integration and release model

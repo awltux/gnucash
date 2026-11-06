@@ -95,7 +95,7 @@
       "name": "windows-msys2-debug",
       "inherits": "base",
       "displayName": "Windows Debug (MSYS2 MINGW64)",
-      "description": "Run from an MSYS2 MINGW64 shell: MINGW64 detection, bash discovery and runtime DLL staging in CMakeLists.txt all depend on that environment. MSVC is not supported until the Qt 6 tier lands; see doc/adr/0001-qt6-presentation-tier.md.",
+      "description": "Run from an MSYS2 MINGW64 shell: MINGW64 detection, bash discovery and runtime DLL staging in CMakeLists.txt all depend on that environment. MSVC is not supported until the Qt 6 tier lands; see doc/adr/README.md.",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
