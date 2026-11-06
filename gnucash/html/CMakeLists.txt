@@ -5,6 +5,7 @@ set (html_HEADERS
   gnc-html-p.h
   gnc-html-factory.hpp
   gnc-html-extras.h
+  gnc-html-url.h
   gnc-html-webkit-p.hpp
   gnc-html-webkit.hpp
 )
@@ -21,6 +22,7 @@ set (html_SOURCES
   gnc-html.cpp
   gnc-html-history.cpp
   gnc-html-factory.cpp
+  gnc-html-url.cpp
 )
 
 if (WEBKIT1)
