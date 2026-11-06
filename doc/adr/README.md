@@ -26,7 +26,8 @@ One file per decision, numbered, immutable once accepted.
 |---|---|---|
 | [0001](0001-qt6-presentation-tier.md) | Qt 6 replaces the presentation tier; the accounting engine is kept | Accepted |
 | [0002](0002-event-loop-integration.md) | Bridge GLib and Qt with a pumped main context thread | Accepted |
-| [0003](0003-windows-dependencies-vcpkg.md) | Windows dependencies come from a vcpkg manifest | Accepted |
+| [0003](0003-windows-dependencies-vcpkg.md) | Windows dependencies come from a vcpkg manifest | Superseded by 0007 |
 | [0004](0004-html-layer-separation.md) | Separate URL handling from the GTK widget before adding a renderer | Accepted |
 | [0005](0005-windows-ci-scope.md) | Windows CI verifies the manifest, not the build | Accepted, temporary |
-| [0006](0006-prebuilt-qt-for-development.md) | Prebuilt Qt for development; the manifest stays the contract | Accepted |
+| [0006](0006-prebuilt-qt-for-development.md) | Prebuilt Qt for development; the manifest stays the contract | Partly superseded by 0007 |
+| [0007](0007-windows-toolchain-mingw.md) | Windows toolchain is MinGW-w64 through MSYS2 | Accepted |

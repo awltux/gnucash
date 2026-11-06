@@ -16,6 +16,7 @@ read the ADRs.
 | [0004](adr/0004-html-layer-separation.md) | Separate URL handling from the GTK widget before adding a renderer |
 | [0005](adr/0005-windows-ci-scope.md) | Windows CI verifies the manifest, not the build |
 | [0006](adr/0006-prebuilt-qt-for-development.md) | Prebuilt Qt for development; the manifest stays the contract |
+| [0007](adr/0007-windows-toolchain-mingw.md) | Windows toolchain is MinGW-w64 through MSYS2 |
 
 ## Phases and exit gates
 
@@ -62,7 +63,8 @@ Updated as work lands. Last update: 2026-11-06.
 | Event-loop bridge | Verified on Linux and Windows | 44/44/46 on Qt 6.4.2 + GLib 2.80 (Linux); 47/47/49 on Qt 6.9.1 + GLib 2.84.2 (Windows) |
 | `gnc-html` URL layer | Done | Builds and links; test passes and links no GTK |
 | Windows CI | Done, narrowed | Manifest resolution job; MSYS2 cannot build GnuCash (no mingw Guile, no libdbi) |
-| vcpkg `qtbase` on Windows | Blocked | 4+ hours, then `libiconv` configure failed (exit 77) and the retry wedged; see [0006](adr/0006-prebuilt-qt-for-development.md) |
+| Qt on Windows | Done, prebuilt | MSYS2 Qt 6.9.1 + GLib 2.84.2, MinGW-w64; see [0007](adr/0007-windows-toolchain-mingw.md) and [dev setup](dev-setup-windows.md) |
+| vcpkg source build of Qt | Abandoned | 4+ hours then `libiconv` configure failed (exit 77) and the retry wedged; kept only as an experiment, see [0006](adr/0006-prebuilt-qt-for-development.md) |
 | Phase 1 headless shell | Not started | — |
 
 ## Risks

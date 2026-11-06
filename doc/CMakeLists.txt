@@ -8,12 +8,14 @@ set(doc_noinst_DATA
         CMakeLists.txt gnucash.1.in
         gnucash-cli.1.in tip_of_the_day.list.c README.txt
         qt6-migration-plan.md
+        dev-setup-windows.md
         adr/0001-qt6-presentation-tier.md
         adr/0002-event-loop-integration.md
         adr/0003-windows-dependencies-vcpkg.md
         adr/0004-html-layer-separation.md
         adr/0005-windows-ci-scope.md
         adr/0006-prebuilt-qt-for-development.md
+        adr/0007-windows-toolchain-mingw.md
         adr/README.md
         adr/spike-event-loop/README.md
         adr/spike-event-loop/main.cpp)
