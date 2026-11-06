@@ -15,6 +15,7 @@ read the ADRs.
 | [0003](adr/0003-windows-dependencies-vcpkg.md) | Windows dependencies come from a vcpkg manifest |
 | [0004](adr/0004-html-layer-separation.md) | Separate URL handling from the GTK widget before adding a renderer |
 | [0005](adr/0005-windows-ci-scope.md) | Windows CI verifies the manifest, not the build |
+| [0006](adr/0006-prebuilt-qt-for-development.md) | Prebuilt Qt for development; the manifest stays the contract |
 
 ## Phases and exit gates
 
@@ -58,11 +59,10 @@ Updated as work lands. Last update: 2026-11-06.
 | ADR set | Done | 0001–0005 accepted |
 | `CMakePresets.json` | Done | `cmake --list-presets` on CMake 4.3.1 (Windows) and 3.28.3 (Linux); `linux-core` configures and builds `gnc-core-utils` |
 | vcpkg manifest | Done, Windows only | Resolves to qtbase 6.11.3 and qtwebengine 6.11.3 on Windows; requests nothing on Linux |
-| Event-loop bridge | Verified on Linux | Spike: 44 GLib ticks, 44 into Qt, 46 back; exit 0 |
+| Event-loop bridge | Verified on Linux and Windows | 44/44/46 on Qt 6.4.2 + GLib 2.80 (Linux); 47/47/49 on Qt 6.9.1 + GLib 2.84.2 (Windows) |
 | `gnc-html` URL layer | Done | Builds and links; test passes and links no GTK |
 | Windows CI | Done, narrowed | Manifest resolution job; MSYS2 cannot build GnuCash (no mingw Guile, no libdbi) |
-| vcpkg `qtbase` on Windows | In progress | Compiling/packaging on `E:\vcpkg` |
-| Spike against the Windows Qt | Not started | Needs GLib on Windows as well |
+| vcpkg `qtbase` on Windows | Blocked | 4+ hours, then `libiconv` configure failed (exit 77) and the retry wedged; see [0006](adr/0006-prebuilt-qt-for-development.md) |
 | Phase 1 headless shell | Not started | — |
 
 ## Risks

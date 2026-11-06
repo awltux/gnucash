@@ -13,6 +13,7 @@ set(doc_noinst_DATA
         adr/0003-windows-dependencies-vcpkg.md
         adr/0004-html-layer-separation.md
         adr/0005-windows-ci-scope.md
+        adr/0006-prebuilt-qt-for-development.md
         adr/README.md)
 
 install(FILES ${doc_DATA} DESTINATION  ${CMAKE_INSTALL_DOCDIR})
