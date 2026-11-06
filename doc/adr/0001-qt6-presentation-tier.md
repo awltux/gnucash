@@ -154,7 +154,8 @@ Landed on the `phase0/qt6-groundwork` branch:
 - `vcpkg.json`, which resolves on Windows to qtbase 6.11.3 (widgets, sql,
   sqlite, testlib, windeployqt) and qtwebengine 6.11.3 (pdf, webengine), and
   requests nothing on Linux, where Qt comes from the distribution;
-- `.github/workflows/windows-manifest.yml`, which keeps that manifest honest.
+- `.github/workflows/windows-manifest.yml`, which keeps that manifest honest;
+- a working GLib/Qt event-loop bridge, verified by a spike (appendix below).
 
 Blocked until the toolchain allows verification:
 
@@ -165,8 +166,6 @@ Blocked until the toolchain allows verification:
   all. That is precisely why `gnucash-on-windows` builds both from patched
   source with jhbuild, and why the CI job above verifies the manifest instead
   of compiling the application.
-- **Event-loop spike and the `gnc-html` document/widget split.** Both need Qt 6
-  and a tree that builds the GUI.
 
 ## Consequences
 
@@ -202,3 +201,30 @@ languages, translated on Weblate) and the file formats are untouched.
    need a bespoke proxy layer for split rows?
 3. Which packaging formats are in scope at Phase 7 (MSIX, Inno Setup, Flatpak,
    notarised DMG)?
+
+## Appendix: event-loop spike (2026-11-06)
+
+A standalone ~100-line program proved both directions of the bridge Phase 1
+depends on:
+
+- **GLib to Qt.** A `g_timeout_add()` source on a dedicated `GMainContext`,
+  pumped by `g_main_context_iteration(context, TRUE)` on its own thread,
+  marshals each tick into the Qt thread with
+  `QMetaObject::invokeMethod(..., Qt::QueuedConnection)`. The functor overload
+  needs no `moc` pass.
+- **Qt to GLib.** A `QTimer` in the Qt thread calls
+  `g_main_context_invoke(context, ...)` with a `GSourceFunc` returning
+  `G_SOURCE_REMOVE`.
+
+Built against Qt 6.4.2 and GLib 2.80 on Ubuntu 24.04, the spike reported 44
+GLib ticks, 44 delivered into Qt, 46 invocations delivered back into GLib, and
+exited 0.
+
+The spike itself is not committed: it is an experiment, not a component. What
+it establishes is that neither direction requires a custom
+`QAbstractEventDispatcher`, so the simpler pump-thread design described under
+"Architecture seams" is the one to carry into Phase 1.
+
+Not covered: the same code compiled against the Windows Qt build. The vcpkg
+`qtbase` build was still running when the spike passed, so the Windows side of
+this result is unverified.
