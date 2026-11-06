@@ -34,6 +34,7 @@ custom.sh.sample text eol=lf
 glade-fixup      text eol=lf
 gnc-glossary.txt text eol=lf
 gnc-scm-info     text eol=lf
+util/gnc-vcs-info text eol=lf
 CMakeLists.txt   text eol=lf
 .gitattributes   text eol=lf
 
