@@ -138,6 +138,26 @@ with a one-time import, `pybind11` replacing SWIG, and direct SQLite/libpq
 drivers replacing libdbi behind the existing backend interface. None of these
 change the on-disk format.
 
+### Phase 0 status (2026-11-06)
+
+Landed on the `phase0/qt6-groundwork` branch:
+
+- this ADR;
+- `CMakePresets.json`, verified with CMake 4.3.1 on Windows (only the Windows
+  preset is offered) and 3.28.3 on Linux (only the Linux presets are offered);
+- a Linux configure baseline: `linux-core` configures from a clean build
+  directory on Ubuntu 24.04 and builds `gnc-core-utils`.
+
+Blocked until the toolchain allows verification:
+
+- **vcpkg manifest.** It would declare Qt 6, which triggers both the dependency
+  policy in `README.dependencies` and the GPLv3 relicense decision above, so it
+  needs maintainer approval before it can be written.
+- **Windows CI job.** The MSYS2 installation available here has no compiler, so
+  such a workflow could not be shown to pass and was not committed.
+- **Event-loop spike and the `gnc-html` document/widget split.** Both need Qt 6
+  and a tree that builds the GUI.
+
 ## Consequences
 
 **Positive.** Windows becomes a normal target built with MSVC and vcpkg rather
