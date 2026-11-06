@@ -268,10 +268,12 @@ ctest --test-dir .build/linux-debug -R test-gnc-numeric --output-on-failure
   Scheme `(_ "...")` and `(N_ "...")`. Bare UI literals are a review blocker.
 - **Never edit `po/*.po` or `po/glossary/*.po`.** Translation happens on
   Weblate; batches land as `Merge latest translations from Weblate.`
-- `po/POTFILES.in` is generated into the source tree by the CMake configure step
-  and is gitignored. Do not hand-write it; expose new translatable files through
-  the module's CMake lists, and use `POTFILES.skip` / `POTFILES.ignore` to
-  exclude files deliberately.
+- `po/POTFILES.in` is regenerated into the source tree by the CMake configure
+  step from the module source lists. It is tracked despite appearing in
+  `.gitignore`, so a configure run that adds a translatable file shows up as a
+  diff: commit it alongside the change that introduced the file. Never hand-edit
+  it; expose new translatable files through the module's CMake lists, and use
+  `POTFILES.skip` / `POTFILES.ignore` to exclude files deliberately.
 - `po/glossary/gnc-glossary.txt` defines terminology; reuse its wording.
 - Documentation: Doxygen for API; manpage templates `doc/gnucash.1.in` and
   `doc/gnucash-cli.1.in`; end-user manuals live in the separate `gnucash-docs`
@@ -412,7 +414,8 @@ ninja -C .build/linux-debug distcheck   # required if you added, moved or rename
 - [ ] Commit subject matches a shape in Stage 6; body explains why; no unrelated
       churn.
 - [ ] `git status` shows only intended files: no build directories, no
-      `ChangeLog`, no `po/POTFILES.in`, no `*.pot`.
+      `ChangeLog`, no `*.pot`; `po/POTFILES.in` only when a translatable source
+      file was added and the configure step regenerated it.
 
 ---
 
@@ -454,8 +457,9 @@ ninja -C .build/linux-debug distcheck   # required if you added, moved or rename
 - The version string is derived from `git describe` at configure time
   (`cmake/git2version-info.cmake`, `util/gnc-vcs-info`). A shallow clone changes
   the reported version, not the code.
-- `po/POTFILES.in` and `ChangeLog` appearing as untracked files after a configure
-  or build run is normal; both are generated and gitignored.
+- `ChangeLog` appearing as an untracked file after a build run is normal; it is
+  generated and gitignored. `po/POTFILES.in` is also generated, but it is
+  tracked, so it can legitimately show up as a modification after configure.
 - Windows hygiene: `.gitattributes` forces LF for source files. If your editor
   writes CRLF, `git diff` will show whole-file changes; check
   `git config core.autocrlf` before blaming the file.
