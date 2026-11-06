@@ -16,6 +16,7 @@ set(doc_noinst_DATA
         adr/0005-windows-ci-scope.md
         adr/0006-prebuilt-qt-for-development.md
         adr/0007-windows-toolchain-mingw.md
+        adr/0008-windows-ci-exercises-setup.md
         adr/README.md
         adr/spike-event-loop/README.md
         adr/spike-event-loop/main.cpp)

@@ -17,6 +17,7 @@ read the ADRs.
 | [0005](adr/0005-windows-ci-scope.md) | Windows CI verifies the manifest, not the build |
 | [0006](adr/0006-prebuilt-qt-for-development.md) | Prebuilt Qt for development; the manifest stays the contract |
 | [0007](adr/0007-windows-toolchain-mingw.md) | Windows toolchain is MinGW-w64 through MSYS2 |
+| [0008](adr/0008-windows-ci-exercises-setup.md) | Windows CI exercises the documented setup and the spike |
 
 ## Phases and exit gates
 
