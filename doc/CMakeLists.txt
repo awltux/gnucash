@@ -17,9 +17,12 @@ set(doc_noinst_DATA
         adr/0006-prebuilt-qt-for-development.md
         adr/0007-windows-toolchain-mingw.md
         adr/0008-windows-ci-exercises-setup.md
+        adr/0009-backend-registration-in-qt.md
         adr/README.md
         adr/spike-event-loop/README.md
-        adr/spike-event-loop/main.cpp)
+        adr/spike-event-loop/main.cpp
+        adr/spike-engine-qt/README.md
+        adr/spike-engine-qt/main.cpp)
 
 install(FILES ${doc_DATA} DESTINATION  ${CMAKE_INSTALL_DOCDIR})
 

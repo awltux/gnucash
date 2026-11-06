@@ -32,3 +32,4 @@ One file per decision, numbered, immutable once accepted.
 | [0006](0006-prebuilt-qt-for-development.md) | Prebuilt Qt for development; the manifest stays the contract | Partly superseded by 0007 |
 | [0007](0007-windows-toolchain-mingw.md) | Windows toolchain is MinGW-w64 through MSYS2 | Accepted |
 | [0008](0008-windows-ci-exercises-setup.md) | Windows CI exercises the documented setup and the spike | Accepted |
+| [0009](0009-backend-registration-in-qt.md) | A Qt process registers a backend by loading its module | Accepted |

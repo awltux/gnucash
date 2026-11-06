@@ -18,6 +18,7 @@ read the ADRs.
 | [0006](adr/0006-prebuilt-qt-for-development.md) | Prebuilt Qt for development; the manifest stays the contract |
 | [0007](adr/0007-windows-toolchain-mingw.md) | Windows toolchain is MinGW-w64 through MSYS2 |
 | [0008](adr/0008-windows-ci-exercises-setup.md) | Windows CI exercises the documented setup and the spike |
+| [0009](adr/0009-backend-registration-in-qt.md) | A Qt process registers a backend by loading its module |
 
 ## Phases and exit gates
 
@@ -66,7 +67,8 @@ Updated as work lands. Last update: 2026-11-06.
 | Windows CI | Done, narrowed | Manifest resolution job; MSYS2 cannot build GnuCash (no mingw Guile, no libdbi) |
 | Qt on Windows | Done, prebuilt | MSYS2 Qt 6.9.1 + GLib 2.84.2, MinGW-w64; see [0007](adr/0007-windows-toolchain-mingw.md) and [dev setup](dev-setup-windows.md) |
 | vcpkg source build of Qt | Abandoned | 4+ hours then `libiconv` configure failed (exit 77) and the retry wedged; kept only as an experiment, see [0006](adr/0006-prebuilt-qt-for-development.md) |
-| Phase 1 headless shell | Not started | — |
+| Qt loads a book through the engine | Done | `spike-engine-qt` opens `sample1.gnucash`, 104 accounts, exit 0; see [0009](adr/0009-backend-registration-in-qt.md) |
+| Phase 1 headless shell | In progress | Engine integration done; report pane not started |
 
 ## Risks
 
