@@ -1,7 +1,8 @@
 # ADR 0001 — Qt 6 presentation tier, unchanged accounting engine
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-06
+- **Approved**: 2026-11-06, by the owner of this repository checkout
 - **Supersedes**: none
 - **Related**: none yet
 
@@ -64,8 +65,11 @@ byte-identical books by construction. A parallel implementation of
 ### Licensing
 
 GnuCash is GPL-2.0-or-later, so the combined work may be distributed under
-GPL-3.0, which Qt's LGPL-3.0 permits. Phasing this relicense is a Phase 0
-deliverable; no Qt code lands before it is recorded.
+GPL-3.0, which Qt's LGPL-3.0 permits. Adopting Qt therefore relicenses the
+binary distribution to GPL-3.0. That is accepted as a consequence of this
+decision rather than deferred: the "or later" clause makes the change
+permissible, the source obligation is unchanged, and the retained Guile report
+engine stays under the same terms as today.
 
 ## Compatibility contract
 
