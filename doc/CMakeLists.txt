@@ -22,7 +22,10 @@ set(doc_noinst_DATA
         adr/spike-event-loop/README.md
         adr/spike-event-loop/main.cpp
         adr/spike-engine-qt/README.md
-        adr/spike-engine-qt/main.cpp)
+        adr/spike-engine-qt/main.cpp
+        adr/spike-report-pane/CMakeLists.txt
+        adr/spike-report-pane/README.md
+        adr/spike-report-pane/main.cpp)
 
 install(FILES ${doc_DATA} DESTINATION  ${CMAKE_INSTALL_DOCDIR})
 
