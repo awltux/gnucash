@@ -1,10 +1,16 @@
 name: windows-vcpkg-manifest
 
-# A full GnuCash build on Windows is not possible from stock MSYS2 packages:
-# there is no mingw-w64 Guile and no libdbi, which is why upstream's
-# gnucash-on-windows environment builds both from patched source with jhbuild.
-# What CI can check cheaply is the part that will silently rot otherwise: that
-# vcpkg.json still resolves against a real registry.
+# Canary for an experiment, not a gate on anything the project ships.
+#
+# ADR 0007 makes MinGW-w64/MSYS2 the supported Windows toolchain, so vcpkg.json
+# is no longer the Windows dependency contract: it records what a future MSVC
+# build would need. This job exists only so that experiment cannot rot silently
+# while it sits in the tree. The workflow that guards the real Windows setup is
+# windows-msys2.yml.
+#
+# A full GnuCash build is not possible from stock MSYS2 packages anyway: there is
+# no mingw-w64 Guile and no libdbi, which is why upstream's gnucash-on-windows
+# environment builds both from patched source with jhbuild.
 
 on: [push, pull_request]
 
