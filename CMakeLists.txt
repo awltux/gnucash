@@ -72,6 +72,10 @@ option (COVERAGE "Instrument a Debug or Asan build for coverage reporting" OFF)
 option (GUILE_COVERAGE "Compute testing coverage of Scheme code. WARNING: 15X slowdown!" OFF)
 option (LEAKS "Report leaks for tests in a non-Apple Asan build." OFF)
 option (ODR "Report One Definition Rule violations in tests in a non-Apple Asan build." OFF)
+# The Qt 6 presentation tier is being built up alongside the GTK one; see
+# doc/adr/0001-qt6-presentation-tier.md. Off by default: it needs Qt 6 Widgets
+# and WebEngine, which the default build must not require.
+option (WITH_QT "Build the experimental Qt 6 presentation tier" OFF)
 # ############################################################
 
 # These are also settable from the command line in a similar way.
@@ -919,6 +923,9 @@ add_subdirectory (libgnucash)
 if (WITH_GNUCASH)
   add_subdirectory (gnucash)
 endif()
+if (WITH_QT)
+  add_subdirectory (qt)
+endif()
 add_subdirectory (bindings)
 add_subdirectory (test-templates)
 add_subdirectory (util)
@@ -971,7 +978,7 @@ set_local_dist(toplvl_DIST ${toplvl_DIST_local})
 
 set(ALL_DIST ${bindings_DIST} ${borrowed_DIST} ${cmake_DIST} ${common_DIST} ${data_DIST}
     ${doc_DIST} ${gnucash_DIST} ${libgnucash_DIST} ${packaging_DIST}
-    ${po_DIST} ${test_templates_DIST} ${toplvl_DIST} ${util_DIST} Info.plist)
+    ${po_DIST} ${qt_DIST} ${test_templates_DIST} ${toplvl_DIST} ${util_DIST} Info.plist)
 
 
 if (BUILDING_FROM_VCS)
