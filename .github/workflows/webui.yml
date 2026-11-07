@@ -41,7 +41,10 @@ jobs:
             -DWITH_SQL=OFF
 
       - name: Build
-        run: cmake --build build -j"$(nproc)" --target gnc-webd
+        # The whole toolkit-free tree, not just the binary: the server loads
+        # the Scheme report modules and the XML backend at run time, so a
+        # target-only build produces a server that cannot open a book.
+        run: cmake --build build -j"$(nproc)"
 
       # The claim is about what the process loads, so check the binary rather
       # than the cache: the cache mentions GTK even when nothing links it.
