@@ -1127,7 +1127,7 @@ gnc_table_enter_update (Table *table,
     return can_edit;
 }
 
-void
+char *
 gnc_table_leave_update (Table *table, VirtualLocation virt_loc)
 {
     CellLeaveFunc leave;
@@ -1137,7 +1137,7 @@ gnc_table_leave_update (Table *table, VirtualLocation virt_loc)
     int cell_col;
 
     if (table == NULL)
-        return;
+        return NULL;
 
     cb = table->current_cursor;
 
@@ -1154,12 +1154,17 @@ gnc_table_leave_update (Table *table, VirtualLocation virt_loc)
     if (!cell)
     {
         LEAVE("no cell");
-        return;
+        return NULL;
     }
 
     leave = cell->leave_cell;
 
-    if (leave)
+    if (!leave)
+    {
+        LEAVE("no leave callback");
+        return NULL;
+    }
+
     {
         char * old_value;
 
@@ -1179,7 +1184,10 @@ gnc_table_leave_update (Table *table, VirtualLocation virt_loc)
 
         g_free (old_value);
     }
+
     LEAVE("");
+    /* The cell reported a problem rather than showing it; pass it on. */
+    return gnc_basic_cell_take_error (cell);
 }
 
 gboolean

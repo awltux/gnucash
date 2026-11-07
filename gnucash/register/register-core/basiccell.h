@@ -161,9 +161,7 @@
 extern "C" {
 #endif
 
-#include <gdk/gdk.h>
 #include <glib.h>
-#include <gtk/gtk.h>
 
 #include "gnc-ui-util.h"
 
@@ -219,6 +217,10 @@ struct basic_cell
     gboolean changed;               /** true if value modified */
     gboolean conditionally_changed; /** true if value modified conditionally */
 
+    /* A cell that cannot complete an edit reports it here rather than
+     * presenting a dialog itself; the view owns the presentation. */
+    gchar * error_message;
+
     /* "virtual", overloaded methods */
     CellSetValueFunc set_value;
     CellDestroyFunc  destroy;
@@ -273,6 +275,23 @@ void         gnc_basic_cell_set_value (BasicCell *bcell, const char *value);
 
 gboolean     gnc_basic_cell_get_changed (BasicCell *cell);
 gboolean     gnc_basic_cell_get_conditionally_changed (BasicCell *cell);
+
+/** Records why the cell could not accept its value.
+ *
+ * Cells have no toolkit and must not raise dialogs.  A cell that fails to
+ * parse or validate its value records the message here; the view decides
+ * whether and how to present it.  @a message is copied.
+ */
+void         gnc_basic_cell_set_error (BasicCell *cell, const char *message);
+
+/** @return the pending message, or NULL.  The cell keeps ownership. */
+const char * gnc_basic_cell_get_error (BasicCell *cell);
+
+/** Takes the pending message from the cell and clears it.
+ *
+ * @return the message, owned by the caller (free with g_free()), or NULL.
+ */
+gchar *      gnc_basic_cell_take_error (BasicCell *cell);
 
 void         gnc_basic_cell_set_changed (BasicCell *cell, gboolean changed);
 void         gnc_basic_cell_set_conditionally_changed (BasicCell *cell,

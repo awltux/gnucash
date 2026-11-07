@@ -24,6 +24,8 @@
 #ifndef DIALOG_ACCOUNT_H
 #define DIALOG_ACCOUNT_H
 
+#include <gtk/gtk.h>
+
 #include "Account.h"
 
 #ifdef __cplusplus

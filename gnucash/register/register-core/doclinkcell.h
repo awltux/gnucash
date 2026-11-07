@@ -49,6 +49,22 @@
 typedef const char * (*DoclinkcellStringGetter) (char flag);
 typedef gboolean (*DoclinkcellConfirm) (char old_flag, gpointer data);
 
+/** Text metrics hook, supplied by the view.
+ *
+ * A cell has no toolkit and cannot measure text.  The view installs a
+ * function that reports whether every glyph in @a text can be rendered with
+ * the current font; ::gnc_doclink_cell_set_use_glyphs uses it to choose
+ * between the emoji glyphs and plain letters.  register-core never calls
+ * into a toolkit itself.
+ *
+ * @param text the string to test
+ * @param user_data as passed to ::gnc_doclink_cell_set_glyph_support_func
+ *
+ * @return TRUE if every glyph is available
+ */
+typedef gboolean (*DoclinkcellGlyphSupportFunc) (const char *text,
+                                                 gpointer user_data);
+
 typedef struct
 {
     BasicCell cell;
@@ -91,6 +107,14 @@ void gnc_doclink_cell_set_flag_order (Doclinkcell *cell, const char *flags);
 void gnc_doclink_cell_set_read_only (Doclinkcell *cell, gboolean read_only);
 
 void gnc_doclink_cell_set_use_glyphs (Doclinkcell *cell);
+
+/** Installs the view's text metrics hook.
+ *
+ * Until a view installs one, ::gnc_doclink_cell_set_use_glyphs assumes the
+ * glyphs are present.  Passing NULL removes the hook.
+ */
+void gnc_doclink_cell_set_glyph_support_func (DoclinkcellGlyphSupportFunc func,
+                                              gpointer user_data);
 
 gboolean gnc_doclink_get_use_glyphs (Doclinkcell *cell);
 

@@ -26,7 +26,6 @@
 #include "gnc-exp-parser.h"
 #include "gnc-engine.h"
 #include "gnc-ui-util.h"
-#include "gnc-ui.h"
 
 #include "basiccell.h"
 #include "formulacell.h"
@@ -117,9 +116,13 @@ gnc_formula_cell_leave(BasicCell *_cell)
                 && !gnc_exp_parser_parse(str, &amount, &error_location))
         {
             gint error_position = error_location - str;
-            gnc_warning_dialog (gnc_ui_get_main_window (NULL),
-                                _("An error occurred while processing '%s' at position %d"),
-                                str, error_position);
+            gchar *message = g_strdup_printf (
+                _("An error occurred while processing '%s' at position %d"),
+                str, error_position);
+
+            /* The view decides how to present this; cells raise no dialogs. */
+            gnc_basic_cell_set_error (&fc->cell, message);
+            g_free (message);
         }
     }
 

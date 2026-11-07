@@ -24,6 +24,8 @@
 #ifndef GNC_ENTRY_LEDGERP_H
 #define GNC_ENTRY_LEDGERP_H
 
+#include <gtk/gtk.h>
+
 #include "qof.h"
 #include "table-allgui.h"
 #include "gncEntryLedger.h"

@@ -41,7 +41,6 @@
 #include "gnc-exp-parser.h"
 #include "gnc-engine.h"
 #include "gnc-ui-util.h"
-#include "gnc-ui.h"
 
 #include "basiccell.h"
 #include "pricecell.h"
@@ -157,9 +156,13 @@ gnc_price_cell_leave (BasicCell *_cell)
     error_position = gnc_price_cell_parse (cell, TRUE);
     if (error_position != -1)
     {
-        gnc_warning_dialog (gnc_ui_get_main_window (NULL),
-                            _("An error occurred while processing '%s' at position %d"),
-                            cell->cell.value, error_position);
+        gchar *message = g_strdup_printf (
+            _("An error occurred while processing '%s' at position %d"),
+            cell->cell.value, error_position);
+
+        /* The view decides how to present this; cells raise no dialogs. */
+        gnc_basic_cell_set_error (&cell->cell, message);
+        g_free (message);
     }
 
 }

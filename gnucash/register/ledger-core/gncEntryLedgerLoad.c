@@ -31,6 +31,7 @@
 #include "combocell.h"
 #include "gnc-component-manager.h"
 #include "gnc-prefs.h"
+#include "gnc-ui.h"
 #include "gnc-ui-util.h"
 #include "recncell.h"
 
@@ -337,6 +338,7 @@ void gnc_entry_ledger_load (GncEntryLedger* ledger, GList* entry_list)
     VirtualCellLocation vcell_loc;
     VirtualLocation save_loc;
     gboolean start_primary_color = TRUE;
+    char *error;
 
     int new_entry_row = -1;
 
@@ -478,7 +480,13 @@ void gnc_entry_ledger_load (GncEntryLedger* ledger, GList* entry_list)
 
     table = ledger->table;
 
-    gnc_table_leave_update (table, table->current_cursor_loc);
+    /* The cell layer reports validation failures instead of showing them. */
+    error = gnc_table_leave_update (table, table->current_cursor_loc);
+    if (error != NULL)
+    {
+        gnc_warning_dialog (gnc_ui_get_main_window (NULL), "%s", error);
+        g_free (error);
+    }
     save_loc = table->current_cursor_loc;
 
     /* Figure out where we are going to */

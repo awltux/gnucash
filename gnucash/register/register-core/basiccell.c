@@ -108,6 +108,9 @@ gnc_basic_cell_clear (BasicCell *cell)
 
     cell->gui_private = NULL;
 
+    g_free (cell->error_message);
+    cell->error_message = NULL;
+
     g_free (cell->sample_text);
     cell->sample_text = NULL;
 }
@@ -276,6 +279,36 @@ gnc_basic_cell_set_conditionally_changed (BasicCell *cell, gboolean changed)
     if (!cell) return;
 
     cell->conditionally_changed = changed;
+}
+
+void
+gnc_basic_cell_set_error (BasicCell *cell, const char *message)
+{
+    if (!cell) return;
+
+    g_free (cell->error_message);
+    cell->error_message = g_strdup (message);
+}
+
+const char *
+gnc_basic_cell_get_error (BasicCell *cell)
+{
+    if (!cell) return NULL;
+
+    return cell->error_message;
+}
+
+gchar *
+gnc_basic_cell_take_error (BasicCell *cell)
+{
+    gchar *message;
+
+    if (!cell) return NULL;
+
+    message = cell->error_message;
+    cell->error_message = NULL;
+
+    return message;
 }
 
 void

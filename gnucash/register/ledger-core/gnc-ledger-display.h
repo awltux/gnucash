@@ -31,6 +31,7 @@ extern "C"
 #endif
 
 #include <glib.h>
+#include <gtk/gtk.h>
 
 #include "Account.h"
 #include "Query.h"

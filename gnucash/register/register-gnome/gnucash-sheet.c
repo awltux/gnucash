@@ -36,6 +36,7 @@
 #include "gnucash-sheetP.h"
 
 #include "dialog-utils.h"
+#include "gnc-ui.h"
 #include "gnc-gtk-utils.h"
 #include "gnc-prefs.h"
 #include "gnucash-color.h"
@@ -44,6 +45,7 @@
 #include "gnucash-header.h"
 #include "gnucash-item-edit.h"
 #include "split-register.h"
+#include "doclinkcell.h"
 #include "gnc-engine.h"     // For debugging, e.g. ENTER(), LEAVE()
 
 #ifdef G_OS_WIN32
@@ -291,7 +293,17 @@ gnucash_sheet_deactivate_cursor_cell (GnucashSheet *sheet)
     gnucash_sheet_stop_editing (sheet);
 
     if (!gnc_table_model_read_only (sheet->table->model))
-        gnc_table_leave_update (sheet->table, virt_loc);
+    {
+        char *error = gnc_table_leave_update (sheet->table, virt_loc);
+
+        /* The cell layer reports validation failures instead of showing
+         * them; presenting them is the view's job. */
+        if (error != NULL)
+        {
+            gnc_warning_dialog (gnc_ui_get_main_window (NULL), "%s", error);
+            g_free (error);
+        }
+    }
 
     gnucash_sheet_redraw_block (sheet, virt_loc.vcell_loc);
 }
@@ -2410,12 +2422,39 @@ dimensions_destroy (BlockDimensions *dimensions)
     }
 }
 
+/* The cell layer cannot measure text, so it asks the view.  This is the
+ * Pango implementation of the text-metrics hook described in doclinkcell.h:
+ * the register falls back to plain letters when the font has no glyph for
+ * the document-link symbols. */
+static gboolean
+gnucash_sheet_glyph_support (const char *text, G_GNUC_UNUSED gpointer user_data)
+{
+    GtkWidget *label;
+    PangoLayout *layout;
+    gint unknown;
+
+    label = gtk_label_new (NULL);
+    layout = gtk_widget_create_pango_layout (label, text);
+
+    unknown = pango_layout_get_unknown_glyphs_count (layout);
+
+    g_object_unref (layout);
+    g_object_ref_sink (label);
+    g_object_unref (label);
+
+    return unknown == 0;
+}
+
 GtkWidget *
 gnucash_sheet_new (Table *table)
 {
     GnucashSheet *sheet;
 
     g_return_val_if_fail (table != NULL, NULL);
+
+    /* Install the text-metrics hook before the register template loads its
+     * cells: loading is what asks whether the glyphs are available. */
+    gnc_doclink_cell_set_glyph_support_func (gnucash_sheet_glyph_support, NULL);
 
     sheet = gnucash_sheet_create (table);
 

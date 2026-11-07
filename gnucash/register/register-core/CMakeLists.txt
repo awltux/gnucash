@@ -45,7 +45,10 @@ set_source_files_properties (${register_core_SOURCES} PROPERTIES OBJECT_DEPENDS 
 
 add_library (gnc-register-core ${register_core_SOURCES} ${register_core_HEADERS})
 
-target_link_libraries(gnc-register-core gnc-gnome-utils gnc-app-utils ${GMODULE_LDFLAGS})
+# The cells parse formulas and amounts, so register-core needs the expression
+# library.  It used to arrive through gnc-gnome-utils, which is a GTK library;
+# declaring it here is what keeps the toolkit out.
+target_link_libraries(gnc-register-core gnc-app-utils gnc-expressions ${GMODULE_LDFLAGS})
 
 target_compile_definitions (gnc-register-core PRIVATE -DG_LOG_DOMAIN=\"gnc.register.core\")
 

@@ -23,6 +23,7 @@
 #define SPLIT_REGISTER_H
 
 #include <glib.h>
+#include <gtk/gtk.h>
 
 #include "Transaction.h"
 #include "table-allgui.h"

@@ -49,6 +49,20 @@
 
 static void gnc_doclink_cell_set_value (BasicCell *_cell, const char *value);
 
+/* The view's text metrics hook; see doclinkcell.h.  One hook serves the
+ * process because glyph availability is a property of the font, not of a
+ * cell. */
+static DoclinkcellGlyphSupportFunc glyph_support_func = NULL;
+static gpointer glyph_support_data = NULL;
+
+void
+gnc_doclink_cell_set_glyph_support_func (DoclinkcellGlyphSupportFunc func,
+                                         gpointer user_data)
+{
+    glyph_support_func = func;
+    glyph_support_data = user_data;
+}
+
 const char *
 gnc_doclink_get_glyph_from_flag (char link_flag)
 {
@@ -263,33 +277,18 @@ gnc_doclink_cell_set_read_only (Doclinkcell *cell, gboolean read_only)
 void
 gnc_doclink_cell_set_use_glyphs (Doclinkcell *cell)
 {
-#ifdef MAC_INTEGRATION
-    cell->use_glyphs = FALSE;
-#else 
-    gboolean use_glyphs = TRUE;
-    gchar *test_text;
-    GtkWidget *label;
-    PangoLayout *test_layout;
-    gint count;
-
     g_return_if_fail (cell != NULL);
 
-    label = gtk_label_new (NULL);
-    test_text = g_strconcat (GLYPH_LINK, ",", GLYPH_PAPERCLIP, NULL);
-    test_layout = gtk_widget_create_pango_layout (GTK_WIDGET (label), test_text);
-
-    pango_layout_set_text (test_layout, test_text, strlen (test_text));
-
-    count = pango_layout_get_unknown_glyphs_count (test_layout);
-
-    if (count != 0)
-        use_glyphs = FALSE;
-
-    g_object_unref (test_layout);
-    g_free (test_text);
-    g_object_ref_sink (label);
-    g_object_unref (label);
-
-    cell->use_glyphs = use_glyphs;
+#ifdef MAC_INTEGRATION
+    cell->use_glyphs = FALSE;
+#else
+    /* Without a view there is nothing to measure with: assume the glyphs can
+     * be rendered.  The GTK view installs a Pango-based test when it creates
+     * a sheet, so this default only applies to headless use. */
+    if (glyph_support_func == NULL)
+        cell->use_glyphs = TRUE;
+    else
+        cell->use_glyphs = glyph_support_func (GLYPH_LINK "," GLYPH_PAPERCLIP,
+                                               glyph_support_data);
 #endif
 }

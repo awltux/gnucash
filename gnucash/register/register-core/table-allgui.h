@@ -393,7 +393,21 @@ gboolean     gnc_table_enter_update(Table *table,
                                     int *start_selection,
                                     int *end_selection);
 
-void         gnc_table_leave_update(Table *table, VirtualLocation virt_loc);
+/** Runs the leave callback of the cell at @a virt_loc.
+ *
+ *  A cell that fails to parse or validate its value records a message
+ *  instead of presenting it, because register-core has no toolkit.  This
+ *  function hands that message to the caller, which is the view and knows
+ *  how to present it.
+ *
+ *  @param table The table
+ *  @param virt_loc The location of the cell being left
+ *
+ *  @return NULL if the value was accepted, otherwise a newly allocated
+ *  message describing the failure.  The caller owns the string and must
+ *  free it with g_free().
+ */
+char *       gnc_table_leave_update(Table *table, VirtualLocation virt_loc);
 
 gboolean     gnc_table_confirm_change(Table *table, VirtualLocation virt_loc);
 
