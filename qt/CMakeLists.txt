@@ -22,6 +22,7 @@ target_link_libraries(gnucash-qt
   PRIVATE
     gnc-engine
     gnc-core-utils
+    gnc-app-utils
     Qt6::Widgets
     Qt6::WebEngineWidgets
     ${CMAKE_DL_LIBS})

@@ -4,6 +4,7 @@
 
 extern "C" {
 #include <gnc-engine.h>
+#include <gnc-ui-balances.h>
 }
 
 namespace gncqt
@@ -17,6 +18,7 @@ void AccountModel::set_root_account(Account* root)
     root_ = root;
     children_.clear();
     parents_.clear();
+    totals_.clear();
     inserted_ = 0;
     removed_ = 0;
     endResetModel();
@@ -108,16 +110,54 @@ int AccountModel::rowCount(const QModelIndex& parent) const
 
 int AccountModel::columnCount(const QModelIndex&) const
 {
-    return 1;
+    return 2;
+}
+
+QString AccountModel::total_for(Account* account) const
+{
+    if (account == nullptr)
+        return {};
+
+    const auto cached = totals_.constFind(account);
+    if (cached != totals_.constEnd())
+        return *cached;
+
+    // The same helper the GTK account tree uses, so the strings match: the
+    // present balance including children, in the account's own commodity.
+    gboolean negative = FALSE;
+    gchar* text = gnc_ui_account_get_print_balance(
+        xaccAccountGetPresentBalanceInCurrency, account, TRUE, &negative);
+
+    const QString total = QString::fromUtf8(text != nullptr ? text : "");
+    g_free(text);
+
+    totals_.insert(account, total);
+    return total;
 }
 
 QVariant AccountModel::data(const QModelIndex& index, int role) const
 {
-    if (!index.isValid() || role != Qt::DisplayRole)
+    if (!index.isValid())
         return {};
 
     auto* account = static_cast<Account*>(index.internalPointer());
     if (account == nullptr)
+        return {};
+
+    if (index.column() == TotalColumn)
+    {
+        switch (role)
+        {
+        case Qt::DisplayRole:
+            return total_for(account);
+        case Qt::TextAlignmentRole:
+            return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
+        default:
+            return {};
+        }
+    }
+
+    if (role != Qt::DisplayRole)
         return {};
 
     const char* name = xaccAccountGetName(account);
@@ -127,17 +167,49 @@ QVariant AccountModel::data(const QModelIndex& index, int role) const
 QVariant AccountModel::headerData(int section, Qt::Orientation orientation,
                                   int role) const
 {
-    if (orientation != Qt::Horizontal || role != Qt::DisplayRole || section != 0)
+    if (orientation != Qt::Horizontal || role != Qt::DisplayRole)
         return {};
-    return QStringLiteral("Account");
+
+    switch (section)
+    {
+    case NameColumn:
+        return QStringLiteral("Account");
+    case TotalColumn:
+        return QStringLiteral("Total");
+    default:
+        return {};
+    }
 }
 
 void AccountModel::account_changed(Account* account)
 {
-    const QModelIndex changed = index_of(account);
-    if (!changed.isValid())
+    if (account == nullptr)
         return;
-    emit dataChanged(changed, changed, {Qt::DisplayRole});
+
+    // Any account change can move a total: this account's, and every
+    // ancestor's, because a total includes its children. The cache is blunt
+    // on purpose — the next paint recomputes what it needs.
+    totals_.clear();
+
+    const QModelIndex changed = index_of(account);
+    if (changed.isValid())
+    {
+        emit dataChanged(createIndex(changed.row(), NameColumn, account),
+                         createIndex(changed.row(), TotalColumn, account),
+                         {Qt::DisplayRole, Qt::ForegroundRole});
+    }
+
+    for (Account* ancestor = parent_of(account);
+         ancestor != nullptr && ancestor != root_;
+         ancestor = parent_of(ancestor))
+    {
+        const QModelIndex row = index_of(ancestor);
+        if (!row.isValid())
+            continue;
+
+        const QModelIndex total = createIndex(row.row(), TotalColumn, ancestor);
+        emit dataChanged(total, total, {Qt::DisplayRole, Qt::ForegroundRole});
+    }
 }
 
 void AccountModel::account_added(Account* account)
@@ -162,6 +234,7 @@ void AccountModel::account_added(Account* account)
     beginInsertRows(parent_index, row, row);
     children_[parent].append(account);
     parents_.insert(account, parent);
+    totals_.clear();
     ++inserted_;
     endInsertRows();
 }
@@ -187,6 +260,7 @@ void AccountModel::account_removed(Account* account)
     beginRemoveRows(parent_index, row, row);
     children_[parent].removeAt(row);
     forget_subtree(account);
+    totals_.clear();
     ++removed_;
     endRemoveRows();
 }

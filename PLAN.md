@@ -182,6 +182,7 @@ changes the on-disk format.
 | Engine thread ownership | ✅ ADR 0012 — GUI thread owns it; self-test identical after the worker thread was removed |
 | Coexistence rules (GSettings, helper reports, no shared UI state) | ✅ ADR 0013 — prospective; the preferences rule has not been exercised by a real settings UI |
 | Account tree model | ✅ implemented and verified under edits — insert/remove signals fire (`model_ok=1 inserts=1 removes=1`) |
+| Account tree totals | ✅ observed: a `Total` column formatted by app-utils' `gnc_ui_account_get_print_balance` (the GTK tree's helper), refreshed from the account-modify events the engine emits when splits are added or removed, including ancestors (`total_ok=1`) |
 | Report path | ✅ ADR 0015 — out-of-process through Phase 5; the seam is `qt/report-runner.*` |
 | App mode | ✅ `gnucash-qt <book>` opens and stays open; `--self-test` is the CI harness |
 | Report selector | ✅ 63 reports listed from `gnucash-cli -R list` at startup; `Reports` menu plus `View → Reload report` |
@@ -222,7 +223,7 @@ bash ~/src/gnucash/qt/run-smoke-test.sh ~/build/ext4-qt ~/src/gnucash
 ```
 
 Expected: `accounts=104 top_level=5 pane_ok=1 events=20/20 in_order=1
-on_qt_thread=1 model_ok=1 inserts=1 removes=1 reports=63` and
+on_qt_thread=1 model_ok=1 total_ok=1 inserts=1 removes=1 reports=63` and
 `qt smoke test passed`, exit 0. Anything else means the tree, the environment,
 or the code moved.
 

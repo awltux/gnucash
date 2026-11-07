@@ -13,6 +13,7 @@
 #include <QAbstractItemModel>
 #include <QHash>
 #include <QList>
+#include <QString>
 
 extern "C" {
 #include <Account.h>
@@ -26,6 +27,12 @@ class AccountModel : public QAbstractItemModel
     Q_OBJECT
 
 public:
+    enum Column
+    {
+        NameColumn = 0,
+        TotalColumn = 1
+    };
+
     explicit AccountModel(QObject* parent = nullptr);
 
     // The root account whose children form the visible top level.
@@ -58,9 +65,16 @@ private:
     QModelIndex index_of(Account* account) const;
     void forget_subtree(Account* account);
 
+    // The account's total, formatted the way the GTK account tree formats it
+    // (including children, in the account's commodity). Cached because the
+    // view asks for it once per painted cell; the cache is dropped on any
+    // account event.
+    QString total_for(Account* account) const;
+
     Account* root_ = nullptr;
     mutable QHash<Account*, QList<Account*>> children_;
     mutable QHash<Account*, Account*> parents_;
+    mutable QHash<Account*, QString> totals_;
     int inserted_ = 0;
     int removed_ = 0;
 };

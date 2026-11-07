@@ -23,6 +23,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHeaderView>
 #include <QKeySequence>
 #include <QMainWindow>
 #include <QMenu>
@@ -41,12 +42,15 @@
 
 extern "C" {
 #include <cashobjects.h>
+#include <gnc-date.h>
 #include <gnc-engine.h>
 #include <qof.h>
 #include <qofbook.h>
 #include <qofevent.h>
 #include <qofsession.h>
 #include <Account.h>
+#include <Split.h>
+#include <Transaction.h>
 }
 
 namespace
@@ -166,6 +170,135 @@ EditTest run_model_edit_test(gncqt::AccountModel* model, QofBook* book,
     return result;
 }
 
+// The first account in the tree that can hold splits (has a commodity); the
+// fixture's top-level accounts are placeholders and have none.
+static Account* first_account_with_commodity(Account* parent, Account* skip)
+{
+    GList* children = gnc_account_get_children(parent);
+    Account* found = nullptr;
+
+    for (GList* node = children; node != nullptr && found == nullptr; node = node->next)
+    {
+        auto* candidate = static_cast<Account*>(node->data);
+        if (candidate != skip && xaccAccountGetCommodity(candidate) != nullptr)
+            found = candidate;
+    }
+
+    for (GList* node = children; node != nullptr && found == nullptr; node = node->next)
+        found = first_account_with_commodity(static_cast<Account*>(node->data), skip);
+
+    g_list_free(children);
+    return found;
+}
+
+static QModelIndex find_account_index(const gncqt::AccountModel* model,
+                                      const QModelIndex& parent,
+                                      Account* account, int column)
+{
+    const int rows = model->rowCount(parent);
+    for (int row = 0; row < rows; ++row)
+    {
+        const QModelIndex candidate =
+            model->index(row, gncqt::AccountModel::NameColumn, parent);
+        if (model->account_for(candidate) == account)
+            return model->index(row, column, parent);
+
+        const QModelIndex deeper = find_account_index(model, candidate, account, column);
+        if (deeper.isValid())
+            return deeper;
+    }
+    return {};
+}
+
+// Gives a fresh account a commodity and a place in the tree, so the test does
+// not depend on how the fixture happens to be shaped.
+static Account* make_holding_account(QofBook* book, Account* parent,
+                                     const char* name, gnc_commodity* commodity)
+{
+    Account* account = xaccMallocAccount(book);
+    if (account == nullptr)
+        return nullptr;
+
+    xaccAccountSetName(account, name);
+    xaccAccountSetType(account, ACCT_TYPE_BANK);
+    xaccAccountSetCommodity(account, commodity);
+    gnc_account_append_child(parent, account);
+
+    return account;
+}
+
+// Posts a split into a child account and checks the total column followed: the
+// child's total must move, and so must its parent's, because a total includes
+// its children. The parent holds no splits of its own, so its total can only
+// move by recursion.
+struct TotalTest
+{
+    QString before_leaf;
+    QString after_leaf;
+    QString before_parent;
+    QString after_parent;
+    bool ok = false;
+};
+
+TotalTest run_total_test(gncqt::AccountModel* model, QofBook* book, Account* root)
+{
+    TotalTest result;
+    if (model == nullptr || book == nullptr || root == nullptr)
+        return result;
+
+    Account* donor = first_account_with_commodity(root, nullptr);
+    if (donor == nullptr)
+        return result;
+
+    gnc_commodity* commodity = xaccAccountGetCommodity(donor);
+    Account* top = make_holding_account(book, root, "Total Test Parent", commodity);
+    Account* leaf = make_holding_account(book, top, "Total Test Child", commodity);
+    if (top == nullptr || leaf == nullptr)
+        return result;
+
+    const QModelIndex leaf_total =
+        find_account_index(model, QModelIndex(), leaf, gncqt::AccountModel::TotalColumn);
+    const QModelIndex parent_total =
+        find_account_index(model, QModelIndex(), top, gncqt::AccountModel::TotalColumn);
+    if (!leaf_total.isValid() || !parent_total.isValid())
+        return result;
+
+    result.before_leaf = model->data(leaf_total, Qt::DisplayRole).toString();
+    result.before_parent = model->data(parent_total, Qt::DisplayRole).toString();
+
+    Transaction* trans = xaccMallocTransaction(book);
+    xaccTransBeginEdit(trans);
+    xaccTransSetCurrency(trans, commodity);
+    xaccTransSetDatePostedSecsNormalized(trans, gnc_time64_get_today_start());
+
+    Split* debit = xaccMallocSplit(book);
+    xaccSplitSetAccount(debit, leaf);
+    xaccSplitSetParent(debit, trans);
+    xaccSplitSetAmount(debit, gnc_numeric_create(100, 1));
+    xaccSplitSetValue(debit, gnc_numeric_create(100, 1));
+
+    Split* credit = xaccMallocSplit(book);
+    xaccSplitSetAccount(credit, donor);
+    xaccSplitSetParent(credit, trans);
+    xaccSplitSetAmount(credit, gnc_numeric_create(-100, 1));
+    xaccSplitSetValue(credit, gnc_numeric_create(-100, 1));
+
+    xaccTransCommitEdit(trans);
+
+    // The indexes stay valid: nothing was inserted or removed, and the model
+    // dropped its totals when the engine reported the split.
+    result.after_leaf = model->data(leaf_total, Qt::DisplayRole).toString();
+    result.after_parent = model->data(parent_total, Qt::DisplayRole).toString();
+
+    result.ok = !result.after_leaf.isEmpty()
+                && result.after_leaf != result.before_leaf
+                && result.after_parent != result.before_parent
+                // The parent holds no splits of its own, so its recursive
+                // total must equal its only child's, not merely change.
+                && result.after_parent == result.after_leaf;
+    return result;
+}
+
 gboolean rename_burst(gpointer data)
 {
     auto* account = static_cast<Account*>(data);
@@ -261,6 +394,10 @@ int main(int argc, char** argv)
 
     auto* tree = new QTreeView(&window);
     tree->setModel(model);
+    tree->header()->setSectionResizeMode(gncqt::AccountModel::NameColumn,
+                                         QHeaderView::Stretch);
+    tree->header()->setSectionResizeMode(gncqt::AccountModel::TotalColumn,
+                                         QHeaderView::ResizeToContents);
 
     auto* view = new QWebEngineView(&window);
 
@@ -386,11 +523,19 @@ int main(int argc, char** argv)
         return status;
     }
 
-    // ---- self-test: model edits, rename burst, then assertions ----
+    // ---- self-test: model edits, totals, rename burst, then assertions ----
+    // Recorded before the tests run, so the temporary objects they create
+    // cannot change what this reports about the book that was loaded.
+    const int top_level = model->rowCount();
+
     EditTest edit;
+    TotalTest total;
     if (session.session != nullptr && session.root != nullptr)
-        edit = run_model_edit_test(model, qof_session_get_book(session.session),
-                                   session.root);
+    {
+        QofBook* book = qof_session_get_book(session.session);
+        edit = run_model_edit_test(model, book, session.root);
+        total = run_total_test(model, book, session.root);
+    }
 
     Account* target = nullptr;
     if (session.root != nullptr)
@@ -430,14 +575,15 @@ int main(int argc, char** argv)
         }
 
         std::printf("accounts=%d top_level=%d pane_ok=%d events=%d/%d in_order=%d "
-                    "on_qt_thread=%d model_ok=%d inserts=%d removes=%d reports=%d\n",
-                    session.descendant_count, model->rowCount(),
+                    "on_qt_thread=%d model_ok=%d total_ok=%d inserts=%d removes=%d "
+                    "reports=%d\n",
+                    session.descendant_count, top_level,
                     pane_loaded ? 1 : 0, g_event_count.load(), kRenames,
                     in_order ? 1 : 0, g_event_off_thread.load() ? 0 : 1,
-                    edit.ok ? 1 : 0, edit.inserts, edit.removes,
+                    edit.ok ? 1 : 0, total.ok ? 1 : 0, edit.inserts, edit.removes,
                     static_cast<int>(report_names.size()));
 
-        app.exit(events_done && in_order && pane_loaded && edit.ok
+        app.exit(events_done && in_order && pane_loaded && edit.ok && total.ok
                          && !g_event_off_thread.load() && !report_names.isEmpty()
                      ? 0
                      : 1);
