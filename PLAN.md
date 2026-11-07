@@ -192,7 +192,7 @@ changes the on-disk format.
 | Audit claim: "three call sites, Phase 3a 1–2 weeks" | ❌ falsified: the three sites were real, but removing them broke 15 objects in 4 directories; `ledger-core` is the GTK-bound layer |
 | Phase 3 estimate | ✅ revised again after measurement: 3a is 2–3 months (not 1–2 weeks), of which the `register-core` slice is done and `ledger-core` is the 4–8 week remainder; 3b 5–7 months **only if** 3a covers `ledger-core` |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
-| CI coverage of the Qt target | ⚠️ job written (`qt-smoke.yml`), never run on GitHub |
+| CI coverage of the Qt target | ✅ observed 2026-11-07: the `Qt tier smoke test` job ran green on its first execution (run 42395385776, 3m21s, all six steps) after the branch was pushed to `origin`; the same push ran the rest of the matrix (coverage, ci-tests, mac-tests, docker) |
 
 ## 6. How to re-verify, from scratch
 

@@ -62,6 +62,32 @@ with a one-time import, `pybind11` replacing SWIG, and direct SQLite/libpq
 drivers replacing libdbi behind the existing backend interface. None of those
 change the on-disk format.
 
+## Phase 2 gate checklist
+
+The gate is "browsing parity; keyboard navigation for tree and tabs", which is
+judgement until it is written down. This is the list; the go/no-go decides each
+line as **done** or **deliberately out of scope, with a reason**. Nothing is
+"probably fine".
+
+| Behaviour | State | Evidence / what would close it |
+|---|---|---|
+| Open a book from the file system and stay open | done | `--self-test` and app mode; `File → Open…` |
+| Account tree: names, hierarchy | done | `model_ok=1`, tree renders from the engine |
+| Account tree: balance and period totals | done | `total_ok=1 period_ok=1`, formatted by the GTK tree's own helpers |
+| Account tree: hidden accounts, sorting | not done | GTK keeps "show hidden" in its view-state file; ADR 0013 forbids sharing that state, so this needs a gschema key or an explicit scope decision |
+| Reports: list, render, select, reload | done | `reports=63`, `pane_ok=1`, `Reports` menu |
+| Reports: more than one open at a time | not done | GTK opens a tab per report; the Qt shell has one pane |
+| Tabs | not done | needs a page model; it is also what "tabs" in the gate refers to |
+| Preferences read through `gnc-gsettings` | done | `prefs_ok=1`, `general/negative-in-red` |
+| Preferences UI | not done | deferred by decision until the rest is settled; must reuse existing keys |
+| Keyboard: tree navigation | partial | `QTreeView` defaults; not audited against GTK's keys |
+| Keyboard: tab switching | not done | follows tabs |
+| Keyboard: menu shortcuts | partial | Open, Quit, Reload only |
+| No shared mutable UI state (ADR 0013) | done | no Qt-side store; state file and KVP untouched |
+
+When every line reads done or has a named reason, the gate is a decision about
+the product, not about the code.
+
 ## Compatibility gate
 
 No phase exits without these, on every backend (XML, SQLite, PostgreSQL):
@@ -76,11 +102,11 @@ No phase exits without these, on every backend (XML, SQLite, PostgreSQL):
 
 ## Status
 
-Updated as work lands. Last update: 2026-11-06.
+Updated as work lands. Last update: 2026-11-07.
 
 | Item | State | Evidence |
 |---|---|---|
-| ADR set | Done | 0001–0005 accepted |
+| ADR set | Done | 0001–0016 accepted (0003 and 0005 superseded) |
 | `CMakePresets.json` | Done | `cmake --list-presets` on CMake 4.3.1 (Windows) and 3.28.3 (Linux); `linux-core` configures and builds `gnc-core-utils` |
 | vcpkg manifest | Done, Windows only | Resolves to qtbase 6.11.3 and qtwebengine 6.11.3 on Windows; requests nothing on Linux |
 | Event-loop bridge | Verified on Linux and Windows | 44/44/46 on Qt 6.4.2 + GLib 2.80 (Linux); 47/47/49 on Qt 6.9.1 + GLib 2.84.2 (Windows) |
@@ -91,10 +117,12 @@ Updated as work lands. Last update: 2026-11-06.
 | Qt loads a book through the engine | Done | `spike-engine-qt` opens `sample1.gnucash`, 104 accounts, exit 0; see [0009](adr/0009-backend-registration-in-qt.md) |
 | Report pane renders HTML | Done | Report engine produces the document, `QWebEngineView` renders it headlessly (241 bytes in, 246 out, ok=1) |
 | Qt tier in the build | Done | `-DWITH_QT=ON` builds `bin/gnucash-qt`; `-DWITH_QT=OFF` configures cleanly with zero `gnucash-qt` targets |
-| Qt CI smoke test | Written, unverified | `.github/workflows/qt-smoke.yml` builds with `WITH_QT=ON` on ubuntu-24.04 and runs `qt/run-smoke-test.sh`; the script passes locally, the workflow has never executed on GitHub |
+| Qt CI smoke test | Done | `.github/workflows/qt-smoke.yml` ran green on its first execution (run 42395385776, 3m21s, all six steps); it configures with `WITH_QT=ON` on ubuntu-24.04 and calls the same `qt/run-smoke-test.sh` a developer runs |
 | Engine events reach Qt | Done | A 20-rename burst from the GLib thread arrived in order, none lost, all on the Qt thread (`events=20/20 in_order=1`) |
 | Report for a loaded book | Done, via helper process | `gnucash-cli -R run` renders Trial Balance for `sample1.gnucash` (29,538 bytes) and the Qt pane displays it; in-process rendering still blocked by `gnc-report`→GTK |
-| Phase 2 read-only shell | Started | Target opens a book and stays open, with menus, an account tree (names, totals and period totals) and a report pane driven by the helper's own report list. Preferences are read through `gnc-gsettings`; still missing: a preferences UI and tabs |
+| Account tree totals | Done | `Total` and `Total (Period)` columns, formatted by the GTK tree's own app-utils helpers, refreshed from engine events including ancestors (`total_ok=1 period_ok=1`) |
+| Preferences read through `gnc-gsettings` | Done | `general/negative-in-red` drives the tree's negative colour; the self-test flips it both ways and restores it (`prefs_ok=1`) |
+| Phase 2 read-only shell | Started | Target opens a book and stays open, with menus, an account tree (names, totals and period totals) and a report pane driven by the helper's own report list. Preferences are read through `gnc-gsettings`; still missing: a preferences UI and tabs — see the gate checklist above |
 
 ## Risks
 
