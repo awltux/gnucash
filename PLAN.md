@@ -169,6 +169,7 @@ changes the on-disk format.
 | `WITH_QT=OFF` configures with zero Qt targets | ✅ observed |
 | Report **for a loaded book** | ✅ observed via helper process (see §9) |
 | Event **load** (20 renames, one burst, in order) | ✅ observed |
+| Engine thread ownership | ✅ ADR 0012 — GUI thread owns it; self-test identical after the worker thread was removed |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
 | CI coverage of the Qt target | ❌ none |
 

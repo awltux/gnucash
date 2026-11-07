@@ -35,3 +35,4 @@ One file per decision, numbered, immutable once accepted.
 | [0009](0009-backend-registration-in-qt.md) | A Qt process registers a backend by loading its module | Accepted |
 | [0010](0010-qt-tier-enters-the-build.md) | The Qt tier enters the build as an opt-in target | Accepted |
 | [0011](0011-register-decoupling.md) | The register needs decoupling before Phase 3, not a view port | Accepted |
+| [0012](0012-gui-thread-owns-the-engine.md) | The GUI thread owns the engine | Accepted |

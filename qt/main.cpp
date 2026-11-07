@@ -1,16 +1,16 @@
 // GnuCash Qt 6 shell — Phase 2 slice.
 //
-// Loads a book through libgnucash, shows its accounts, renders a report
-// document in a QWebEngineView, and runs an event-load self-test: N renaming
-// operations are performed on the pumped GLib context (ADR 0002) and every
-// resulting QofEvent must reach a Qt slot, on the Qt thread, in order.
+// Loads a book through libgnucash, shows its accounts, renders a report for
+// that book through gnucash-cli, and runs an event-load self-test: N renames
+// scheduled on the GLib context must all be observed, in order, on one thread.
 //
-// The single-event version only proved the bridge exists. This proves it
-// survives a burst, which is what a register will produce in practice.
+// ADR 0012: the GUI thread owns the engine, so the GLib context is iterated
+// here and engine events arrive on this thread; nothing is marshalled and no
+// worker thread exists. An earlier version pumped a worker thread and hopped
+// every event across a queue, which this design removes.
 
 #include <atomic>
 #include <cstdio>
-#include <thread>
 
 #include <dlfcn.h>
 
@@ -49,7 +49,6 @@ using InitFn = void (*)();
 
 constexpr int kRenames = 20;
 
-std::atomic<bool> g_stop{false};
 std::atomic<int> g_qt_event_count{0};
 std::atomic<bool> g_any_event_off_thread{false};
 
@@ -78,28 +77,20 @@ bool load_backend(const char* path)
     return true;
 }
 
-// Runs on the GLib thread. The name is sampled here, not in the Qt slot:
-// by the time the queued call executes the account has been renamed again.
+// Engine events arrive on the thread that made the change. Per ADR 0012 that is
+// the GUI thread, so nothing is marshalled and nothing is queued.
 void on_qof_event(QofInstance* entity, QofEventId type, gpointer, gpointer)
 {
     if (!(type & QOF_EVENT_MODIFY) || entity == nullptr)
         return;
 
+    if (QThread::currentThread() != QCoreApplication::instance()->thread())
+        g_any_event_off_thread.store(true);
+
     auto* account = reinterpret_cast<Account*>(entity);
     const char* name = xaccAccountGetName(account);
-    const QByteArray observed(name ? name : "");
-
-    QMetaObject::invokeMethod(
-        QCoreApplication::instance(),
-        [observed]() {
-            const bool on_qt_thread =
-                QThread::currentThread() == QCoreApplication::instance()->thread();
-            if (!on_qt_thread)
-                g_any_event_off_thread.store(true);
-            g_observed.append(observed);
-            g_qt_event_count.fetch_add(1);
-        },
-        Qt::QueuedConnection);
+    g_observed.append(QByteArray(name ? name : ""));
+    g_qt_event_count.fetch_add(1);
 }
 
 gboolean rename_burst(gpointer data)
@@ -264,25 +255,28 @@ int main(int argc, char** argv)
     window.setWindowTitle(QStringLiteral("GnuCash Qt shell"));
     window.resize(1200, 800);
 
-    GMainContext* context = g_main_context_new();
-    std::thread glib_thread([context, target]() {
-        g_main_context_push_thread_default(context);
+    // ADR 0012: the GUI thread owns the engine, so the GLib context is iterated
+    // here rather than on a worker. Engine calls and any sources they schedule
+    // therefore run on this thread, as they do under GTK's main loop.
+    GMainContext* context = g_main_context_default();
 
-        if (target != nullptr)
-        {
-            GSource* source = g_timeout_source_new(300);
-            g_source_set_callback(source, rename_burst, target, nullptr);
-            g_source_attach(source, context);
-            g_source_unref(source);
-        }
-
-        while (!g_stop.load())
-            g_main_context_iteration(context, TRUE);
-
-        g_main_context_pop_thread_default(context);
-    });
+    if (target != nullptr)
+    {
+        GSource* source = g_timeout_source_new(300);
+        g_source_set_callback(source, rename_burst, target, nullptr);
+        g_source_attach(source, context);
+        g_source_unref(source);
+    }
 
     qof_event_register_handler(on_qof_event, nullptr);
+
+    QTimer pump;
+    QObject::connect(&pump, &QTimer::timeout, [context]() {
+        while (g_main_context_iteration(context, FALSE))
+        {
+        }
+    });
+    pump.start(5);
 
     bool pane_loaded = false;
     QObject::connect(view, &QWebEngineView::loadFinished, [&](bool ok) {
@@ -334,10 +328,7 @@ int main(int argc, char** argv)
 
     const int status = app.exec();
 
-    g_stop.store(true);
-    g_main_context_wakeup(context);
-    glib_thread.join();
-    g_main_context_unref(context);
+    pump.stop();
     qof_session_end(session);
     return status;
 }

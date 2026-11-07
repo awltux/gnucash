@@ -21,6 +21,7 @@ read the ADRs.
 | [0009](adr/0009-backend-registration-in-qt.md) | A Qt process registers a backend by loading its module |
 | [0010](adr/0010-qt-tier-enters-the-build.md) | The Qt tier enters the build as an opt-in target |
 | [0011](adr/0011-register-decoupling.md) | The register needs decoupling before Phase 3, not a view port |
+| [0012](adr/0012-gui-thread-owns-the-engine.md) | The GUI thread owns the engine |
 
 ## Phases and exit gates
 
