@@ -1,5 +1,7 @@
 #include "account-model.h"
 
+#include <QBrush>
+#include <QColor>
 #include <QVariant>
 
 extern "C" {
@@ -29,6 +31,11 @@ Account* AccountModel::account_for(const QModelIndex& index) const
     if (!index.isValid())
         return root_;
     return static_cast<Account*>(index.internalPointer());
+}
+
+void AccountModel::set_negative_in_red(bool enabled)
+{
+    negative_in_red_ = enabled;
 }
 
 QList<Account*> AccountModel::children_of(Account* account) const
@@ -113,10 +120,11 @@ int AccountModel::columnCount(const QModelIndex&) const
     return 2;
 }
 
-QString AccountModel::total_for(Account* account) const
+AccountModel::Total AccountModel::total_for(Account* account) const
 {
+    Total total;
     if (account == nullptr)
-        return {};
+        return total;
 
     const auto cached = totals_.constFind(account);
     if (cached != totals_.constEnd())
@@ -128,7 +136,8 @@ QString AccountModel::total_for(Account* account) const
     gchar* text = gnc_ui_account_get_print_balance(
         xaccAccountGetPresentBalanceInCurrency, account, TRUE, &negative);
 
-    const QString total = QString::fromUtf8(text != nullptr ? text : "");
+    total.text = QString::fromUtf8(text != nullptr ? text : "");
+    total.negative = negative;
     g_free(text);
 
     totals_.insert(account, total);
@@ -149,7 +158,11 @@ QVariant AccountModel::data(const QModelIndex& index, int role) const
         switch (role)
         {
         case Qt::DisplayRole:
-            return total_for(account);
+            return total_for(account).text;
+        case Qt::ForegroundRole:
+            if (negative_in_red_ && total_for(account).negative)
+                return QBrush(QColor(0xc0, 0x00, 0x00));
+            return {};
         case Qt::TextAlignmentRole:
             return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
         default:

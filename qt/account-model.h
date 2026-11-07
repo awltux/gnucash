@@ -41,6 +41,12 @@ public:
     // The account behind an index, or nullptr for the invisible root.
     Account* account_for(const QModelIndex& index) const;
 
+    // Whether negative totals are drawn in red. The application reads the
+    // preference (ADR 0013 rule 1) and tells the model, which keeps policy out
+    // of the model.
+    void set_negative_in_red(bool enabled);
+    bool negative_in_red() const { return negative_in_red_; }
+
     // Engine notifications. Each emits the narrowest signal that is correct.
     void account_changed(Account* account);
     void account_added(Account* account);
@@ -69,12 +75,19 @@ private:
     // (including children, in the account's commodity). Cached because the
     // view asks for it once per painted cell; the cache is dropped on any
     // account event.
-    QString total_for(Account* account) const;
+    struct Total
+    {
+        QString text;
+        bool negative = false;
+    };
+
+    Total total_for(Account* account) const;
 
     Account* root_ = nullptr;
     mutable QHash<Account*, QList<Account*>> children_;
     mutable QHash<Account*, Account*> parents_;
-    mutable QHash<Account*, QString> totals_;
+    mutable QHash<Account*, Total> totals_;
+    bool negative_in_red_ = false;
     int inserted_ = 0;
     int removed_ = 0;
 };

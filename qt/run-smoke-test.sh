@@ -24,7 +24,12 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # preference lookup fails and reports produce nothing.
 [ -f "$SCHEMAS/gschemas.compiled" ] || glib-compile-schemas "$SCHEMAS" || fail "cannot compile schemas"
 
-out=$(QT_QPA_PLATFORM=offscreen \
+# The self-test flips a real preference and flips it back. Point GSettings at
+# the build tree's schemas (the prefix is not installed) and at the memory
+# backend, so a test run can never write the developer's settings.
+out=$(GSETTINGS_BACKEND=memory \
+      GSETTINGS_SCHEMA_DIR="$SCHEMAS" \
+      QT_QPA_PLATFORM=offscreen \
       QTWEBENGINE_DISABLE_SANDBOX=1 \
       QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
       LD_LIBRARY_PATH="$BUILD/lib:$BUILD/lib/gnucash" \
@@ -42,6 +47,7 @@ echo "$out" | grep -q "events=20/20 in_order=1 on_qt_thread=1" || fail "event lo
 echo "$out" | grep -q "pane_ok=1" || fail "report pane did not render"
 echo "$out" | grep -q "model_ok=1" || fail "account model did not follow an edit"
 echo "$out" | grep -q "total_ok=1" || fail "account totals did not follow a split"
+echo "$out" | grep -q "prefs_ok=1" || fail "the negative-in-red preference was not honoured"
 echo "$out" | grep -qE "reports=[1-9][0-9]*" || fail "no reports listed from the helper"
 echo "$out" | grep -qE "report bytes: [1-9][0-9]+" || fail "report was not generated"
 

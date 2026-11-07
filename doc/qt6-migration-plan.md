@@ -94,7 +94,7 @@ Updated as work lands. Last update: 2026-11-06.
 | Qt CI smoke test | Written, unverified | `.github/workflows/qt-smoke.yml` builds with `WITH_QT=ON` on ubuntu-24.04 and runs `qt/run-smoke-test.sh`; the script passes locally, the workflow has never executed on GitHub |
 | Engine events reach Qt | Done | A 20-rename burst from the GLib thread arrived in order, none lost, all on the Qt thread (`events=20/20 in_order=1`) |
 | Report for a loaded book | Done, via helper process | `gnucash-cli -R run` renders Trial Balance for `sample1.gnucash` (29,538 bytes) and the Qt pane displays it; in-process rendering still blocked by `gnc-report`→GTK |
-| Phase 2 read-only shell | Started | Target exists with an account tree and report pane; no menus, actions or editing |
+| Phase 2 read-only shell | Started | Target opens a book and stays open, with menus, an account tree (names and totals) and a report pane driven by the helper's own report list. Preferences are read through `gnc-gsettings`; still missing: a period column, a preferences UI and tabs |
 
 ## Risks
 

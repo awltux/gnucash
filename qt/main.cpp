@@ -44,6 +44,8 @@ extern "C" {
 #include <cashobjects.h>
 #include <gnc-date.h>
 #include <gnc-engine.h>
+#include <gnc-gsettings.h>
+#include <gnc-prefs.h>
 #include <qof.h>
 #include <qofbook.h>
 #include <qofevent.h>
@@ -299,6 +301,97 @@ TotalTest run_total_test(gncqt::AccountModel* model, QofBook* book, Account* roo
     return result;
 }
 
+// The tree's colouring follows a user preference, so the model is told the
+// current value whenever it changes; the model itself stays policy-free.
+struct PrefWatch
+{
+    gncqt::AccountModel* model = nullptr;
+    QTreeView* tree = nullptr;
+};
+
+void apply_negative_in_red(PrefWatch* watch)
+{
+    const bool enabled =
+        gnc_prefs_get_bool(GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED) != FALSE;
+
+    if (watch->model != nullptr)
+        watch->model->set_negative_in_red(enabled);
+    if (watch->tree != nullptr)
+        watch->tree->viewport()->update();
+}
+
+// Delivered on the thread that changed the preference, which is this one
+// (ADR 0012).
+void on_negative_in_red_changed(gpointer, gchar*, gpointer user_data)
+{
+    apply_negative_in_red(static_cast<PrefWatch*>(user_data));
+}
+
+// A negative total, and the preference that decides whether it is red. The
+// check that matters is the read-back: a preference nothing loaded a backend
+// for reads as FALSE and would look like it worked.
+bool run_prefs_test(gncqt::AccountModel* model, QofBook* book, Account* root,
+                    PrefWatch* watch)
+{
+    if (model == nullptr || book == nullptr || root == nullptr || watch == nullptr)
+        return false;
+
+    Account* donor = first_account_with_commodity(root, nullptr);
+    if (donor == nullptr)
+        return false;
+    gnc_commodity* commodity = xaccAccountGetCommodity(donor);
+
+    Account* negative =
+        make_holding_account(book, root, "Negative Total Test", commodity);
+    if (negative == nullptr)
+        return false;
+
+    Transaction* trans = xaccMallocTransaction(book);
+    xaccTransBeginEdit(trans);
+    xaccTransSetCurrency(trans, commodity);
+    xaccTransSetDatePostedSecsNormalized(trans, gnc_time64_get_today_start());
+
+    Split* debit = xaccMallocSplit(book);
+    xaccSplitSetAccount(debit, negative);
+    xaccSplitSetParent(debit, trans);
+    xaccSplitSetAmount(debit, gnc_numeric_create(-100, 1));
+    xaccSplitSetValue(debit, gnc_numeric_create(-100, 1));
+
+    Split* credit = xaccMallocSplit(book);
+    xaccSplitSetAccount(credit, donor);
+    xaccSplitSetParent(credit, trans);
+    xaccSplitSetAmount(credit, gnc_numeric_create(100, 1));
+    xaccSplitSetValue(credit, gnc_numeric_create(100, 1));
+
+    xaccTransCommitEdit(trans);
+
+    const QModelIndex total = find_account_index(model, QModelIndex(), negative,
+                                                 gncqt::AccountModel::TotalColumn);
+    if (!total.isValid())
+        return false;
+
+    const bool original =
+        gnc_prefs_get_bool(GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED) != FALSE;
+
+    gnc_gsettings_set_bool(GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED, TRUE);
+    const bool reads_back_on =
+        gnc_prefs_get_bool(GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED) != FALSE;
+    apply_negative_in_red(watch);
+    const bool red_when_on = model->data(total, Qt::ForegroundRole).isValid();
+
+    gnc_gsettings_set_bool(GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED, FALSE);
+    const bool reads_back_off =
+        gnc_prefs_get_bool(GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED) == FALSE;
+    apply_negative_in_red(watch);
+    const bool plain_when_off = !model->data(total, Qt::ForegroundRole).isValid();
+
+    // Leave the user's setting exactly as it was.
+    gnc_gsettings_set_bool(GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED, original);
+    apply_negative_in_red(watch);
+
+    return reads_back_on && reads_back_off && red_when_on && plain_when_off;
+}
+
 gboolean rename_burst(gpointer data)
 {
     auto* account = static_cast<Account*>(data);
@@ -385,6 +478,10 @@ int main(int argc, char** argv)
 
     qof_init();
     cashobjects_register();
+    // Preferences are the shared GSettings store (ADR 0013), but the accessors
+    // in core-utils answer FALSE until a backend is loaded; they do not reach
+    // GSettings on their own.
+    gnc_gsettings_load_backend();
     if (!backend_path.isEmpty() && !load_backend(backend_path))
         return 1;
 
@@ -398,6 +495,13 @@ int main(int argc, char** argv)
                                          QHeaderView::Stretch);
     tree->header()->setSectionResizeMode(gncqt::AccountModel::TotalColumn,
                                          QHeaderView::ResizeToContents);
+
+    // The preference decides the colour; the model only carries the flag.
+    PrefWatch prefs{model, tree};
+    apply_negative_in_red(&prefs);
+    const gulong pref_cb = gnc_prefs_register_cb(
+        GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED,
+        reinterpret_cast<gpointer>(&on_negative_in_red_changed), &prefs);
 
     auto* view = new QWebEngineView(&window);
 
@@ -530,11 +634,13 @@ int main(int argc, char** argv)
 
     EditTest edit;
     TotalTest total;
+    bool prefs_ok = false;
     if (session.session != nullptr && session.root != nullptr)
     {
         QofBook* book = qof_session_get_book(session.session);
         edit = run_model_edit_test(model, book, session.root);
         total = run_total_test(model, book, session.root);
+        prefs_ok = run_prefs_test(model, book, session.root, &prefs) && pref_cb != 0;
     }
 
     Account* target = nullptr;
@@ -575,16 +681,18 @@ int main(int argc, char** argv)
         }
 
         std::printf("accounts=%d top_level=%d pane_ok=%d events=%d/%d in_order=%d "
-                    "on_qt_thread=%d model_ok=%d total_ok=%d inserts=%d removes=%d "
-                    "reports=%d\n",
+                    "on_qt_thread=%d model_ok=%d total_ok=%d prefs_ok=%d "
+                    "inserts=%d removes=%d reports=%d\n",
                     session.descendant_count, top_level,
                     pane_loaded ? 1 : 0, g_event_count.load(), kRenames,
                     in_order ? 1 : 0, g_event_off_thread.load() ? 0 : 1,
-                    edit.ok ? 1 : 0, total.ok ? 1 : 0, edit.inserts, edit.removes,
+                    edit.ok ? 1 : 0, total.ok ? 1 : 0, prefs_ok ? 1 : 0,
+                    edit.inserts, edit.removes,
                     static_cast<int>(report_names.size()));
 
         app.exit(events_done && in_order && pane_loaded && edit.ok && total.ok
-                         && !g_event_off_thread.load() && !report_names.isEmpty()
+                         && prefs_ok && !g_event_off_thread.load()
+                         && !report_names.isEmpty()
                      ? 0
                      : 1);
     });

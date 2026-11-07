@@ -180,9 +180,10 @@ changes the on-disk format.
 | Report **for a loaded book** | ✅ observed via helper process (see §9) |
 | Event **load** (20 renames, one burst, in order) | ✅ observed |
 | Engine thread ownership | ✅ ADR 0012 — GUI thread owns it; self-test identical after the worker thread was removed |
-| Coexistence rules (GSettings, helper reports, no shared UI state) | ✅ ADR 0013 — prospective; the preferences rule has not been exercised by a real settings UI |
+| Coexistence rules (GSettings, helper reports, no shared UI state) | ✅ ADR 0013 — rule 1 is now exercised for real: the Qt tree reads `general/negative-in-red` through `gnc-gsettings` (`prefs_ok=1`) and there is still no Qt-only preference store |
 | Account tree model | ✅ implemented and verified under edits — insert/remove signals fire (`model_ok=1 inserts=1 removes=1`) |
 | Account tree totals | ✅ observed: a `Total` column formatted by app-utils' `gnc_ui_account_get_print_balance` (the GTK tree's helper), refreshed from the account-modify events the engine emits when splits are added or removed, including ancestors (`total_ok=1`) |
+| Negative totals follow the preference | ✅ observed: red only when `general/negative-in-red` is set; the self-test flips it both ways, checks the read-back and the colour role, then restores it (`prefs_ok=1`) |
 | Report path | ✅ ADR 0015 — out-of-process through Phase 5; the seam is `qt/report-runner.*` |
 | App mode | ✅ `gnucash-qt <book>` opens and stays open; `--self-test` is the CI harness |
 | Report selector | ✅ 63 reports listed from `gnucash-cli -R list` at startup; `Reports` menu plus `View → Reload report` |
@@ -223,9 +224,9 @@ bash ~/src/gnucash/qt/run-smoke-test.sh ~/build/ext4-qt ~/src/gnucash
 ```
 
 Expected: `accounts=104 top_level=5 pane_ok=1 events=20/20 in_order=1
-on_qt_thread=1 model_ok=1 total_ok=1 inserts=1 removes=1 reports=63` and
-`qt smoke test passed`, exit 0. Anything else means the tree, the environment,
-or the code moved.
+on_qt_thread=1 model_ok=1 total_ok=1 prefs_ok=1 inserts=1 removes=1 reports=63`
+and `qt smoke test passed`, exit 0. Anything else means the tree, the
+environment, or the code moved.
 
 The older hand-rolled recipe (a standalone `make-html.scm` document, then
 `gnucash-qt <backend> <book> <html>`) still works but tests less: it renders a
@@ -282,6 +283,14 @@ document that is not the loaded book. Prefer the script.
   "test-register" in load path`: no `test-*.scm` is copied into the build tree
   at all (a `find` returns zero). Pre-existing and independent of code changes;
   only the C tests run there.
+- **`gnc_prefs_get_bool` returns FALSE until a backend is loaded.** It does
+  `if (prefsbackend && …) return …; else return FALSE;` and never reaches
+  GSettings itself, so a first preference read looks like a working "off"
+  switch. Call `gnc_gsettings_load_backend()` (app-utils) once at startup —
+  `gnc_prefs_init()` also loads it but additionally rewrites file-retention
+  preferences. In tests set `GSETTINGS_BACKEND=memory` and
+  `GSETTINGS_SCHEMA_DIR=<build>/share/glib-2.0/schemas` so the read is real and
+  nothing is written to the developer's dconf.
 - **The Qt smoke test can fail transiently.** `pane_ok=0` plus "No suitable
   graphics backend found" appeared once and then passed on an unchanged binary.
   Re-run before blaming a change.
@@ -328,18 +337,18 @@ All three are done or decided:
 
 What is next, in order:
 
-1. **Phase 3a continues, with `ledger-core`**: it is 19,450 lines, 14 of 28
-   files use GTK, five public headers expose `GtkWidget`, and it builds eight
-   message dialogs and runs two `gtk_dialog_run` loops. That is the layer a Qt
-   view would consume, so it is the real 3a remainder; the
-   `doc/register-core-audit.md` records the measurements and the revised 4–8
-   week figure. Start by replacing the
+1. **Phase 2 continues to its gate.** Totals and one real preference are in
+   (`total_ok=1 prefs_ok=1`). For "browsing parity" the shell still needs a
+   period column, a preferences UI (which needs its own design: ADR 0013 says a
+   Qt preference must be a gschema both tiers see) and tabs. The gate at
+   `doc/qt6-migration-plan.md:43` — "if read-only browsing is not at parity,
+   stop and ship the GTK 4 path" — follows that, not a register view.
+2. **Then Phase 3a's remainder, `ledger-core`**: 19,450 lines, 14 of 28 files
+   using GTK, five public headers exposing `GtkWidget`, eight message dialogs
+   and two `gtk_dialog_run` loops. The `doc/register-core-audit.md` records the
+   measurements and the 4–8 week figure. Start by replacing the
    `GtkWidget *parent` API with an opaque handle and the dialogs with returned
    errors, the same shape as the cell slice.
-2. **Phase 2 continues**: more actions (View menu, report selection), an account
-   tree that shows balances, and preferences read through `gnc-gsettings`
-   (ADR 0013). The shell now opens a book and stays open; the next increment is
-   parity for browsing.
 3. **Prove the model under edits**: the first cut handles renames via
    `dataChanged`; insertions and deletions (`beginInsertRows`) are tested by the
    self-test (`inserts=1 removes=1`) but `parent_of()` no longer asks the engine,
