@@ -74,7 +74,7 @@ line as **done** or **deliberately out of scope, with a reason**. Nothing is
 | Open a book from the file system and stay open | done | `--self-test` and app mode; `File → Open…` |
 | Account tree: names, hierarchy | done | `model_ok=1`, tree renders from the engine |
 | Account tree: balance and period totals | done | `total_ok=1 period_ok=1`, formatted by the GTK tree's own helpers |
-| Account tree: hidden accounts, sorting | not done | GTK keeps "show hidden" in its view-state file; ADR 0013 forbids sharing that state, so this needs a gschema key or an explicit scope decision |
+| Account tree: hidden accounts, sorting | decided, not built | [ADR 0017](adr/0017-show-hidden-accounts.md) (Proposed) moves the "show hidden" flag from GTK's view-state file to a shared GSettings key; sorting stays out of scope until the register view exists |
 | Reports: list, render, select, reload | done | `reports=63`, `pane_ok=1`, `Reports` menu |
 | Reports: more than one open at a time | done | one tab per report, each with its own view (`tabs_ok=1`) |
 | Tabs | done | `Accounts` page plus a page per report; `Ctrl+Tab` / `Ctrl+Shift+Tab` |
