@@ -261,8 +261,14 @@ exit 0. Anything else means the tree, the environment, or the code moved.
    `gnucash-cli --report` already takes) and load the HTML into the pane — real
    but two processes; (b) decouple the report layer from GTK first, which is the
    direction of ADR 0004 and the more valuable work.
-3. **Register model note.** Decide `QAbstractItemModel` mapping for split rows
-   before Phase 3 starts.
+3. **Register model note — reframed, not written.** The register is not a row
+   model, so the "map rows onto `QAbstractItemModel`" framing was wrong.
+   `gnucash/register/register-core` is a **virtual-cell** architecture
+   (`cellblock`, `cell-factory`, `basiccell`), `ledger-core` holds the
+   split-register logic on top of it, and `register-gnome` renders it. There is
+   no row-type enum to translate. Phase 3's real question is whether to keep a
+   cell matrix painted by a custom `QWidget`, or to map *cell blocks* onto an
+   item model. Survey `register-core` before writing ADR 0011.
 
 Deferred deliberately: Windows CI for the Qt tier — it would protect a 250-line
 stub while the real Windows work is years away (ADR 0010).
