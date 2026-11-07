@@ -136,6 +136,28 @@ send_response (GSocketConnection* connection, const char* status,
                                nullptr, nullptr);
 }
 
+std::string
+url_decode (const std::string& in)
+{
+    std::string out;
+    for (size_t i = 0; i < in.size(); ++i)
+    {
+        if (in[i] == '%' && i + 2 < in.size())
+        {
+            const int high = g_ascii_xdigit_value (in[i + 1]);
+            const int low = g_ascii_xdigit_value (in[i + 2]);
+            if (high >= 0 && low >= 0)
+            {
+                out += static_cast<char> (high * 16 + low);
+                i += 2;
+                continue;
+            }
+        }
+        out += in[i] == '+' ? ' ' : in[i];
+    }
+    return out;
+}
+
 /* Reads until the end of the request headers. Returns the path, or an empty
  * string if the request is malformed. */
 std::string
@@ -224,6 +246,36 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     {
         send_response (connection, "200 OK", "application/json",
                        account_json (g_server.root));
+    }
+    else if (route.compare (0, 7, "report/") == 0)
+    {
+        /* Rendered here, in this process: the report engine is toolkit-free,
+         * so there is no helper process to spawn and no GTK to avoid. */
+        const std::string name = url_decode (route.substr (7));
+        SCM get_id = scm_c_eval_string ("gnc:cmdline-get-report-id");
+        SCM id = scm_call_1 (get_id, scm_from_utf8_string (name.c_str ()));
+
+        if (scm_is_false (id))
+        {
+            send_response (connection, "404 Not Found", "text/plain",
+                           "no such report\n");
+            return TRUE;
+        }
+
+        char* html = nullptr;
+        char* errmsg = nullptr;
+        if (gnc_run_report_with_error_handling (scm_to_int (id), &html, &errmsg))
+        {
+            send_response (connection, "200 OK", "text/html; charset=utf-8",
+                           html != nullptr ? html : "");
+            g_free (html);
+        }
+        else
+        {
+            send_response (connection, "500 Internal Server Error", "text/plain",
+                           errmsg != nullptr ? errmsg : "report failed\n");
+            g_free (errmsg);
+        }
     }
     else if (route.empty() || route == "index.html")
     {

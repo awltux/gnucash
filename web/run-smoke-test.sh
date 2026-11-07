@@ -62,6 +62,12 @@ accounts=$(curl -fsS "${URL}api/accounts") || fail "GET api/accounts failed"
 echo "$accounts" | grep -q '"name"' || fail "account tree has no names"
 echo "$accounts" | grep -q '"total"' || fail "account tree has no totals"
 
+# Reports are rendered in this process, not by a helper.
+report=$(curl -fsS "${URL}report/Trial%20Balance") || { cat "$LOG" >&2; fail "GET report failed"; }
+echo "$report" | grep -q "<html" || fail "report is not HTML"
+[ "${#report}" -gt 5000 ] || fail "report looks empty (${#report} bytes)"
+echo "report bytes: ${#report}"
+
 # Without the token the same path must not answer.
 PORT=$(echo "$URL" | sed -E 's|.*:([0-9]+)/.*|\1|')
 tokenless=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/book")
