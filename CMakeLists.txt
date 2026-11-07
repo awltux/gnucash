@@ -957,6 +957,7 @@ set(DIST_FILE "${PACKAGE_PREFIX}.tar")
 
 set(toplvl_DIST_local ${gnucash_DOCS}
     AGENTS.md
+    PLAN.md
     doxygen.cfg.in
     doxygen_main_page.c
     CMakeLists.txt

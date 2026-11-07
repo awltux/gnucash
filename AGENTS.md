@@ -13,6 +13,12 @@ trusting them.
 Human-facing docs: `README`, `README.git`, `README.dependencies`, `HACKING`,
 `cmake/README_CMAKE.txt`, and <https://wiki.gnucash.org>.
 
+**Working notes: read `PLAN.md` before continuing Qt 6 migration work.** It
+carries the current state (branch, build trees, what is verified versus merely
+running) and the environment traps that have already cost time. Decisions live
+in `doc/adr/` and the durable phase plan in `doc/qt6-migration-plan.md`; PLAN.md
+records state that moves faster than either.
+
 ---
 
 ## 0. Start here (TL;DR)
