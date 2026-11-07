@@ -1,0 +1,59 @@
+# Builds the Qt 6 tier and runs its headless smoke test.
+#
+# This is the only CI job that touches WITH_QT; the default GTK build is
+# covered by ci-tests.yml and must stay independent of Qt.
+#
+# ubuntu-24.04 rather than 22.04 on purpose: ADR 0007 sets a Qt 6.4 floor and
+# 22.04 ships 6.2.4.
+#
+# The test logic lives in qt/run-smoke-test.sh so that CI runs exactly what a
+# developer runs; this file only installs, builds and calls it.
+
+name: Qt tier smoke test
+
+on:
+  push:
+    branches: [stable, 'phase0/**']
+  pull_request:
+    paths:
+      - 'qt/**'
+      - 'libgnucash/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/qt-smoke.yml'
+
+jobs:
+  qt-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build gettext libxslt-dev xsltproc \
+            libboost-all-dev libgtk-3-dev guile-3.0-dev \
+            libgwengui-gtk3-dev libdbi-dev libdbd-sqlite3 \
+            libwebkit2gtk-4.1-dev libgtest-dev \
+            qt6-base-dev qt6-webengine-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DWITH_QT=ON \
+            -DWITH_PYTHON=OFF \
+            -DWITH_AQBANKING=OFF \
+            -DWITH_OFX=OFF
+
+      - name: Build the Qt tier and its report dependencies
+        run: |
+          cmake --build build -j"$(nproc)" \
+            --target gnucash-qt gnucash-cli \
+                     scm-reports scm-reports-standard scm-report-stylesheets
+
+      - name: Smoke test
+        run: |
+          bash qt/run-smoke-test.sh "$PWD/build" "$PWD"

@@ -171,7 +171,7 @@ changes the on-disk format.
 | Event **load** (20 renames, one burst, in order) | ✅ observed |
 | Engine thread ownership | ✅ ADR 0012 — GUI thread owns it; self-test identical after the worker thread was removed |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
-| CI coverage of the Qt target | ❌ none |
+| CI coverage of the Qt target | ⚠️ job written (`qt-smoke.yml`), never run on GitHub |
 
 ## 6. How to re-verify, from scratch
 

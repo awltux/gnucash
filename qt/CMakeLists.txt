@@ -25,4 +25,4 @@ target_compile_definitions(gnucash-qt PRIVATE -DG_LOG_DOMAIN=\"gnc.qt\")
 install(TARGETS gnucash-qt
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-set_dist_list(qt_DIST CMakeLists.txt ${qt_gnucash_SOURCES})
+set_dist_list(qt_DIST CMakeLists.txt run-smoke-test.sh ${qt_gnucash_SOURCES})
