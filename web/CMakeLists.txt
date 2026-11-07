@@ -40,5 +40,6 @@ install(TARGETS gnc-webd
 install(DIRECTORY ui/
   DESTINATION ${CMAKE_INSTALL_DATADIR}/gnucash/webui)
 
-set(web_DIST_local CMakeLists.txt run-smoke-test.sh ${webd_SOURCES})
-set(web_DIST ${web_DIST_local} PARENT_SCOPE)
+# The distribution list lives at the top level: the web tier ships even when
+# WITH_WEBUI is off, so the tarball is complete either way.
+

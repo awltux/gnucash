@@ -942,6 +942,13 @@ endif()
 if (WITH_WEBUI)
   add_subdirectory (web)
 endif()
+# The web tier ships whether or not it is configured; paths are relative to
+# the source root because this list is assembled here, not in web/.
+set(web_DIST
+  web/CMakeLists.txt
+  web/run-smoke-test.sh
+  web/server/main.cpp
+  web/ui/index.html)
 add_subdirectory (bindings)
 add_subdirectory (test-templates)
 add_subdirectory (util)
@@ -975,6 +982,7 @@ set(toplvl_DIST_local ${gnucash_DOCS}
     doxygen.cfg.in
     doxygen_main_page.c
     CMakeLists.txt
+    WEBUI.md
     README)
 
 
@@ -991,7 +999,8 @@ set_local_dist(toplvl_DIST ${toplvl_DIST_local})
 
 set(ALL_DIST ${bindings_DIST} ${borrowed_DIST} ${cmake_DIST} ${common_DIST} ${data_DIST}
     ${doc_DIST} ${gnucash_DIST} ${libgnucash_DIST} ${packaging_DIST}
-    ${po_DIST} ${report_DIST} ${test_templates_DIST} ${toplvl_DIST} ${util_DIST} Info.plist)
+    ${po_DIST} ${report_DIST} ${test_templates_DIST} ${toplvl_DIST} ${util_DIST}
+    ${web_DIST} Info.plist)
 
 
 if (BUILDING_FROM_VCS)

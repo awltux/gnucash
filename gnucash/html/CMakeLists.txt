@@ -46,7 +46,8 @@ gnc_add_scheme_targets(scm-gnc-html
     DEPENDS "${GUILE_DEPENDS}"
     MAKE_LINKS)
 
-set_dist_list(html_DIST CMakeLists.txt ${html_HEADERS} ${html_SOURCES} gnc-html.i ${html_EXTRA_DIST} html.scm)
+set_dist_list(html_DIST CMakeLists.txt ${html_HEADERS} ${html_SOURCES}
+  gnc-html.i gnc-html-url.h gnc-html-url.cpp ${html_EXTRA_DIST} html.scm)
 
 add_library (gnc-html
   ${html_SOURCES}
