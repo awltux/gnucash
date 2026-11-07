@@ -1,0 +1,62 @@
+name: webui
+# The web tier is the one build that claims to need no toolkit at all, so it
+# gets its own job: configure with WITH_GNUCASH=OFF, build only the server and
+# the report engine, then run the server's smoke test.
+on:
+  push:
+    branches: ['webui/**']
+  pull_request:
+    branches: ['webui/**']
+permissions: {}
+
+jobs:
+  webd:
+    runs-on: ubuntu-24.04
+    name: Toolkit-free server
+    env:
+      TZ: America/Los_Angeles
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install dependencies (no GTK, no WebKit)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build gettext swig \
+            libglib2.0-dev guile-3.0-dev guile-json \
+            libboost-dev libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DWITH_GNUCASH=OFF \
+            -DWITH_REPORT=ON \
+            -DWITH_WEBUI=ON \
+            -DWITH_PYTHON=OFF \
+            -DWITH_AQBANKING=OFF \
+            -DWITH_OFX=OFF \
+            -DWITH_SQL=OFF
+
+      - name: Check that no toolkit was requested
+        run: |
+          if grep -qiE 'gtk\+-3|webkit' build/CMakeCache.txt; then
+            echo "::error::the toolkit-free build asked for GTK or WebKit"
+            exit 1
+          fi
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)" --target gnc-webd
+
+      - name: Smoke test
+        run: bash web/run-smoke-test.sh "$PWD/build" "$PWD"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: webd-logs
+          path: |
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeCache.txt
