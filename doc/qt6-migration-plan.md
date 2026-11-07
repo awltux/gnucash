@@ -71,7 +71,8 @@ Updated as work lands. Last update: 2026-11-06.
 | Qt loads a book through the engine | Done | `spike-engine-qt` opens `sample1.gnucash`, 104 accounts, exit 0; see [0009](adr/0009-backend-registration-in-qt.md) |
 | Report pane renders HTML | Done | Report engine produces the document, `QWebEngineView` renders it headlessly (241 bytes in, 246 out, ok=1) |
 | Qt tier in the build | Done | `-DWITH_QT=ON` builds `bin/gnucash-qt`; `-DWITH_QT=OFF` configures cleanly with zero `gnucash-qt` targets |
-| Engine events reach Qt | Done | Rename on the GLib thread observed in a Qt slot (`event_on_qt_thread=1`), exit 0 |
+| Engine events reach Qt | Done | A 20-rename burst from the GLib thread arrived in order, none lost, all on the Qt thread (`events=20/20 in_order=1`) |
+| Report for a loaded book | Blocked | `gnc-report` links GTK3 via `gnc-html`, so in-process rendering would pull GTK into the Qt app; needs a helper process or a decoupled report layer |
 | Phase 2 read-only shell | Started | Target exists with an account tree and report pane; no menus, actions or editing |
 
 ## Risks

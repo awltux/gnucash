@@ -1,20 +1,21 @@
-// GnuCash Qt 6 shell — Phase 2 first slice.
+// GnuCash Qt 6 shell — Phase 2 slice.
 //
-// What this is: a real build target that loads a book through libgnucash,
-// shows its accounts, and renders a report document in a QWebEngineView.
+// Loads a book through libgnucash, shows its accounts, renders a report
+// document in a QWebEngineView, and runs an event-load self-test: N renaming
+// operations are performed on the pumped GLib context (ADR 0002) and every
+// resulting QofEvent must reach a Qt slot, on the Qt thread, in order.
 //
-// What it proves beyond the earlier spikes: an engine change made on the GLib
-// side reaches a Qt slot *on the Qt thread*, through the pumped context from
-// ADR 0002. That is the structural unknown Phase 2 depends on.
+// The single-event version only proved the bridge exists. This proves it
+// survives a burst, which is what a register will produce in practice.
 
 #include <atomic>
 #include <cstdio>
-#include <cstring>
 #include <thread>
 
 #include <dlfcn.h>
 
 #include <QApplication>
+#include <QByteArray>
 #include <QFile>
 #include <QMainWindow>
 #include <QSplitter>
@@ -23,6 +24,7 @@
 #include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QVector>
 #include <QWebEnginePage>
 #include <QWebEngineView>
 
@@ -41,11 +43,14 @@ namespace
 
 using InitFn = void (*)();
 
+constexpr int kRenames = 20;
+
 std::atomic<bool> g_stop{false};
-std::atomic<bool> g_qt_saw_event{false};
 std::atomic<int> g_qt_event_count{0};
-std::atomic<bool> g_event_on_qt_thread{false};
-QByteArray g_observed_name;
+std::atomic<bool> g_any_event_off_thread{false};
+
+// Written and read only on the Qt thread; the handler posts into it.
+QVector<QByteArray> g_observed;
 
 bool load_backend(const char* path)
 {
@@ -69,31 +74,38 @@ bool load_backend(const char* path)
     return true;
 }
 
-// Runs on whichever thread emits the engine event — here, the GLib thread.
+// Runs on the GLib thread. The name is sampled here, not in the Qt slot:
+// by the time the queued call executes the account has been renamed again.
 void on_qof_event(QofInstance* entity, QofEventId type, gpointer, gpointer)
 {
     if (!(type & QOF_EVENT_MODIFY) || entity == nullptr)
         return;
 
+    auto* account = reinterpret_cast<Account*>(entity);
+    const char* name = xaccAccountGetName(account);
+    const QByteArray observed(name ? name : "");
+
     QMetaObject::invokeMethod(
         QCoreApplication::instance(),
-        [entity]() {
-            g_qt_saw_event.store(true);
+        [observed]() {
+            const bool on_qt_thread =
+                QThread::currentThread() == QCoreApplication::instance()->thread();
+            if (!on_qt_thread)
+                g_any_event_off_thread.store(true);
+            g_observed.append(observed);
             g_qt_event_count.fetch_add(1);
-            g_event_on_qt_thread.store(
-                QThread::currentThread() == QCoreApplication::instance()->thread());
-
-            auto* account = reinterpret_cast<Account*>(entity);
-            const char* name = xaccAccountGetName(account);
-            g_observed_name = QByteArray(name ? name : "");
         },
         Qt::QueuedConnection);
 }
 
-gboolean rename_into_glib(gpointer data)
+gboolean rename_burst(gpointer data)
 {
     auto* account = static_cast<Account*>(data);
-    xaccAccountSetName(account, "Renamed by the GLib thread");
+    for (int i = 0; i < kRenames; ++i)
+    {
+        const QByteArray name = QByteArray("Renamed-") + QByteArray::number(i);
+        xaccAccountSetName(account, name.constData());
+    }
     return G_SOURCE_REMOVE;
 }
 
@@ -135,7 +147,6 @@ int main(int argc, char** argv)
     Account* root = gnc_book_get_root_account(loaded);
     const int total = root ? gnc_account_n_descendants(root) : 0;
 
-    // The account the GLib thread will rename.
     GList* children = root ? gnc_account_get_children(root) : nullptr;
     Account* target = children ? static_cast<Account*>(children->data) : nullptr;
 
@@ -162,7 +173,6 @@ int main(int argc, char** argv)
     const QByteArray html = report.readAll();
 
     auto* view = new QWebEngineView(&window);
-
     auto* splitter = new QSplitter(&window);
     splitter->addWidget(accounts);
     splitter->addWidget(view);
@@ -170,17 +180,16 @@ int main(int argc, char** argv)
     window.setWindowTitle(QStringLiteral("GnuCash Qt shell"));
     window.resize(1200, 800);
 
-    // The pumped context from ADR 0002, on its own thread.
     GMainContext* context = g_main_context_new();
     std::thread glib_thread([context, target]() {
         g_main_context_push_thread_default(context);
 
         if (target != nullptr)
         {
-            GSource* rename_source = g_timeout_source_new(300);
-            g_source_set_callback(rename_source, rename_into_glib, target, nullptr);
-            g_source_attach(rename_source, context);
-            g_source_unref(rename_source);
+            GSource* source = g_timeout_source_new(300);
+            g_source_set_callback(source, rename_burst, target, nullptr);
+            g_source_attach(source, context);
+            g_source_unref(source);
         }
 
         while (!g_stop.load())
@@ -196,24 +205,42 @@ int main(int argc, char** argv)
         pane_loaded = ok;
     });
 
-    // Poll for the crossed event; quit as soon as it arrives or give up.
     QTimer poll;
     int ticks = 0;
     QObject::connect(&poll, &QTimer::timeout, [&]() {
-        if (g_qt_saw_event.load() || ++ticks > 100)
+        const bool events_done = g_qt_event_count.load() >= kRenames;
+        // Wait for the pane as well: WebEngine loads asynchronously and takes
+        // longer than a 300 ms rename burst.
+        if ((!events_done || !pane_loaded) && ++ticks < 200)
+            return;
+
+        bool in_order = (g_observed.size() == kRenames);
+        if (in_order)
         {
-            std::printf("accounts=%d top_level=%d pane_ok=%d event_on_qt_thread=%d "
-                        "events=%d renamed_to=%s\n",
-                        total, top_level, pane_loaded ? 1 : 0,
-                        g_event_on_qt_thread.load() ? 1 : 0,
-                        g_qt_event_count.load(), g_observed_name.constData());
-            app.exit(g_qt_saw_event.load() && g_event_on_qt_thread.load() && pane_loaded
-                         ? 0 : 1);
+            for (int i = 0; i < kRenames; ++i)
+            {
+                const QByteArray expected =
+                    QByteArray("Renamed-") + QByteArray::number(i);
+                if (g_observed.at(i) != expected)
+                {
+                    in_order = false;
+                    break;
+                }
+            }
         }
+
+        std::printf("accounts=%d top_level=%d pane_ok=%d events=%d/%d in_order=%d "
+                    "on_qt_thread=%d\n",
+                    total, top_level, pane_loaded ? 1 : 0,
+                    g_qt_event_count.load(), kRenames, in_order ? 1 : 0,
+                    g_any_event_off_thread.load() ? 0 : 1);
+
+        app.exit(events_done && in_order && pane_loaded
+                     && !g_any_event_off_thread.load() ? 0 : 1);
     });
     poll.start(50);
 
-    QTimer::singleShot(20000, &app, [&]() {
+    QTimer::singleShot(30000, &app, [&]() {
         std::fprintf(stderr, "timeout\n");
         app.exit(3);
     });

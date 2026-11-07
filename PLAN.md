@@ -167,8 +167,8 @@ changes the on-disk format.
 | Report pane renders report-engine HTML | ✅ observed |
 | `WITH_QT=ON` builds and the self-test passes | ✅ observed |
 | `WITH_QT=OFF` configures with zero Qt targets | ✅ observed |
-| Report **for a loaded book** | ⚠️ untested |
-| Event **load** (many events, ordering, no drops) | ⚠️ untested |
+| Report **for a loaded book** | ⚠️ blocked — see §9, `gnc-report` links GTK3 |
+| Event **load** (20 renames, one burst, in order) | ✅ observed |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
 | CI coverage of the Qt target | ❌ none |
 
@@ -228,6 +228,10 @@ exit 0. Anything else means the tree, the environment, or the code moved.
   script file; every inline attempt failed.
 - **`gnc_account_get_name` does not exist** — the C API still uses
   `xaccAccountGetName`, and the compiler suggests `gnc_account_get_type`.
+- **Editing a file on the Windows side does not reliably invalidate a WSL build.**
+  A `cmake --build` reported success without recompiling `qt/main.cpp`, and the
+  binary kept an older timestamp. `rm` the object (or `touch` the source) and
+  rebuild; do not trust "build exit=0" alone when the edit came from Windows.
 - `.gitattributes` has no `*.md` rule, so Markdown writes warn about CRLF.
   Harmless; blobs are LF.
 
@@ -245,12 +249,18 @@ exit 0. Anything else means the tree, the environment, or the code moved.
   `E:\gnc-*-spike*`, `E:\gnc-vcpkg-*.log`. Nothing in the repo refers to them.
 - C: had ~19 GB free; E: ~100 GB. Keep Windows build output on E:.
 
-## 9. Next three steps
+## 9. Next steps
 
-1. **Report for the loaded book.** Bind the Guile session to the book, render by
-   report name. Last unproven piece of Phase 1.
-2. **Event load test.** N modifications from the GLib thread; assert the Qt slot
-   sees all, in order, no deadlock. Cheap, and architectural.
+1. ~~**Event load test.**~~ ✅ done: 20 renames in one burst from the GLib thread,
+   all 20 delivered to the Qt slot, in order, none lost, exit 0.
+2. **Report for the loaded book — blocked on architecture.** `gnc-report` links
+   `PkgConfig::GTK3` (`gnucash/report/CMakeLists.txt`), and it depends on
+   `gnc-html`, which is where WebKit lives. Rendering a report in-process would
+   therefore drag GTK into the Qt application — the exact coupling the migration
+   exists to remove. Two ways forward: (a) render in a helper process (the path
+   `gnucash-cli --report` already takes) and load the HTML into the pane — real
+   but two processes; (b) decouple the report layer from GTK first, which is the
+   direction of ADR 0004 and the more valuable work.
 3. **Register model note.** Decide `QAbstractItemModel` mapping for split rows
    before Phase 3 starts.
 
@@ -259,10 +269,11 @@ stub while the real Windows work is years away (ADR 0010).
 
 ## 10. Assumptions that could be wrong
 
-- That the engine's event model is safe to drive from a non-GUI thread. The
-  spike renames an account from the GLib thread and it works, but that is one
-  event, not a workload. If the engine assumes the main thread, the whole
-  pumped-context design (ADR 0002) needs revisiting.
+- ~~That the engine's event model is safe to drive from a non-GUI thread.~~ Now
+  tested with a 20-event burst from the GLib thread: all delivered, in order, on
+  the Qt thread. Still not tested under editing load with a live session (undo,
+  transaction commit, dependent objects), which is when the engine is most
+  likely to assume the main thread.
 - That `QAbstractItemModel` can carry the register's split-row semantics without
   a bespoke proxy. Untested; it is Phase 3's first question.
 - That QtWebEngine on MinGW is workable. Verified only indirectly: the pane
