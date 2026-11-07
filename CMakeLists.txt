@@ -64,6 +64,7 @@ include (CheckStructHasMember)
 option (WITH_SQL "Build this project with SQL (libdbi) support" ON)
 option (WITH_AQBANKING "Build this project with aqbanking (online banking and a variety of file import formats) support" ON)
 option (WITH_GNUCASH "Build all of GnuCash, not just the library" ON)
+option (WITH_REPORT "Build the report engine and its Scheme reports" ON)
 option (WITH_OFX "compile with ofx support (needs LibOFX)" ON)
 option (WITH_PYTHON "enable python plugin and bindings" OFF)
 option (ENABLE_BINRELOC "compile with binary relocation support" ON)
@@ -916,6 +917,24 @@ add_subdirectory (doc)
 add_subdirectory (po)
 add_subdirectory (common)
 add_subdirectory (libgnucash)
+# The URL type table is toolkit-free, so both the GTK html library and the
+# report engine can link it without dragging each other's dependencies in.
+add_library (gnc-html-url gnucash/html/gnc-html-url.cpp)
+target_link_libraries (gnc-html-url PkgConfig::GLIB2)
+target_include_directories (gnc-html-url
+  PUBLIC ${CMAKE_SOURCE_DIR}/gnucash/html
+  PRIVATE ${CMAKE_SOURCE_DIR}/common ${CMAKE_BINARY_DIR}/common)
+set_source_files_properties (gnucash/html/gnc-html-url.cpp PROPERTIES OBJECT_DEPENDS ${CONFIG_H})
+install(TARGETS gnc-html-url
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/gnucash
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/gnucash
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# The report engine is toolkit-free, so it is built on its own rather than as
+# part of the GTK application (WITH_GNUCASH). It has to come before gnucash/
+# because that tree links gnc-report.
+if (WITH_REPORT)
+  add_subdirectory (gnucash/report)
+endif()
 if (WITH_GNUCASH)
   add_subdirectory (gnucash)
 endif()
@@ -968,7 +987,7 @@ set_local_dist(toplvl_DIST ${toplvl_DIST_local})
 
 set(ALL_DIST ${bindings_DIST} ${borrowed_DIST} ${cmake_DIST} ${common_DIST} ${data_DIST}
     ${doc_DIST} ${gnucash_DIST} ${libgnucash_DIST} ${packaging_DIST}
-    ${po_DIST} ${test_templates_DIST} ${toplvl_DIST} ${util_DIST} Info.plist)
+    ${po_DIST} ${report_DIST} ${test_templates_DIST} ${toplvl_DIST} ${util_DIST} Info.plist)
 
 
 if (BUILDING_FROM_VCS)

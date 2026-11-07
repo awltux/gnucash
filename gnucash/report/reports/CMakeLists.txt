@@ -79,13 +79,19 @@ set (reports_SCHEME
 )
 
 set(scm_rpts_GUILE_DEPENDS
-  scm-gnc-html
   scm-core-utils
   scm-engine
-  scm-gnome-utils
   scm-app-utils
   scm-report
   )
+
+# See the note in the parent CMakeLists: these exist only when the GTK tree
+# is part of the build.
+foreach(_report_dep scm-gnc-html scm-gnome-utils)
+  if (TARGET ${_report_dep})
+    list(APPEND scm_rpts_GUILE_DEPENDS ${_report_dep})
+  endif()
+endforeach()
 
 set(scm_rpt_example_GUILE_DEPENDS
   ${scm_rpts_GUILE_DEPENDS}

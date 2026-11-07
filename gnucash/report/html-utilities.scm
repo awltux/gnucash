@@ -28,7 +28,6 @@
 (use-modules (gnucash engine))
 (use-modules (gnucash utilities))
 (use-modules (gnucash app-utils))
-(use-modules (gnucash html))
 (use-modules (gnucash report report-core))
 (use-modules (gnucash report report-utilities))
 (use-modules (gnucash report html-style-info))

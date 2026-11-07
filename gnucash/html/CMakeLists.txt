@@ -56,6 +56,7 @@ add_library (gnc-html
 
 target_link_libraries(gnc-html
     PRIVATE
+        gnc-html-url
         gnc-engine
         gnc-gnome-utils
         PkgConfig::GTK3

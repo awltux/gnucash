@@ -40,7 +40,6 @@
 (use-modules (gnucash utilities))
 (use-modules (gnucash core-utils))
 (use-modules (gnucash report))
-(use-modules (gnucash html))
 
 (define (easy-fancy-footer-options)
   (let* ((options (gnc-new-optiondb)))

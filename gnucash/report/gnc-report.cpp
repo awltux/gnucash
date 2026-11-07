@@ -40,6 +40,7 @@
 #include <gnc-filepath-utils.h>
 #include <gnc-guile-utils.h>
 #include <gnc-engine.h>
+#include <gnc-html-url.h>
 #include "gnc-report.h"
 #include <charconv>
 
@@ -102,6 +103,11 @@ load_custom_reports_stylesheets(void)
 void
 gnc_report_init (void)
 {
+    /* Reports build GnuCash URLs into their HTML, and the type table those
+     * URLs need used to be filled as a side effect of loading the GTK html
+     * module. A headless report process never loads it, so fill it here. */
+    gnc_html_initialize();
+
     scm_init_sw_report_module();
     scm_c_use_module ("gnucash report");
     scm_c_use_module ("gnucash reports");

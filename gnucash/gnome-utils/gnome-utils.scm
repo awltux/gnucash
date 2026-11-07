@@ -26,9 +26,17 @@
 (use-modules (gnucash engine))
 (use-modules (gnucash utilities))
 (use-modules (gnucash app-utils))
+(use-modules (gnucash report report-gui))
 
 (load-and-reexport (sw_gnome_utils)
                    (gnucash gnome-utils gnc-menu-extensions))
+
+;; The report engine is toolkit-free; with a GTK view loaded, its errors and
+;; warnings belong in dialogs rather than only in the log.
+(gnc:report-set-gui-hooks! (lambda () (gnucash-ui-is-running))
+                           gnc-error-dialog
+                           gnc-warning-dialog
+                           gnc-window-show-progress)
 
 ;; this function will receive 1 boolean argument, and can be used for
 ;; any UI init/shutdown routines. For now it will set the

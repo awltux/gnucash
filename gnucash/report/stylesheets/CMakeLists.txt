@@ -8,11 +8,14 @@ set(stylesheets_SCHEME
 
 set(GUILE_DEPENDS
   scm-core-utils
-  scm-core-utils
   scm-engine
-  gnc-html
   scm-report
   )
+
+# gnc-html belongs to the GTK tree; wait for it only when it is built.
+if (TARGET gnc-html)
+  list(APPEND GUILE_DEPENDS gnc-html)
+endif()
 
 gnc_add_scheme_targets(scm-report-stylesheets-1
     SOURCES "${stylesheets_SCHEME}"

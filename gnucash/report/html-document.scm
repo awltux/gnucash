@@ -23,7 +23,6 @@
 
 (define-module (gnucash report html-document))
 
-(use-modules (gnucash html))
 (use-modules (gnucash report html-anytag))
 (use-modules (gnucash report html-chart))
 (use-modules (gnucash report html-style-info))

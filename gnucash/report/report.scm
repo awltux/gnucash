@@ -32,10 +32,8 @@
 (use-modules (gnucash core-utils))
 (use-modules (gnucash engine))
 (use-modules (gnucash app-utils))
-(use-modules (gnucash gnome-utils))
 
-(load-and-reexport (gnucash html)
-                   (gnucash report html-style-sheet)
+(load-and-reexport (gnucash report html-style-sheet)
                    (gnucash report report-register-hooks)
                    (gnucash report html-utilities)
                    (gnucash report commodity-utilities)

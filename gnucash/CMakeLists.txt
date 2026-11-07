@@ -26,7 +26,6 @@ add_subdirectory (html)
 add_subdirectory (import-export)
 add_subdirectory (python)
 add_subdirectory (register)
-add_subdirectory (report)
 add_subdirectory (ui)
 # gschemas directory goes last to ensure all schema files are installed
 # before glib-compile-schemas is called
@@ -280,4 +279,4 @@ set_local_dist(gnucash_DIST_local CMakeLists.txt environment.in generate-gnc-scr
 
 set (gnucash_DIST ${gnucash_DIST_local} ${gnome_DIST} ${gnome_search_DIST} ${gnome_utils_DIST}
     ${gschemas_DIST} ${gtkbuilder_DIST} ${html_DIST} ${import_export_DIST} ${python_DIST} ${register_DIST}
-    ${report_DIST} ${overrides_DIST} ${test_bin_DIST} ${ui_DIST} PARENT_SCOPE)
+    ${overrides_DIST} ${test_bin_DIST} ${ui_DIST} PARENT_SCOPE)

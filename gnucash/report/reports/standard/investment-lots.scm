@@ -30,7 +30,6 @@
 (use-modules (gnucash app-utils))
 (use-modules (gnucash core-utils))           ;for gnc-prefs-is-extra-enabled
 (use-modules (gnucash engine))
-(use-modules (gnucash html))
 (use-modules (gnucash report))
 (use-modules (gnucash utilities))
 (use-modules (srfi srfi-1))

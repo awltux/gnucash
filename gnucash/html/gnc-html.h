@@ -57,6 +57,7 @@ GType gnc_html_get_type(void);
 
 
 #include "gnc-html-extras.h"
+#include "gnc-html-url.h"
 
 /* The result structure of url handlers. Strings should be g_malloc'd
  * by the handler and will be freed by gnc_html. */

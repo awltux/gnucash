@@ -32,7 +32,7 @@
 (use-modules (gnucash app-utils))
 (use-modules (gnucash report html-text))
 (use-modules (gnucash report html-acct-table))
-(use-modules (gnucash gnome-utils))
+(use-modules (gnucash report report-gui))
 
 (export gnc:hash-ref!)
 (export list-ref-safe)
@@ -617,23 +617,23 @@
     (xaccTransGetVoidStatus trans)))
 
 (define (gnc:report-starting report-name)
-  (gnc-window-show-progress (format #f
+  ((gnc:report-gui-progress) (format #f
                                      (G_ "Building '~a' report …")
                                      (G_ report-name))
-                            0))
+                              0))
 
 (define (gnc:report-render-starting report-name)
-  (gnc-window-show-progress (format #f
+  ((gnc:report-gui-progress) (format #f
                                      (G_ "Rendering '~a' report …")
                                      (if (string-null? report-name)
                                          (G_ "Untitled")
                                          (G_ report-name)))
-                            0))
+                              0))
 
 (define (gnc:report-percent-done percent)
   (if (> percent 100)
       (gnc:warn "report more than 100% finished. " percent))
-  (gnc-window-show-progress "" percent))
+  ((gnc:report-gui-progress) "" percent))
 
 (define-public gnc:pulse-progress-bar
   (let ((pulse-idx 0))
@@ -641,10 +641,10 @@
       (set! pulse-idx (1+ pulse-idx))
       (when (= pulse-idx 1000)
         (set! pulse-idx 0)
-        (gnc-window-show-progress "" 105)))))
+        ((gnc:report-gui-progress) "" 105)))))
 
 (define (gnc:report-finished)
-  (gnc-window-show-progress "" -1))
+  ((gnc:report-gui-progress) "" -1))
 
 ;; function to count the total number of splits to be iterated
 (define (gnc:accounts-count-splits accounts)

@@ -10,7 +10,7 @@ set (report_HEADERS
 # Command to generate the swig-report.c wrapper file
 gnc_add_swig_guile_command (swig-report-c
     SWIG_REPORT_C swig-report.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/report.i "" ${report_HEADERS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/report.i ${CMAKE_SOURCE_DIR}/gnucash/html ${report_HEADERS}
 )
 
 set (report_SOURCES
@@ -31,10 +31,12 @@ target_link_libraries(gnc-report
     gnc-app-utils
     gnucash-guile
     gnc-expressions-guile
+    gnc-html-url
     ${GUILE_LDFLAGS})
 
 target_include_directories (gnc-report
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+    PRIVATE ${CMAKE_SOURCE_DIR}/gnucash/html
 )
 
 
@@ -69,6 +71,7 @@ set (report_SCHEME_1
     html-utilities.scm
     options-utilities.scm
     report-core.scm
+    report-gui.scm
     report-utilities.scm
     report-register-hooks.scm
     trep-engine.scm
@@ -88,13 +91,20 @@ set (report_eguile_SCHEME
 )
 
 set(GUILE_DEPENDS
-  scm-gnc-html
-  scm-gnome-utils
   gnc-report
   scm-app-utils
   scm-engine
   guile-json
   )
+
+# The GTK tree installs its own scheme modules and the report build only
+# waits for them; when that tree is not built (WITH_GNUCASH=OFF) the
+# ordering dependency does not exist.
+foreach(_report_dep scm-gnc-html scm-gnome-utils)
+  if (TARGET ${_report_dep})
+    list(APPEND GUILE_DEPENDS ${_report_dep})
+  endif()
+endforeach()
 
 gnc_add_scheme_targets(scm-report-1
     SOURCES "${report_SCHEME_1}"

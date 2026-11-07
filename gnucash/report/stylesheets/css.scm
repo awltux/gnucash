@@ -26,7 +26,6 @@
 (use-modules (gnucash core-utils))
 (use-modules (gnucash report))
 (use-modules (srfi srfi-13))
-(use-modules (gnucash html))
 
 (define default-css "/* default style */
 @media (prefers-color-scheme: dark) {

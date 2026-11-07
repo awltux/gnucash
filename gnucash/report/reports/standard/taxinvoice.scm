@@ -30,7 +30,6 @@
 (use-modules (gnucash core-utils))
 (use-modules (gnucash app-utils))
 (use-modules (gnucash report))
-(use-modules (gnucash html))
 
 (use-modules (gnucash eguile))
 

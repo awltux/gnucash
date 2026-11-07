@@ -110,11 +110,9 @@
 (use-modules (gnucash core-utils)) ; for gnc:version and (G_ ...)
 (use-modules (gnucash app-utils))
 (use-modules (gnucash locale us tax))
-(use-modules (gnucash gnome-utils))
 (use-modules (gnucash report))
 (use-modules (srfi srfi-1))
 (use-modules (ice-9 format))
-(use-modules (gnucash html))
 
 (define reportname (N_ "Tax Schedule Report/TXF Export"))
 
