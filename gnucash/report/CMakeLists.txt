@@ -31,7 +31,6 @@ target_link_libraries(gnc-report
     gnc-app-utils
     gnucash-guile
     gnc-expressions-guile
-    PkgConfig::GTK3
     ${GUILE_LDFLAGS})
 
 target_include_directories (gnc-report

@@ -29,7 +29,6 @@
 #include <gnc-optiondb.hpp>
 #include <glib.h>
 #include <glib/gstdio.h>
-#include <gtk/gtk.h>
 #include <libguile.h>
 #include <stdio.h>
 #include <string.h>
@@ -298,37 +297,23 @@ gnc_run_report_id_string_with_error_handling (const char * id_string, char **dat
     return gnc_run_report_with_error_handling (report_id, data, errmsg);
 }
 
+/* The report engine has no toolkit. A view that knows the display's font
+ * installs a provider; a headless host leaves it unset and gets "Arial". */
+static GncReportFontFamilyFunc font_family_func = NULL;
+
+void
+gnc_report_set_font_family_func (GncReportFontFamilyFunc func)
+{
+    font_family_func = func;
+}
+
 gchar*
 gnc_get_default_report_font_family(void)
 {
-    GList                *top_list;
-    GtkWidget            *top_widget;
-    PangoFontDescription *font_desc;
-    GtkStyleContext      *top_widget_style_c;
-    gchar                *default_font_family;
+    if (font_family_func != NULL)
+        return font_family_func();
 
-    top_list = gtk_window_list_toplevels();
-    if (top_list == NULL)
-        return g_strdup ("Arial");
-    top_widget = GTK_WIDGET(top_list->data);
-    g_list_free(top_list);
-    top_widget_style_c = gtk_widget_get_style_context (top_widget);
-    gtk_style_context_get (top_widget_style_c, gtk_widget_get_state_flags (GTK_WIDGET(top_widget)),
-                           "font", &font_desc, NULL);
-
-    default_font_family = g_strdup(pango_font_description_get_family (font_desc));
-
-    pango_font_description_free (font_desc);
-
-    if (!default_font_family)
-        return g_strdup ("Arial");
-    else if (g_str_has_prefix (default_font_family, ".AppleSystemUIFont"))
-    {
-        g_free (default_font_family);
-        return g_strdup ("Arial");
-    }
-    else
-        return default_font_family;
+    return g_strdup ("Arial");
 }
 
 static gboolean

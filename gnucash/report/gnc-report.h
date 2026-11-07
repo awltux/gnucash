@@ -71,6 +71,18 @@ void gnc_reports_foreach (GHFunc func, gpointer user_data);
 
 gchar* gnc_get_default_report_font_family(void);
 
+/** Supplies the font family reports should use.
+ *
+ * The report engine has no toolkit, so a view that knows the display's font
+ * installs a provider here — the GTK application passes its theme font. A
+ * headless host leaves it unset, and reports use "Arial".
+ *
+ * @param func the provider, or NULL to remove it. The provider returns a
+ * newly allocated string that the caller frees.
+ */
+typedef gchar* (*GncReportFontFamilyFunc) (void);
+void gnc_report_set_font_family_func (GncReportFontFamilyFunc func);
+
 gboolean gnc_saved_reports_backup(void);
 
 gboolean gnc_saved_reports_write_to_file(const gchar* report_def, gboolean overwrite);

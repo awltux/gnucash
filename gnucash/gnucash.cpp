@@ -128,6 +128,42 @@ get_file_to_load (const char* file_to_load)
 
 extern SCM scm_init_sw_gnome_module(void);
 
+/* The report engine has no toolkit; this is the GTK view's answer to "which
+ * font should reports use" — the theme font of the current window, with the
+ * same fallbacks the engine used to apply itself. */
+static gchar*
+gnc_app_report_font_family (void)
+{
+    GList                *top_list;
+    GtkWidget            *top_widget;
+    PangoFontDescription *font_desc;
+    GtkStyleContext      *top_widget_style_c;
+    gchar                *default_font_family;
+
+    top_list = gtk_window_list_toplevels();
+    if (top_list == NULL)
+        return g_strdup ("Arial");
+    top_widget = GTK_WIDGET(top_list->data);
+    g_list_free(top_list);
+    top_widget_style_c = gtk_widget_get_style_context (top_widget);
+    gtk_style_context_get (top_widget_style_c, gtk_widget_get_state_flags (GTK_WIDGET(top_widget)),
+                           "font", &font_desc, NULL);
+
+    default_font_family = g_strdup(pango_font_description_get_family (font_desc));
+
+    pango_font_description_free (font_desc);
+
+    if (!default_font_family)
+        return g_strdup ("Arial");
+    else if (g_str_has_prefix (default_font_family, ".AppleSystemUIFont"))
+    {
+        g_free (default_font_family);
+        return g_strdup ("Arial");
+    }
+    else
+        return default_font_family;
+}
+
 struct t_file_spec {
     int nofile;
     const char *file_to_load;
@@ -149,6 +185,7 @@ scm_run_gnucash (void *data, [[maybe_unused]] int argc, [[maybe_unused]] char **
     gnc_hook_add_dangler(HOOK_UI_SHUTDOWN, (GFunc)gnc_search_core_finalize, NULL, NULL);
     gnucash_register_add_cell_types ();
     gnc_report_init ();
+    gnc_report_set_font_family_func (gnc_app_report_font_family);
 
     load_gnucash_plugins();
     load_gnucash_modules();
