@@ -15,9 +15,11 @@ Human-facing docs: `README`, `README.git`, `README.dependencies`, `HACKING`,
 
 **Working notes: read `PLAN.md` before continuing Qt 6 migration work.** It
 carries the current state (branch, build trees, what is verified versus merely
-running) and the environment traps that have already cost time. Decisions live
-in `doc/adr/` and the durable phase plan in `doc/qt6-migration-plan.md`; PLAN.md
-records state that moves faster than either.
+running) and the environment traps that have already cost time. **Update it in
+the same commit as the change it describes** — its §0 maps change types to
+sections. Decisions live in `doc/adr/` and the durable phase plan in
+`doc/qt6-migration-plan.md`; PLAN.md records state that moves faster than
+either, and is deleted when the migration finishes.
 
 ---
 

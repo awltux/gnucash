@@ -14,6 +14,28 @@ The durable records are authoritative when they disagree:
 - `doc/adr/0001…0010` — one decision per record; `doc/adr/README.md` is the index
 - `AGENTS.md` — how work is done in this project
 
+## 0. Maintenance rule — update this file with the change
+
+This file is part of the definition of done for this implementation, not
+commentary written afterwards. **Every commit that changes behaviour, build
+configuration, tooling or status updates the relevant section in the same
+commit**, so the file is never more than one commit stale. A PLAN.md that lags
+is worse than none: it reads authoritative while being wrong.
+
+| If you change… | Update |
+|---|---|
+| a build target, option or file layout | §3 |
+| phase progress, or the status of a claim | §4, §5 |
+| how something is verified, or you observe something new | §5, §6 |
+| an environment dependency or version | §8 |
+| a trap you had to work around | §7 |
+| what comes next | §9 |
+| an assumption that turned out wrong | §10, and the ADR it sits on |
+
+If none of these apply, the change is probably too small to deserve its own
+commit — but say in the commit body which sections you checked, so the omission
+is deliberate rather than forgotten.
+
 ---
 
 ## 1. The goal, in one paragraph
