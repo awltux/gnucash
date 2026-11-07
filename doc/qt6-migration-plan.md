@@ -33,7 +33,7 @@ read the ADRs.
 | 0 | Groundwork: presets, dependency manifest, CI, event-loop spike, licence | Spike opens a book; Windows dependency path proven | 2–3 months |
 | 1 | Headless plateau: Qt shell opens books, runs Guile reports, renders HTML offscreen, exports PDF | All standard reports render from the golden corpus; compatibility gate green | 3–4 months |
 | 2 | Read-only shell: main window, actions, tabs, account tree, preferences | Browsing parity; keyboard navigation for tree and tabs | 3–4 months |
-| 3a | Register cell layer: remove GTK from `register-core` (ADR 0011) while the GTK register keeps working | GTK-free cell/block API; `gnucash` still builds and passes the register tests | 3–5 months |
+| 3a | Register cell layer: remove GTK from `register-core` (ADR 0011, audited in `register-core-audit.md`) while the GTK register keeps working | GTK-free cell/block API; `gnucash` still builds and passes the register tests | 1–2 weeks |
 | 3b | Register view: painted Qt view over the decoupled cell layer | Parity checklist signed off; performance gates met | 5–7 months |
 | 4 | Editing: transaction and split editors, reconcile, scheduled transactions, budgets, assistants | Every corpus write path reachable from Qt; interop gate green | 5–7 months |
 | 5 | Import/export and business: QIF, CSV, OFX, invoices, bills, customers, vendors, employees | Import → reconcile → report loop complete | 5–7 months |
