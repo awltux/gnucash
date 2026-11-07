@@ -20,6 +20,7 @@ read the ADRs.
 | [0008](adr/0008-windows-ci-exercises-setup.md) | Windows CI exercises the documented setup and the spike |
 | [0009](adr/0009-backend-registration-in-qt.md) | A Qt process registers a backend by loading its module |
 | [0010](adr/0010-qt-tier-enters-the-build.md) | The Qt tier enters the build as an opt-in target |
+| [0011](adr/0011-register-decoupling.md) | The register needs decoupling before Phase 3, not a view port |
 
 ## Phases and exit gates
 
@@ -28,7 +29,7 @@ read the ADRs.
 | 0 | Groundwork: presets, dependency manifest, CI, event-loop spike, licence | Spike opens a book; Windows dependency path proven | 2–3 months |
 | 1 | Headless plateau: Qt shell opens books, runs Guile reports, renders HTML offscreen, exports PDF | All standard reports render from the golden corpus; compatibility gate green | 3–4 months |
 | 2 | Read-only shell: main window, actions, tabs, account tree, preferences | Browsing parity; keyboard navigation for tree and tabs | 3–4 months |
-| 3 | Register: `QAbstractItemModel` over engine cursors, painted view, delegates | Parity checklist signed off; performance gates met | 6–9 months |
+| 3 | Register: **decouple the cell layer from GTK first** (ADR 0011), then a painted Qt view | Parity checklist signed off; performance gates met | 6–9 months, **needs revisiting** |
 | 4 | Editing: transaction and split editors, reconcile, scheduled transactions, budgets, assistants | Every corpus write path reachable from Qt; interop gate green | 5–7 months |
 | 5 | Import/export and business: QIF, CSV, OFX, invoices, bills, customers, vendors, employees | Import → reconcile → report loop complete | 5–7 months |
 | 6 | Report UI: option widgets, custom report management, print and PDF | User Scheme reports load and run unmodified | 3–4 months |

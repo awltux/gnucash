@@ -34,3 +34,4 @@ One file per decision, numbered, immutable once accepted.
 | [0008](0008-windows-ci-exercises-setup.md) | Windows CI exercises the documented setup and the spike | Accepted |
 | [0009](0009-backend-registration-in-qt.md) | A Qt process registers a backend by loading its module | Accepted |
 | [0010](0010-qt-tier-enters-the-build.md) | The Qt tier enters the build as an opt-in target | Accepted |
+| [0011](0011-register-decoupling.md) | The register needs decoupling before Phase 3, not a view port | Accepted |

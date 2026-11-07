@@ -19,6 +19,7 @@ set(doc_noinst_DATA
         adr/0008-windows-ci-exercises-setup.md
         adr/0009-backend-registration-in-qt.md
         adr/0010-qt-tier-enters-the-build.md
+        adr/0011-register-decoupling.md
         adr/README.md
         adr/spike-event-loop/README.md
         adr/spike-event-loop/main.cpp

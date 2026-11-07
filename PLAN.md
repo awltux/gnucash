@@ -278,14 +278,12 @@ exit 0. Anything else means the tree, the environment, or the code moved.
    Next investigation, in order: why `symbol->string` receives `#f` (likely
    `reportname->templates` or `gnc:error` in `report-core.scm`), and whether
    `GNC_MODULE_PATH` needs Guile-list syntax rather than a colon path.
-3. **Register model note — reframed, not written.** The register is not a row
-   model, so the "map rows onto `QAbstractItemModel`" framing was wrong.
-   `gnucash/register/register-core` is a **virtual-cell** architecture
-   (`cellblock`, `cell-factory`, `basiccell`), `ledger-core` holds the
-   split-register logic on top of it, and `register-gnome` renders it. There is
-   no row-type enum to translate. Phase 3's real question is whether to keep a
-   cell matrix painted by a custom `QWidget`, or to map *cell blocks* onto an
-   item model. Survey `register-core` before writing ADR 0011.
+3. **Register model — ADR 0011 written.** The register is a virtual-cell
+   architecture (`cellblock` with cursor and two-phase commit), not a row model,
+   and `register-core` includes `<gtk/gtk.h>` and links `gnc-gnome-utils`. The
+   decision is therefore *decouple the cell layer first, port the view second*;
+   porting the view alone would put GTK in the Qt process. Phase 3's estimate is
+   flagged as needing revision in the migration plan.
 
 Deferred deliberately: Windows CI for the Qt tier — it would protect a 250-line
 stub while the real Windows work is years away (ADR 0010).
