@@ -17,6 +17,8 @@ void AccountModel::set_root_account(Account* root)
     root_ = root;
     children_.clear();
     parents_.clear();
+    inserted_ = 0;
+    removed_ = 0;
     endResetModel();
 }
 
@@ -52,19 +54,27 @@ QList<Account*> AccountModel::children_of(Account* account) const
 
 Account* AccountModel::parent_of(Account* account) const
 {
-    // A miss means the account has not been visited yet; fetch its parent's
-    // children so the reverse map is populated for this branch.
-    if (!parents_.contains(account) && account != nullptr)
-    {
-        Account* parent = gnc_account_get_parent(account);
-        if (parent != nullptr)
-        {
-            children_of(parent);
-            if (!parents_.contains(account))
-                parents_.insert(account, parent);
-        }
-    }
+    // Every index this model hands out was produced by enumerating its parent's
+    // children, so the reverse map already knows the answer. Asking the engine
+    // would also be wrong during a destroy, when the object is no longer valid.
     return parents_.value(account, nullptr);
+}
+
+QModelIndex AccountModel::index_of(Account* account) const
+{
+    if (account == nullptr || account == root_)
+        return {};
+
+    Account* parent = parent_of(account);
+    if (parent == nullptr)
+        return {};
+
+    const auto siblings = children_of(parent);
+    const int row = siblings.indexOf(account);
+    if (row < 0)
+        return {};
+
+    return createIndex(row, 0, account);
 }
 
 QModelIndex AccountModel::index(int row, int column,
@@ -86,18 +96,7 @@ QModelIndex AccountModel::parent(const QModelIndex& index) const
     if (!index.isValid())
         return {};
 
-    Account* account = account_for(index);
-    Account* parent = parent_of(account);
-    if (parent == nullptr || parent == root_)
-        return {};
-
-    Account* grandparent = parent_of(parent);
-    const auto siblings = children_of(grandparent);
-    const int row = siblings.indexOf(parent);
-    if (row < 0)
-        return {};
-
-    return createIndex(row, 0, parent);
+    return index_of(static_cast<Account*>(index.internalPointer()));
 }
 
 int AccountModel::rowCount(const QModelIndex& parent) const
@@ -114,10 +113,7 @@ int AccountModel::columnCount(const QModelIndex&) const
 
 QVariant AccountModel::data(const QModelIndex& index, int role) const
 {
-    if (!index.isValid())
-        return {};
-
-    if (role != Qt::DisplayRole)
+    if (!index.isValid() || role != Qt::DisplayRole)
         return {};
 
     auto* account = static_cast<Account*>(index.internalPointer());
@@ -138,6 +134,40 @@ QVariant AccountModel::headerData(int section, Qt::Orientation orientation,
 
 void AccountModel::account_changed(Account* account)
 {
+    const QModelIndex changed = index_of(account);
+    if (!changed.isValid())
+        return;
+    emit dataChanged(changed, changed, {Qt::DisplayRole});
+}
+
+void AccountModel::account_added(Account* account)
+{
+    if (account == nullptr)
+        return;
+
+    // The event fires after the child was linked, so the engine can still be
+    // asked for the parent here.
+    Account* parent = gnc_account_get_parent(account);
+    if (parent == nullptr)
+        return;
+
+    // Ignore branches that have not been materialised: the view has no parent
+    // index for them, and the next fetch will pick the child up.
+    const auto known = children_.constFind(parent);
+    if (known == children_.constEnd())
+        return;
+
+    const int row = static_cast<int>(known->size());
+    const QModelIndex parent_index = index_of(parent);
+    beginInsertRows(parent_index, row, row);
+    children_[parent].append(account);
+    parents_.insert(account, parent);
+    ++inserted_;
+    endInsertRows();
+}
+
+void AccountModel::account_removed(Account* account)
+{
     if (account == nullptr)
         return;
 
@@ -145,13 +175,33 @@ void AccountModel::account_changed(Account* account)
     if (parent == nullptr)
         return;
 
-    const auto siblings = children_of(parent);
-    const int row = siblings.indexOf(account);
+    const auto known = children_.constFind(parent);
+    if (known == children_.constEnd())
+        return;
+
+    const int row = static_cast<int>(known->indexOf(account));
     if (row < 0)
         return;
 
-    const QModelIndex changed = createIndex(row, 0, account);
-    emit dataChanged(changed, changed, {Qt::DisplayRole});
+    const QModelIndex parent_index = index_of(parent);
+    beginRemoveRows(parent_index, row, row);
+    children_[parent].removeAt(row);
+    forget_subtree(account);
+    ++removed_;
+    endRemoveRows();
+}
+
+void AccountModel::forget_subtree(Account* account)
+{
+    const auto known = children_.constFind(account);
+    if (known != children_.constEnd())
+    {
+        const auto descendants = *known;
+        for (Account* child : descendants)
+            forget_subtree(child);
+        children_.remove(account);
+    }
+    parents_.remove(account);
 }
 
 } // namespace gncqt

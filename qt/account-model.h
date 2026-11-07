@@ -1,9 +1,11 @@
 // Account tree as a model over engine objects (ADR 0014).
 //
 // Items are references to accounts resolved through the engine; children are
-// fetched lazily, and an event produces a targeted dataChanged rather than a
-// model reset. Accounts can be destroyed, so a pointer is never trusted beyond
-// the call that produced it without a parent lookup.
+// fetched lazily. Edits produce targeted signals — dataChanged for a rename,
+// beginInsertRows/beginRemoveRows for structural changes — never a model reset.
+//
+// Accounts can be destroyed and their memory reused, so the caches are purged
+// per removed subtree rather than left to go stale.
 
 #ifndef GNC_QT_ACCOUNT_MODEL_H
 #define GNC_QT_ACCOUNT_MODEL_H
@@ -32,8 +34,14 @@ public:
     // The account behind an index, or nullptr for the invisible root.
     Account* account_for(const QModelIndex& index) const;
 
-    // Emits dataChanged for one account (a rename), and nothing else.
+    // Engine notifications. Each emits the narrowest signal that is correct.
     void account_changed(Account* account);
+    void account_added(Account* account);
+    void account_removed(Account* account);
+
+    // Counters for tests: how many structural signals have been emitted.
+    int inserted_rows() const { return inserted_; }
+    int removed_rows() const { return removed_; }
 
     QModelIndex index(int row, int column,
                       const QModelIndex& parent = QModelIndex()) const override;
@@ -47,10 +55,14 @@ public:
 private:
     QList<Account*> children_of(Account* account) const;
     Account* parent_of(Account* account) const;
+    QModelIndex index_of(Account* account) const;
+    void forget_subtree(Account* account);
 
     Account* root_ = nullptr;
     mutable QHash<Account*, QList<Account*>> children_;
     mutable QHash<Account*, Account*> parents_;
+    int inserted_ = 0;
+    int removed_ = 0;
 };
 
 } // namespace gncqt

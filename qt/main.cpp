@@ -94,7 +94,7 @@ QString default_backend_path()
 // GUI thread. The model is updated directly; nothing is queued.
 void on_qof_event(QofInstance* entity, QofEventId type, gpointer, gpointer)
 {
-    if (!(type & QOF_EVENT_MODIFY) || entity == nullptr)
+    if (entity == nullptr)
         return;
 
     // Events arrive for every object type — transactions, splits, lots. Only
@@ -108,14 +108,62 @@ void on_qof_event(QofInstance* entity, QofEventId type, gpointer, gpointer)
 
     auto* account = reinterpret_cast<Account*>(entity);
     if (g_model != nullptr)
-        g_model->account_changed(account);
+    {
+        if (type & QOF_EVENT_ADD)
+            g_model->account_added(account);
+        else if (type & QOF_EVENT_REMOVE)
+            g_model->account_removed(account);
+        else if (type & QOF_EVENT_MODIFY)
+            g_model->account_changed(account);
+    }
 
-    if (g_self_test)
+    if (g_self_test && (type & QOF_EVENT_MODIFY))
     {
         const char* name = xaccAccountGetName(account);
         g_observed.append(QByteArray(name ? name : ""));
         g_event_count.fetch_add(1);
     }
+}
+
+// Adds and removes an account and checks the model followed: one row inserted,
+// one removed, one signal of each kind. This is the path a real editing session
+// takes, which a rename never exercises.
+struct EditTest
+{
+    int baseline = -1;
+    int after_add = -1;
+    int after_remove = -1;
+    int inserts = 0;
+    int removes = 0;
+    bool ok = false;
+};
+
+EditTest run_model_edit_test(gncqt::AccountModel* model, QofBook* book,
+                             Account* root)
+{
+    EditTest result;
+    if (model == nullptr || book == nullptr || root == nullptr)
+        return result;
+
+    result.baseline = model->rowCount();
+
+    Account* fresh = xaccMallocAccount(book);
+    if (fresh == nullptr)
+        return result;
+    xaccAccountSetName(fresh, "Model Test Account");
+
+    gnc_account_append_child(root, fresh);
+    result.after_add = model->rowCount();
+    result.inserts = model->inserted_rows();
+
+    gnc_account_remove_child(root, fresh);
+    result.after_remove = model->rowCount();
+    result.removes = model->removed_rows();
+
+    result.ok = result.after_add == result.baseline + 1
+                && result.after_remove == result.baseline && result.inserts == 1
+                && result.removes == 1;
+    return result;
 }
 
 gboolean rename_burst(gpointer data)
@@ -313,7 +361,12 @@ int main(int argc, char** argv)
         return status;
     }
 
-    // ---- self-test: rename burst, then assert every event was observed ----
+    // ---- self-test: model edits, rename burst, then assertions ----
+    EditTest edit;
+    if (session.session != nullptr && session.root != nullptr)
+        edit = run_model_edit_test(model, qof_session_get_book(session.session),
+                                   session.root);
+
     Account* target = nullptr;
     if (session.root != nullptr)
     {
@@ -354,12 +407,13 @@ int main(int argc, char** argv)
         const int top_level = model->rowCount();
 
         std::printf("accounts=%d top_level=%d pane_ok=%d events=%d/%d in_order=%d "
-                    "on_qt_thread=%d\n",
+                    "on_qt_thread=%d model_ok=%d inserts=%d removes=%d\n",
                     session.descendant_count, top_level, pane_loaded ? 1 : 0,
                     g_event_count.load(), kRenames, in_order ? 1 : 0,
-                    g_event_off_thread.load() ? 0 : 1);
+                    g_event_off_thread.load() ? 0 : 1, edit.ok ? 1 : 0,
+                    edit.inserts, edit.removes);
 
-        app.exit(events_done && in_order && pane_loaded
+        app.exit(events_done && in_order && pane_loaded && edit.ok
                      && !g_event_off_thread.load() ? 0 : 1);
     });
     poll.start(50);

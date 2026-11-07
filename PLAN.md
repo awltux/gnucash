@@ -171,7 +171,7 @@ changes the on-disk format.
 | Event **load** (20 renames, one burst, in order) | ✅ observed |
 | Engine thread ownership | ✅ ADR 0012 — GUI thread owns it; self-test identical after the worker thread was removed |
 | Coexistence rules (GSettings, helper reports, no shared UI state) | ✅ ADR 0013 — prospective; the preferences rule has not been exercised by a real settings UI |
-| Account tree model | ✅ first cut implemented (`qt/account-model.*`) — lazy children, targeted `dataChanged`, `GNC_IS_ACCOUNT` guard |
+| Account tree model | ✅ implemented and verified under edits — insert/remove signals fire (`model_ok=1 inserts=1 removes=1`) |
 | Report path | ✅ ADR 0015 — out-of-process through Phase 5; the seam is `qt/report-runner.*` |
 | App mode | ✅ `gnucash-qt <book>` opens and stays open; `--self-test` is the CI harness |
 | Phase 3 estimate | ✅ revised in the plan: 3a decoupling 3–5 months, 3b view 5–7; total 35–55 person-months |
@@ -240,6 +240,12 @@ exit 0. Anything else means the tree, the environment, or the code moved.
   `glib-compile-schemas` on it once. Without the stylesheet module every report
   fails with `symbol->string: Wrong type argument ... #f` from
   `report-core.scm:459`, which reads like a broken report system.
+- **Never configure through `/mnt/f`.** A `cmake` configure on the 9p mount hung
+  in uninterruptible I/O wait (0 CPU ticks in 30 s) for 40+ minutes, reproducibly,
+  even after `wsl --shutdown`. Build from an ext4 copy instead:
+  `rsync -a --exclude=.build /mnt/f/.../gnucash/ ~/src/gnucash/`, configure
+  `~/build/ext4-qt`, and copy changed files back before committing. Configure
+  takes **114 s** there. The old tree `~/build/linux-debug` is now unusable.
 - **Editing a file on the Windows side does not reliably invalidate a WSL build.**
   A `cmake --build` reported success without recompiling `qt/main.cpp`, and the
   binary kept an older timestamp. `rm` the object (or `touch` the source) and
