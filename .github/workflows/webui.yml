@@ -40,15 +40,18 @@ jobs:
             -DWITH_OFX=OFF \
             -DWITH_SQL=OFF
 
-      - name: Check that no toolkit was requested
-        run: |
-          if grep -qiE 'gtk\+-3|webkit' build/CMakeCache.txt; then
-            echo "::error::the toolkit-free build asked for GTK or WebKit"
-            exit 1
-          fi
-
       - name: Build
         run: cmake --build build -j"$(nproc)" --target gnc-webd
+
+      # The claim is about what the process loads, so check the binary rather
+      # than the cache: the cache mentions GTK even when nothing links it.
+      - name: Check the server has no toolkit
+        run: |
+          if ldd build/bin/gnc-webd | grep -qiE 'libgtk|libgdk|libwebkit|libpango'; then
+            echo "::error::gnc-webd links a GUI toolkit"
+            ldd build/bin/gnc-webd | grep -iE 'gtk|gdk|webkit|pango'
+            exit 1
+          fi
 
       - name: Smoke test
         run: bash web/run-smoke-test.sh "$PWD/build" "$PWD"
