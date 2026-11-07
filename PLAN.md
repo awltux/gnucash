@@ -67,13 +67,15 @@ GTK 3 is also in maintenance mode.
 
 | Thing | Location |
 |---|---|
-| Branch | `phase0/qt6-groundwork`, 36 commits ahead of `stable`, **never pushed** |
+| Branch | `phase0/qt6-groundwork`, 56 commits ahead of `stable`, **never pushed** |
 | Review order | ADRs → `doc/qt6-migration-plan.md` → build config → `qt/` → `doc/adr/spike-*` |
-| Linux build tree | `~/build/linux-debug` (WSL). **Currently `WITH_QT=OFF`** |
+| Linux build tree | `~/build/ext4-qt` (WSL, ext4 copy of the tree). `WITH_QT=ON`, Debug; **both** `bin/gnucash` (GTK) and `bin/gnucash-qt` built as of 2026-11-07 |
+| Source copy for building | `~/src/gnucash` — an rsync of this repo; edit here, then sync |
 | Core-only tree | `~/build/linux-core` (from the `linux-core` preset) |
 | In-repo build dir | `.build/linux-core` (created by the preset; gitignored) |
-| Qt shell binary | `~/build/linux-debug/bin/gnucash-qt` — needs `-DWITH_QT=ON` |
+| Qt shell binary | `~/build/ext4-qt/bin/gnucash-qt` — needs `-DWITH_QT=ON` |
 | Book fixture | `libgnucash/backend/xml/test/test-files/load-save/sample1.gnucash` (104 accounts) |
+| Register audit | `doc/register-core-audit.md` — now records what actually broke, not what grep predicted |
 | Report HTML generator | `doc/adr/spike-report-pane/make-html.scm` |
 | Windows scratch | `E:\gnc-qt-spike`, `E:\gnc-report-spike`, `E:\gnc-shell-spike` (not in repo) |
 | MSYS2 | `C:\msys64`, use the **MINGW64** shell |
@@ -119,7 +121,7 @@ pane; then menus, actions, tabs, preferences.
 
 - Target exists with a tree and a pane. No menus, no actions, no editing, no save.
 
-### Phase 3 — Register (the hard one) ⬜ not started
+### Phase 3 — Register (the hard one) 🟡 3a started
 
 *Why:* 36k lines across 50 files, hand-drawn, with a 30-year-old keyboard model.
 The single largest risk in the programme.
@@ -128,6 +130,14 @@ parity checklist, performance gates (20k splits < 1s open, 60 fps scroll,
 <50 ms typing latency).
 **Decide first:** does the split-row model map cleanly, or does it need a proxy
 layer? Answer before writing widget code.
+
+**3a, first slice — done (2026-11-07).** `register-core` is toolkit-free: no
+GTK/GDK/Pango symbols, no GTK library in its `NEEDED` list, and a test that
+links the library alone. The audit's "three call sites" were real but did not
+bound the work; see `doc/register-core-audit.md`. **The remaining 3a work is
+`ledger-core`**, which is the layer a Qt view would actually consume and which
+still exposes `GtkWidget` in five public headers and builds eight message
+dialogs.
 
 ### Phase 4 — Editing ⬜
 
@@ -175,41 +185,50 @@ changes the on-disk format.
 | Report path | ✅ ADR 0015 — out-of-process through Phase 5; the seam is `qt/report-runner.*` |
 | App mode | ✅ `gnucash-qt <book>` opens and stays open; `--self-test` is the CI harness |
 | Report selector | ✅ 63 reports listed from `gnucash-cli -R list` at startup; `Reports` menu plus `View → Reload report` |
-| Phase 3 estimate | ✅ revised in the plan: 3a decoupling 3–5 months, 3b view 5–7; total 35–55 person-months |
+| `register-core` is toolkit-free | ✅ observed 2026-11-07: zero `gtk_`/`gdk_`/`pango_` symbols, `NEEDED` lists no toolkit, GTK build and Qt smoke test green |
+| Audit claim: "three call sites, Phase 3a 1–2 weeks" | ❌ falsified: the three sites were real, but removing them broke 15 objects in 4 directories; `ledger-core` is the GTK-bound layer |
+| Phase 3 estimate | ✅ revised again after measurement: 3a is 2–3 months (not 1–2 weeks), of which the `register-core` slice is done and `ledger-core` is the 4–8 week remainder; 3b 5–7 months **only if** 3a covers `ledger-core` |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
 | CI coverage of the Qt target | ⚠️ job written (`qt-smoke.yml`), never run on GitHub |
 
 ## 6. How to re-verify, from scratch
 
-Configure with the tier on (≈15–20 min, see §7):
+**Build from an ext4 copy, never from `/mnt/f`** (see §7). Configure takes 114 s
+there:
 
 ```sh
-cmake -S . -B ~/build/linux-debug -DWITH_QT=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build ~/build/linux-debug --target gnucash-qt -j 6
+rsync -a --delete --exclude=.build /mnt/f/git-clones/gnu-cash/gnucash/ ~/src/gnucash/
+cmake -S ~/src/gnucash -B ~/build/ext4-qt -G Ninja -DWITH_QT=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build ~/build/ext4-qt --target gnucash gnucash-qt gnucash-cli -j 6
 ```
 
-Then the headless self-test — report HTML from the report engine, book from the
-fixture:
+`gnucash` is the GTK baseline and must stay green — that is the compatibility
+requirement, not a nicety. Then the two suites this slice touched:
 
 ```sh
-BUILD=~/build/linux-debug; SRC=$PWD
-GUILE_LOAD_PATH="$BUILD/share/guile/site/3.0" \
-GUILE_LOAD_COMPILED_PATH="$BUILD/lib/x86_64-linux-gnu/guile/3.0/site-ccache" \
-GNC_MODULE_PATH="$BUILD/lib/gnucash" \
-LD_LIBRARY_PATH="$BUILD/lib:$BUILD/lib/gnucash" \
-  guile -s doc/adr/spike-report-pane/make-html.scm > /tmp/report.html
-
-QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 \
-QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
-LD_LIBRARY_PATH="$BUILD/lib:$BUILD/lib/gnucash" \
-  "$BUILD/bin/gnucash-qt" \
-  "$BUILD/lib/gnucash/libgncmod-backend-xml.so" \
-  "$SRC/libgnucash/backend/xml/test/test-files/load-save/sample1.gnucash" \
-  /tmp/report.html
+cmake --build ~/build/ext4-qt --target test-split-register-copy-ops \
+        test-register-core-decoupling -j 6
+ctest --test-dir ~/build/ext4-qt -R register --output-on-failure
 ```
 
-Expected: `accounts=104 top_level=5 pane_ok=1 event_on_qt_thread=1 events=1 …`,
-exit 0. Anything else means the tree, the environment, or the code moved.
+Expected: `test-split-register-copy-ops` and `test-register-core-decoupling`
+pass. `test-register` fails in this tree for an unrelated reason (§7).
+
+Then the Qt smoke test — the same script CI runs, so a local green means
+something:
+
+```sh
+bash ~/src/gnucash/qt/run-smoke-test.sh ~/build/ext4-qt ~/src/gnucash
+```
+
+Expected: `accounts=104 top_level=5 pane_ok=1 events=20/20 in_order=1
+on_qt_thread=1 model_ok=1 inserts=1 removes=1 reports=63` and
+`qt smoke test passed`, exit 0. Anything else means the tree, the environment,
+or the code moved.
+
+The older hand-rolled recipe (a standalone `make-html.scm` document, then
+`gnucash-qt <backend> <book> <html>`) still works but tests less: it renders a
+document that is not the loaded book. Prefer the script.
 
 ## 7. Traps that already cost time
 
@@ -251,6 +270,20 @@ exit 0. Anything else means the tree, the environment, or the code moved.
   A `cmake --build` reported success without recompiling `qt/main.cpp`, and the
   binary kept an older timestamp. `rm` the object (or `touch` the source) and
   rebuild; do not trust "build exit=0" alone when the edit came from Windows.
+- **Logs in `/tmp` do not survive.** Ubuntu's tmpfiles rule empties `/tmp` at
+  boot and a WSL distro restarts often, so a build log written to `/tmp` vanished
+  mid-session and the 86-error falsification log had to be reproduced. Write
+  logs under `$HOME` (`~/3a-logs/`).
+- **`wsl.exe` fails with `Wsl/E_ACCESSDENIED` under the file sandbox.** The
+  sandbox blocks named pipes, so WSL (and Docker) cannot reach the distro at
+  all; it reads like a broken WSL install. Run WSL work with the sandbox off.
+- **Every Scheme test fails in the ext4 tree** with `Unable to find file
+  "test-register" in load path`: no `test-*.scm` is copied into the build tree
+  at all (a `find` returns zero). Pre-existing and independent of code changes;
+  only the C tests run there.
+- **The Qt smoke test can fail transiently.** `pane_ok=0` plus "No suitable
+  graphics backend found" appeared once and then passed on an unchanged binary.
+  Re-run before blaming a change.
 - `.gitattributes` has no `*.md` rule, so Markdown writes warn about CRLF.
   Harmless; blobs are LF.
 
@@ -286,20 +319,30 @@ All three are done or decided:
    `report-core.scm:459` with `symbol->string` on `#f`, which reads like a
    broken report system rather than a missing module.
 3. **Register model** — ADR 0011: decouple the cell layer first, port the view
-   second. `register-core` includes `<gtk/gtk.h>` and links `gnc-gnome-utils`,
-   so porting the view alone would put GTK inside the Qt application.
+   second. **First slice done 2026-11-07**: `register-core` no longer includes
+   `<gtk/gtk.h>` or links `gnc-gnome-utils`; it reports cell errors to its
+   caller and asks the view for text metrics. Verified at link level (no toolkit
+   in `NEEDED`, zero toolkit symbols) and by a new test that links the library
+   on its own.
 
 What is next, in order:
 
-1. **Phase 2 continues**: more actions (View menu, report selection), an account
+1. **Phase 3a continues, with `ledger-core`**: it is 19,450 lines, 14 of 28
+   files use GTK, five public headers expose `GtkWidget`, and it builds eight
+   message dialogs and runs two `gtk_dialog_run` loops. That is the layer a Qt
+   view would consume, so it is the real 3a remainder; the
+   `doc/register-core-audit.md` records the measurements and the revised 4–8
+   week figure. Start by replacing the
+   `GtkWidget *parent` API with an opaque handle and the dialogs with returned
+   errors, the same shape as the cell slice.
+2. **Phase 2 continues**: more actions (View menu, report selection), an account
    tree that shows balances, and preferences read through `gnc-gsettings`
    (ADR 0013). The shell now opens a book and stays open; the next increment is
    parity for browsing.
-2. **Prove the model under edits**: the first cut handles renames via
-   `dataChanged`; insertions and deletions (`beginInsertRows`) are untested and
-   `parent_of()` no longer asks the engine, so a full tree walk needs a test.
-3. **Phase 3a kickoff**: audit `register-core` cell-by-cell (presentation versus
-   widget behaviour) before writing the abstraction (ADR 0011).
+3. **Prove the model under edits**: the first cut handles renames via
+   `dataChanged`; insertions and deletions (`beginInsertRows`) are tested by the
+   self-test (`inserts=1 removes=1`) but `parent_of()` no longer asks the engine,
+   so a full tree walk still needs a test.
 
 Deferred deliberately: Windows CI for the Qt tier — it would protect a 250-line
 stub while the real Windows work is years away (ADR 0010).
@@ -313,15 +356,25 @@ stub while the real Windows work is years away (ADR 0010).
   likely to assume the main thread.
 - That `QAbstractItemModel` can carry the register's split-row semantics without
   a bespoke proxy. Untested; it is Phase 3's first question.
+- ~~That the register audit's "three call sites" bounded Phase 3a.~~ Falsified on
+  2026-11-07: the three sites were real, but they were three of eighteen
+  affected files, and the layer above the cells (`ledger-core`) is the most
+  GTK-bound part of the register. The estimate moved from 1–2 weeks to 2–3
+  months; see `doc/register-core-audit.md`.
+- That `register-core` being toolkit-free is enough to build a Qt register view.
+  It is necessary, not sufficient — `ledger-core` still exposes `GtkWidget` and
+  runs modal dialogs, so 3b cannot start on it as it stands.
 - That QtWebEngine on MinGW is workable. Verified only indirectly: the pane
   spike runs on Linux; the Windows event-loop spike uses QtCore only.
 
 ## 11. First hour of a new session
 
 1. Read this file, then `doc/adr/README.md`, then `doc/qt6-migration-plan.md`.
-2. `git log --oneline stable..HEAD` — 36 commits, review as a series.
+2. `git log --oneline stable..HEAD` — 56 commits, review as a series.
 3. `git status` must be clean; nothing was pushed.
-4. Re-run §6 to confirm the claims still hold before building on them.
+4. Re-run §6 to confirm the claims still hold before building on them. Build in
+   the ext4 tree, not through `/mnt/f`, and expect the Qt smoke test to be the
+   fastest end-to-end check.
 5. Pick from §9; one item per session, verified before moving on.
 
 ## 12. Before deleting this file

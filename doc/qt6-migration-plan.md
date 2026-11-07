@@ -33,7 +33,7 @@ read the ADRs.
 | 0 | Groundwork: presets, dependency manifest, CI, event-loop spike, licence | Spike opens a book; Windows dependency path proven | 2–3 months |
 | 1 | Headless plateau: Qt shell opens books, runs Guile reports, renders HTML offscreen, exports PDF | All standard reports render from the golden corpus; compatibility gate green | 3–4 months |
 | 2 | Read-only shell: main window, actions, tabs, account tree, preferences | Browsing parity; keyboard navigation for tree and tabs | 3–4 months |
-| 3a | Register cell layer: remove GTK from `register-core` (ADR 0011, audited in `register-core-audit.md`) while the GTK register keeps working | GTK-free cell/block API; `gnucash` still builds and passes the register tests | 1–2 weeks |
+| 3a | Register cell layer: remove GTK from `register-core` **and then `ledger-core`** (ADR 0011, audited in `register-core-audit.md`) while the GTK register keeps working | `register-core` is toolkit-free (done); `ledger-core` reaches a GTK-free API; `gnucash` still builds and passes the register tests | 2–3 months (was 1–2 weeks) |
 | 3b | Register view: painted Qt view over the decoupled cell layer | Parity checklist signed off; performance gates met | 5–7 months |
 | 4 | Editing: transaction and split editors, reconcile, scheduled transactions, budgets, assistants | Every corpus write path reachable from Qt; interop gate green | 5–7 months |
 | 5 | Import/export and business: QIF, CSV, OFX, invoices, bills, customers, vendors, employees | Import → reconcile → report loop complete | 5–7 months |
@@ -46,8 +46,16 @@ read-only browsing is not at parity, stop and ship the GTK 4 path instead.
 Phase 3 was estimated at 6–9 months while it was "port the register". ADR 0011
 found that `register-core` includes `<gtk/gtk.h>` and links `gnc-gnome-utils`,
 so it is split into a decoupling (3a) and a view port (3b) with a larger total.
-That revision is a judgement from the include graph and file count, not a
-measured velocity: it should be re-based after 3a's first cells are done.
+
+3a was then estimated at 1–2 weeks from a grep that found three GTK call sites in
+`register-core`. That number was tested on 2026-11-07 by removing the includes
+and the link line: the three sites were real and are now gone, but the removal
+broke 15 objects in four directories, and it showed that `ledger-core` — the
+layer a Qt view would consume, 19,450 lines with five `GtkWidget` public headers
+and eight message dialogs — is the GTK-bound part. The `register-core` slice is
+done; 3a's remainder is `ledger-core`, at 4–8 weeks, so the phase is 2–3 months.
+`doc/register-core-audit.md` has the measurements. The lesson is that a grep
+finds symbol uses, not transitive includes, link paths or API shape.
 
 Post-transition, and only after the UI lands: `QSettings` replacing GSettings
 with a one-time import, `pybind11` replacing SWIG, and direct SQLite/libpq

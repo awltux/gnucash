@@ -39,3 +39,4 @@ One file per decision, numbered, immutable once accepted.
 | [0013](0013-coexistence-with-gtk.md) | Coexistence rules while both tiers ship | Accepted |
 | [0014](0014-account-tree-model.md) | The account tree is a model over engine objects, not a snapshot | Accepted |
 | [0015](0015-report-path-out-of-process.md) | Reports leave the process until the report layer is GTK-free | Accepted |
+| [0016](0016-ledger-core-boundary.md) | Phase 3a's boundary is `ledger-core`, not only `register-core` | Accepted |
