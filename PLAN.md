@@ -194,6 +194,7 @@ changes the on-disk format.
 | `register-core` is toolkit-free | ✅ observed 2026-11-07: zero `gtk_`/`gdk_`/`pango_` symbols, `NEEDED` lists no toolkit, GTK build and Qt smoke test green |
 | Audit claim: "three call sites, Phase 3a 1–2 weeks" | ❌ falsified: the three sites were real, but removing them broke 15 objects in 4 directories; `ledger-core` is the GTK-bound layer |
 | Phase 3 estimate | ✅ revised again after measurement: 3a is 2–3 months (not 1–2 weeks), of which the `register-core` slice is done and `ledger-core` is the 4–8 week remainder; 3b 5–7 months **only if** 3a covers `ledger-core` |
+| Phase 2 gate | ✅ assessed 2026-11-07: the shell gate passes on evidence, but the literal "browsing parity" criterion cannot be met before Phase 3b. `doc/phase2-gate-assessment.md` recommends three checkpoints (shell now, layer boundary after 3a, register prototype inside 3b) and **awaits ratification** |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
 | CI coverage of the Qt target | ✅ observed 2026-11-07: the `Qt tier smoke test` job ran green on its first execution (run 42395385776, 3m21s, all six steps) after the branch was pushed to `origin`; the same push ran the rest of the matrix (coverage, ci-tests, mac-tests, docker) |
 
