@@ -22,6 +22,8 @@ read the ADRs.
 | [0010](adr/0010-qt-tier-enters-the-build.md) | The Qt tier enters the build as an opt-in target |
 | [0011](adr/0011-register-decoupling.md) | The register needs decoupling before Phase 3, not a view port |
 | [0012](adr/0012-gui-thread-owns-the-engine.md) | The GUI thread owns the engine |
+| [0013](adr/0013-coexistence-with-gtk.md) | Coexistence rules while both tiers ship |
+| [0014](adr/0014-account-tree-model.md) | The account tree is a model over engine objects, not a snapshot |
 
 ## Phases and exit gates
 

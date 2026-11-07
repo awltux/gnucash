@@ -21,6 +21,8 @@ set(doc_noinst_DATA
         adr/0010-qt-tier-enters-the-build.md
         adr/0011-register-decoupling.md
         adr/0012-gui-thread-owns-the-engine.md
+        adr/0013-coexistence-with-gtk.md
+        adr/0014-account-tree-model.md
         adr/README.md
         adr/spike-event-loop/README.md
         adr/spike-event-loop/main.cpp

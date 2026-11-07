@@ -36,3 +36,5 @@ One file per decision, numbered, immutable once accepted.
 | [0010](0010-qt-tier-enters-the-build.md) | The Qt tier enters the build as an opt-in target | Accepted |
 | [0011](0011-register-decoupling.md) | The register needs decoupling before Phase 3, not a view port | Accepted |
 | [0012](0012-gui-thread-owns-the-engine.md) | The GUI thread owns the engine | Accepted |
+| [0013](0013-coexistence-with-gtk.md) | Coexistence rules while both tiers ship | Accepted |
+| [0014](0014-account-tree-model.md) | The account tree is a model over engine objects, not a snapshot | Accepted |
