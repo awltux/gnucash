@@ -167,7 +167,7 @@ changes the on-disk format.
 | Report pane renders report-engine HTML | ✅ observed |
 | `WITH_QT=ON` builds and the self-test passes | ✅ observed |
 | `WITH_QT=OFF` configures with zero Qt targets | ✅ observed |
-| Report **for a loaded book** | ⚠️ blocked — see §9, `gnc-report` links GTK3 |
+| Report **for a loaded book** | ✅ observed via helper process (see §9) |
 | Event **load** (20 renames, one burst, in order) | ✅ observed |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
 | CI coverage of the Qt target | ❌ none |
@@ -228,6 +228,12 @@ exit 0. Anything else means the tree, the environment, or the code moved.
   script file; every inline attempt failed.
 - **`gnc_account_get_name` does not exist** — the C API still uses
   `xaccAccountGetName`, and the compiler suggests `gnc_account_get_type`.
+- **`gnucash-cli -R run` needs three scheme targets and compiled schemas.**
+  Build `scm-reports scm-reports-standard scm-report-stylesheets`, and set
+  `GSETTINGS_SCHEMA_DIR` to the build's schema directory after running
+  `glib-compile-schemas` on it once. Without the stylesheet module every report
+  fails with `symbol->string: Wrong type argument ... #f` from
+  `report-core.scm:459`, which reads like a broken report system.
 - **Editing a file on the Windows side does not reliably invalidate a WSL build.**
   A `cmake --build` reported success without recompiling `qt/main.cpp`, and the
   binary kept an older timestamp. `rm` the object (or `touch` the source) and
@@ -249,41 +255,36 @@ exit 0. Anything else means the tree, the environment, or the code moved.
   `E:\gnc-*-spike*`, `E:\gnc-vcpkg-*.log`. Nothing in the repo refers to them.
 - C: had ~19 GB free; E: ~100 GB. Keep Windows build output on E:.
 
-## 9. Next steps
+## 9. Status of the three items, and what replaces them
 
-1. ~~**Event load test.**~~ ✅ done: 20 renames in one burst from the GLib thread,
-   all 20 delivered to the Qt slot, in order, none lost, exit 0.
-2. **Report for the loaded book — blocked, with evidence for both routes.**
-   *Architectural:* `gnc-report` links `PkgConfig::GTK3`
-   (`gnucash/report/CMakeLists.txt`) and depends on `gnc-html`, where WebKit
-   lives, so rendering in-process would drag GTK into the Qt application.
-   *Empirical, helper process:* `gnucash-cli` builds (target `gnucash-cli`, after
-   `scm-reports scm-reports-standard`), `-R list` enumerates reports, but
-   `-R run --name "<any report>"` writes no file and exits 0 with
+All three are done or decided:
 
-   ```
-   In procedure symbol->string: Wrong type argument in position 1
-   (expecting symbol): #f
-   ```
+1. **Event load test** — 20 renames in one burst from the GLib thread, all 20
+   delivered to a Qt slot, in order, none lost (`events=20/20 in_order=1`,
+   `on_qt_thread=1`).
+2. **Report for the loaded book** — the shell drives `gnucash-cli -R run
+   --name "<report>"` over the loaded book and displays the result: Trial
+   Balance of `sample1.gnucash` renders to 29,538 bytes and the pane reports
+   `pane_ok=1`. **Caveat:** the rendering is a child process, not in-process;
+   `gnc-report` links GTK3 through `gnc-html`, so the Qt process must not do it.
+   Build-tree requirements: `scm-reports`, `scm-reports-standard` and
+   `scm-report-stylesheets`, plus `GSETTINGS_SCHEMA_DIR` containing a compiled
+   `gschemas.compiled`. Without the stylesheet module every report fails at
+   `report-core.scm:459` with `symbol->string` on `#f`, which reads like a
+   broken report system rather than a missing module.
+3. **Register model** — ADR 0011: decouple the cell layer first, port the view
+   second. `register-core` includes `<gtk/gtk.h>` and links `gnc-gnome-utils`,
+   so porting the view alone would put GTK inside the Qt application.
 
-   for "Trial Balance", "Balance Sheet" and "Account Summary" alike. Also needed:
-   `GSETTINGS_SCHEMA_DIR` pointing at the build's schema dir with
-   `glib-compile-schemas` run once, or every preference lookup logs
-   `schema failed`.
-   *Empirical, Guile script:* `(gnucash engine)` exposes `qof-session-new` but
-   **not** `qof-session-begin`/`load`, so a script cannot open a book through the
-   bindings; the engine also logs
-   `failed to load gncmod-backend-xml from relative path`.
+What is next, in order:
 
-   Next investigation, in order: why `symbol->string` receives `#f` (likely
-   `reportname->templates` or `gnc:error` in `report-core.scm`), and whether
-   `GNC_MODULE_PATH` needs Guile-list syntax rather than a colon path.
-3. **Register model — ADR 0011 written.** The register is a virtual-cell
-   architecture (`cellblock` with cursor and two-phase commit), not a row model,
-   and `register-core` includes `<gtk/gtk.h>` and links `gnc-gnome-utils`. The
-   decision is therefore *decouple the cell layer first, port the view second*;
-   porting the view alone would put GTK in the Qt process. Phase 3's estimate is
-   flagged as needing revision in the migration plan.
+1. **Decide the report path.** The helper process works but is a stopgap: either
+   accept it for Phase 1 and revisit, or take the ADR 0004 route and de-GTKify
+   `gnc-report`/`gnc-html` so reports can render in-process.
+2. **Revise the Phase 3 estimate** in `doc/qt6-migration-plan.md`: it is a cell
+   decoupling *plus* a view port, not a port.
+3. **Start Phase 2 in earnest**: actions/menus on the Qt shell and an account
+   tree backed by a model rather than a `QTreeWidget` snapshot.
 
 Deferred deliberately: Windows CI for the Qt tier — it would protect a 250-line
 stub while the real Windows work is years away (ADR 0010).

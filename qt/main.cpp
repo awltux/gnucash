@@ -16,8 +16,12 @@
 
 #include <QApplication>
 #include <QByteArray>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QMainWindow>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QSplitter>
 #include <QStringList>
 #include <QThread>
@@ -109,6 +113,70 @@ gboolean rename_burst(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
+// A GnuCash report cannot be rendered in this process: gnc-report links GTK3
+// through gnc-html (PLAN.md §9). The shell drives GnuCash's own headless CLI
+// instead and displays the result, so the report is generated for the book
+// rather than hand-written.
+QString find_guile_ccache(const QString& build_dir)
+{
+    const QDir lib_root(build_dir + QStringLiteral("/lib"));
+    for (const QString& entry : lib_root.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+    {
+        const QString candidate =
+            lib_root.absolutePath() + QLatin1Char('/') + entry
+            + QStringLiteral("/guile/3.0/site-ccache");
+        if (QDir(candidate).exists())
+            return candidate;
+    }
+    return {};
+}
+
+bool generate_report(const QString& book, const QString& report_name,
+                     const QString& out_path)
+{
+    const QFileInfo application(QCoreApplication::applicationDirPath());
+    const QString build_dir = application.dir().absolutePath();
+    const QString cli = build_dir + QStringLiteral("/bin/gnucash-cli");
+    if (!QFileInfo::exists(cli))
+    {
+        std::fprintf(stderr, "gnucash-cli not found at %s\n", qPrintable(cli));
+        return false;
+    }
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("LD_LIBRARY_PATH"),
+               build_dir + QStringLiteral("/lib:") + build_dir + QStringLiteral("/lib/gnucash"));
+    env.insert(QStringLiteral("GNC_MODULE_PATH"), build_dir + QStringLiteral("/lib/gnucash"));
+    env.insert(QStringLiteral("GUILE_LOAD_PATH"),
+               build_dir + QStringLiteral("/share/guile/site/3.0"));
+    const QString ccache = find_guile_ccache(build_dir);
+    if (!ccache.isEmpty())
+        env.insert(QStringLiteral("GUILE_LOAD_COMPILED_PATH"), ccache);
+    env.insert(QStringLiteral("GSETTINGS_SCHEMA_DIR"),
+               build_dir + QStringLiteral("/share/glib-2.0/schemas"));
+
+    QProcess process;
+    process.setProcessEnvironment(env);
+    process.start(cli, QStringList{QStringLiteral("-R"), QStringLiteral("run"),
+                                   QStringLiteral("--name"), report_name,
+                                   QStringLiteral("--output-file"), out_path, book});
+    if (!process.waitForStarted(10000))
+    {
+        std::fprintf(stderr, "gnucash-cli failed to start\n");
+        return false;
+    }
+    if (!process.waitForFinished(180000))
+    {
+        process.kill();
+        std::fprintf(stderr, "gnucash-cli timed out\n");
+        return false;
+    }
+
+    const QFileInfo output(out_path);
+    return process.exitStatus() == QProcess::NormalExit && output.exists()
+           && output.size() > 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -164,13 +232,29 @@ int main(int argc, char** argv)
     }
     g_list_free(children);
 
-    QFile report(argv[3]);
+    QFile report;
+    const QString third = QString::fromLocal8Bit(argv[3]);
+    QString html_path = third;
+
+    if (!third.endsWith(QStringLiteral(".html"), Qt::CaseInsensitive))
+    {
+        html_path = QDir::tempPath() + QStringLiteral("/gnucash-qt-report.html");
+        QFile::remove(html_path);
+        if (!generate_report(QString::fromLocal8Bit(argv[2]), third, html_path))
+        {
+            std::fprintf(stderr, "report generation failed for \"%s\"\n", argv[3]);
+            return 1;
+        }
+    }
+
+    report.setFileName(html_path);
     if (!report.open(QIODevice::ReadOnly))
     {
-        std::fprintf(stderr, "cannot read %s\n", argv[3]);
+        std::fprintf(stderr, "cannot read %s\n", qPrintable(html_path));
         return 1;
     }
     const QByteArray html = report.readAll();
+    std::printf("report bytes: %d\n", static_cast<int>(html.size()));
 
     auto* view = new QWebEngineView(&window);
     auto* splitter = new QSplitter(&window);

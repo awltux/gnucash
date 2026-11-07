@@ -73,7 +73,7 @@ Updated as work lands. Last update: 2026-11-06.
 | Report pane renders HTML | Done | Report engine produces the document, `QWebEngineView` renders it headlessly (241 bytes in, 246 out, ok=1) |
 | Qt tier in the build | Done | `-DWITH_QT=ON` builds `bin/gnucash-qt`; `-DWITH_QT=OFF` configures cleanly with zero `gnucash-qt` targets |
 | Engine events reach Qt | Done | A 20-rename burst from the GLib thread arrived in order, none lost, all on the Qt thread (`events=20/20 in_order=1`) |
-| Report for a loaded book | Blocked | `gnc-report` links GTK3 via `gnc-html`; `gnucash-cli -R run` writes no file and fails with a Scheme `symbol->string` error for every report tried; the Guile bindings expose `qof-session-new` but not session load |
+| Report for a loaded book | Done, via helper process | `gnucash-cli -R run` renders Trial Balance for `sample1.gnucash` (29,538 bytes) and the Qt pane displays it; in-process rendering still blocked by `gnc-report`→GTK |
 | Phase 2 read-only shell | Started | Target exists with an account tree and report pane; no menus, actions or editing |
 
 ## Risks
