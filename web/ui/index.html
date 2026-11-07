@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GnuCash</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1rem 2rem; color: #222; }
+  header { border-bottom: 1px solid #ccc; margin-bottom: 1rem; }
+  #summary { color: #555; }
+  ul { list-style: none; padding-left: 1rem; }
+  li > span.name { cursor: pointer; }
+  li > span.total { color: #444; margin-left: .5rem; font-variant-numeric: tabular-nums; }
+  li > span.total.negative { color: #c00; }
+  ul.collapsed { display: none; }
+  .error { color: #c00; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GnuCash</h1>
+  <p id="summary">Loading…</p>
+</header>
+<main id="tree"></main>
+<script>
+"use strict";
+
+// The token is the first path segment; every request keeps it.
+const token = location.pathname.split("/")[1];
+const api = (route) => `/${token}/${route}`;
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+// A foldable row: name toggles its children, total is read-only.
+function renderAccount(account) {
+  const li = el("li");
+  const name = el("span", "name", account.name);
+  const total = el("span", "total", account.total);
+  if (account.negative) total.classList.add("negative");
+  li.append(name, total);
+
+  if (account.children.length > 0) {
+    const children = el("ul");
+    for (const child of account.children) children.append(renderAccount(child));
+    li.append(children);
+    name.addEventListener("click", () => children.classList.toggle("collapsed"));
+  }
+  return li;
+}
+
+async function load() {
+  try {
+    const book = await (await fetch(api("api/book"))).json();
+    document.getElementById("summary").textContent =
+      `${book.accounts} accounts, ${book.top_level} top level`;
+
+    const root = await (await fetch(api("api/accounts"))).json();
+    const tree = document.getElementById("tree");
+    const list = el("ul");
+    for (const account of root.children) list.append(renderAccount(account));
+    tree.append(list);
+  } catch (err) {
+    document.getElementById("summary").textContent = "Could not load the book.";
+    document.getElementById("summary").className = "error";
+    console.error(err);
+  }
+}
+
+load();
+</script>
+</body>
+</html>
