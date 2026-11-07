@@ -67,7 +67,7 @@ GTK 3 is also in maintenance mode.
 
 | Thing | Location |
 |---|---|
-| Branch | `phase0/qt6-groundwork`, 56 commits ahead of `stable`, **never pushed** |
+| Branch | `phase0/qt6-groundwork`, 60+ commits ahead of `stable`, pushed to `origin` (the fork) |
 | Review order | ADRs → `doc/qt6-migration-plan.md` → build config → `qt/` → `doc/adr/spike-*` |
 | Linux build tree | `~/build/ext4-qt` (WSL, ext4 copy of the tree). `WITH_QT=ON`, Debug; **both** `bin/gnucash` (GTK) and `bin/gnucash-qt` built as of 2026-11-07 |
 | Source copy for building | `~/src/gnucash` — an rsync of this repo; edit here, then sync |
@@ -304,6 +304,12 @@ document that is not the loaded book. Prefer the script.
   process the first version's 10 s poll cap expired and the self-test printed
   `pane_ok=0 tabs_ok=0` on a correct build. The poll now allows 30 s and the
   hard timeout is 60 s. If it flaps, raise those; do not "fix" the tabs.
+- **macOS CI can fail before it compiles anything.** The `mac-tests` job
+  downloads a prebuilt dependency tarball; when that download fails the job is
+  red with every later step skipped (`download dependency tarball` is the
+  failing step). It is infrastructure, not the branch: the same series passed
+  the job on one commit and failed the next with no code change to explain it.
+  Read the failing step name before reading anything into a red macOS job.
 - `.gitattributes` has no `*.md` rule, so Markdown writes warn about CRLF.
   Harmless; blobs are LF.
 
@@ -390,7 +396,7 @@ stub while the real Windows work is years away (ADR 0010).
 ## 11. First hour of a new session
 
 1. Read this file, then `doc/adr/README.md`, then `doc/qt6-migration-plan.md`.
-2. `git log --oneline stable..HEAD` — 56 commits, review as a series.
+2. `git log --oneline stable..HEAD` — 60+ commits, review as a series.
 3. `git status` must be clean; nothing was pushed.
 4. Re-run §6 to confirm the claims still hold before building on them. Build in
    the ext4 tree, not through `/mnt/f`, and expect the Qt smoke test to be the
