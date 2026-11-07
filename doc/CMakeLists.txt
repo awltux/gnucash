@@ -23,6 +23,7 @@ set(doc_noinst_DATA
         adr/0012-gui-thread-owns-the-engine.md
         adr/0013-coexistence-with-gtk.md
         adr/0014-account-tree-model.md
+        adr/0015-report-path-out-of-process.md
         adr/README.md
         adr/spike-event-loop/README.md
         adr/spike-event-loop/main.cpp

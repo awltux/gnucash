@@ -24,6 +24,7 @@ read the ADRs.
 | [0012](adr/0012-gui-thread-owns-the-engine.md) | The GUI thread owns the engine |
 | [0013](adr/0013-coexistence-with-gtk.md) | Coexistence rules while both tiers ship |
 | [0014](adr/0014-account-tree-model.md) | The account tree is a model over engine objects, not a snapshot |
+| [0015](adr/0015-report-path-out-of-process.md) | Reports leave the process until the report layer is GTK-free |
 
 ## Phases and exit gates
 
