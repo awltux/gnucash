@@ -40,6 +40,7 @@
 #include <QWebEngineView>
 
 #include "account-model.h"
+#include "preferences-dialog.h"
 #include "report-runner.h"
 
 extern "C" {
@@ -751,8 +752,20 @@ int main(int argc, char** argv)
     if (report_names.isEmpty())
         reports_menu->addAction(QStringLiteral("(none available)"))->setEnabled(false);
 
-    auto* view_menu = window.menuBar()->addMenu(QStringLiteral("&View"));
-    auto* reload_action = view_menu->addAction(QStringLiteral("&Reload report"));
+    // Preferences over existing keys only (ADR 0013); the dialog applies on
+    // accept, and the tree follows whatever it changed.
+    auto* edit_menu = window.menuBar()->addMenu(QStringLiteral("&Edit"));
+    auto* preferences_action = edit_menu->addAction(QStringLiteral("&Preferences"));
+    QObject::connect(preferences_action, &QAction::triggered, [&]() {
+        gncqt::PreferencesDialog dialog(&window);
+        if (dialog.exec() == QDialog::Accepted)
+        {
+            apply_negative_in_red(&prefs);
+            model->refresh_totals();
+        }
+    });
+
+    auto* view_menu = window.menuBar()->addMenu(QStringLiteral("&View"));    auto* reload_action = view_menu->addAction(QStringLiteral("&Reload report"));
     reload_action->setShortcuts({kReloadKeys[0], kReloadKeys[1]});
     QObject::connect(reload_action, &QAction::triggered, [&]() {
         QWidget* current = tabs->currentWidget();
@@ -841,6 +854,58 @@ int main(int argc, char** argv)
         prefs_ok = run_prefs_test(model, book, session.root, &prefs) && pref_cb != 0;
     }
 
+    // The preferences dialog over existing keys, driven without being shown:
+    // what matters is that the controls write GSettings and that the tree is
+    // told to repaint when they do.
+    bool prefs_ui_ok = false;
+    {
+        gncqt::PreferencesDialog dialog;
+
+        const bool original_red =
+            gnc_gsettings_get_bool(GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED);
+        const int original_start =
+            gnc_gsettings_get_int(GNC_PREFS_GROUP_ACCT_SUMMARY, GNC_PREF_START_PERIOD);
+
+        int repaints = 0;
+        const auto connection = QObject::connect(
+            model, &QAbstractItemModel::dataChanged,
+            [&repaints](const QModelIndex&, const QModelIndex&, const QVector<int>&) {
+                ++repaints;
+            });
+
+        dialog.set_negative_in_red(!original_red);
+        // The dialog offers nine relative periods (gnc-period-select.c).
+        const int wanted_start = (original_start + 1) % 9;
+        dialog.set_start_period(wanted_start);
+        dialog.apply();
+
+        apply_negative_in_red(&prefs);
+        model->refresh_totals();
+
+        const bool red_written =
+            gnc_gsettings_get_bool(GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED)
+            == !original_red;
+        const bool start_written =
+            dialog.start_is_absolute()
+            || gnc_gsettings_get_int(GNC_PREFS_GROUP_ACCT_SUMMARY,
+                                     GNC_PREF_START_PERIOD) == wanted_start;
+
+        QObject::disconnect(connection);
+
+        // Leave the user's settings exactly as they were.
+        gnc_gsettings_set_bool(GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED,
+                               original_red);
+        if (!dialog.start_is_absolute())
+            gnc_gsettings_set_int(GNC_PREFS_GROUP_ACCT_SUMMARY, GNC_PREF_START_PERIOD,
+                                  original_start);
+        apply_negative_in_red(&prefs);
+        model->refresh_totals();
+
+        prefs_ui_ok = red_written && start_written && repaints > 0;
+        std::printf("prefs_ui: red=%d start=%d repaints=%d\n",
+                    red_written ? 1 : 0, start_written ? 1 : 0, repaints);
+    }
+
     // The keyboard audit's browsing bindings, asserted on the actions rather
     // than by sending key events: the action is what the menu and the shortcut
     // both go through.
@@ -921,19 +986,19 @@ int main(int argc, char** argv)
 
         std::printf("accounts=%d top_level=%d pane_ok=%d tabs_ok=%d keys_ok=%d "
                     "events=%d/%d in_order=%d on_qt_thread=%d model_ok=%d "
-                    "total_ok=%d period_ok=%d prefs_ok=%d inserts=%d removes=%d "
-                    "reports=%d\n",
+                    "total_ok=%d period_ok=%d prefs_ok=%d prefs_ui_ok=%d "
+                    "inserts=%d removes=%d reports=%d\n",
                     session.descendant_count, top_level,
                     pane_loaded ? 1 : 0, tabs_ok ? 1 : 0, keys_ok ? 1 : 0,
                     g_event_count.load(), kRenames,
                     in_order ? 1 : 0, g_event_off_thread.load() ? 0 : 1,
                     edit.ok ? 1 : 0, total.ok ? 1 : 0, total.period_ok ? 1 : 0,
-                    prefs_ok ? 1 : 0, edit.inserts, edit.removes,
+                    prefs_ok ? 1 : 0, prefs_ui_ok ? 1 : 0, edit.inserts, edit.removes,
                     static_cast<int>(report_names.size()));
 
         app.exit(events_done && in_order && pane_loaded && tabs_ok && keys_ok
                          && edit.ok && total.ok && total.period_ok && prefs_ok
-                         && !g_event_off_thread.load()
+                         && prefs_ui_ok && !g_event_off_thread.load()
                          && !report_names.isEmpty()
                      ? 0
                      : 1);

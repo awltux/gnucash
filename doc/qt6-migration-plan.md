@@ -79,7 +79,7 @@ line as **done** or **deliberately out of scope, with a reason**. Nothing is
 | Reports: more than one open at a time | done | one tab per report, each with its own view (`tabs_ok=1`) |
 | Tabs | done | `Accounts` page plus a page per report; `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Preferences read through `gnc-gsettings` | done | `prefs_ok=1`, `general/negative-in-red` |
-| Preferences UI | not done | deferred by decision until the rest is settled; must reuse existing keys |
+| Preferences UI | done (existing keys only) | `Edit → Preferences` edits `general/negative-in-red` and the relative accounting period; absolute periods are shown disabled rather than overwritten (`prefs_ui_ok=1`) |
 | Keyboard: tree navigation | done | arrows, Home/End, Page Up/Down and type-ahead are `QTreeView` defaults; `+`/`-` added to match GtkTreeView (`keys_ok=1`, see [the audit](qt6-keyboard-audit.md)) |
 | Keyboard: tab switching | done | `View → Next/Previous tab`, `Ctrl+Tab` / `Ctrl+Shift+Tab` and `Ctrl+Page Down/Up` |
 | Keyboard: menu shortcuts | done (browsing) | Open `Ctrl+O`, Quit `Ctrl+Q`, Reload `F5`/`Ctrl+R`, Close page `Ctrl+W`; editing shortcuts are Phase 4 |

@@ -53,6 +53,10 @@ public:
     void account_added(Account* account);
     void account_removed(Account* account);
 
+    // Recomputes every total and repaints the rows: a preference that the
+    // totals depend on (the accounting period) changed.
+    void refresh_totals();
+
     // Counters for tests: how many structural signals have been emitted.
     int inserted_rows() const { return inserted_; }
     int removed_rows() const { return removed_; }
@@ -71,6 +75,7 @@ private:
     Account* parent_of(Account* account) const;
     QModelIndex index_of(Account* account) const;
     void forget_subtree(Account* account);
+    void emit_rows_changed(const QModelIndex& parent);
 
     // The account's totals, formatted the way the GTK account tree formats
     // them (including children, in the account's commodity): the present

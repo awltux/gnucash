@@ -51,6 +51,7 @@ echo "$out" | grep -q "model_ok=1" || fail "account model did not follow an edit
 echo "$out" | grep -q "total_ok=1" || fail "account totals did not follow a split"
 echo "$out" | grep -q "period_ok=1" || fail "period total did not separate from the balance"
 echo "$out" | grep -q "prefs_ok=1" || fail "the negative-in-red preference was not honoured"
+echo "$out" | grep -q "prefs_ui_ok=1" || fail "the preferences dialog did not write its keys"
 echo "$out" | grep -qE "reports=[1-9][0-9]*" || fail "no reports listed from the helper"
 echo "$out" | grep -qE "report bytes: [1-9][0-9]+" || fail "report was not generated"
 

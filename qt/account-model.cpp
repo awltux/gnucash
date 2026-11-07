@@ -217,6 +217,24 @@ QVariant AccountModel::headerData(int section, Qt::Orientation orientation,
     }
 }
 
+void AccountModel::refresh_totals()
+{
+    totals_.clear();
+    emit_rows_changed(QModelIndex());
+}
+
+void AccountModel::emit_rows_changed(const QModelIndex& parent)
+{
+    const int rows = rowCount(parent);
+    for (int row = 0; row < rows; ++row)
+    {
+        const QModelIndex name = index(row, NameColumn, parent);
+        emit dataChanged(name, index(row, PeriodTotalColumn, parent),
+                         {Qt::DisplayRole, Qt::ForegroundRole});
+        emit_rows_changed(name);
+    }
+}
+
 void AccountModel::account_changed(Account* account)
 {
     if (account == nullptr)

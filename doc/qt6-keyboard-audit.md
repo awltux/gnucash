@@ -27,7 +27,7 @@ are listed for completeness and not implemented.
 | Refresh / reload the current page | `Ctrl+R` (`ViewRefreshAction`, every page) | `F5` only | **add `Ctrl+R`**, keep `F5` as the Qt habit |
 | Close the current page | `Ctrl+W` (`FileCloseAction`) | none | **add `Ctrl+W`**: closes the current report page, ignored on Accounts |
 | Switch page | `Ctrl+Page Up/Down` (GtkNotebook) | `Ctrl+Tab` / `Ctrl+Shift+Tab` | **add `Ctrl+Page Up/Down`**; keep `Ctrl+Tab` because it is the Qt convention |
-| Preferences | Edit → Preferences, no accelerator | none | **add the menu item** (the dialog is the next increment) |
+| Preferences | Edit → Preferences, no accelerator | none | **done**: `Edit → Preferences` opens the dialog over existing keys |
 | New book, save, save-as, print, import, export | `Ctrl+N`, `Ctrl+S`, `Ctrl+Shift+S`, `Ctrl+P`, … | none | out of scope: the shell is read-only (Phase 4 and 5) |
 | Account tree: find account | `Ctrl+I` (`EditFindAccountAction`) | none | deferred: `QTreeView` type-ahead searches the visible rows, which is not the same dialog; decide at the gate whether parity needs it |
 | Account tree: edit / transfer / delete | `Ctrl+E`, `Ctrl+T`, `Delete` | none | out of scope: editing (Phase 4) |

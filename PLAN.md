@@ -187,6 +187,7 @@ changes the on-disk format.
 | Negative totals follow the preference | ✅ observed: red only when `general/negative-in-red` is set; the self-test flips it both ways, checks the read-back and the colour role, then restores it (`prefs_ok=1`) |
 | Tabs | ✅ observed: an `Accounts` page plus one page per report, each with its own `QWebEngineView` so two reports do not share a pane; report pages close, the accounts page does not; `Ctrl+Tab` / `Ctrl+Shift+Tab` and `View → Next/Previous tab` switch (`tabs_ok=1`) |
 | Keyboard bindings | ✅ observed: the browsing bindings from `gnucash/ui/accelerator-map` are implemented and asserted on the actions themselves (`keys_ok=1`) — `Ctrl+O`, `Ctrl+Q`, `F5`/`Ctrl+R`, `Ctrl+W`, `Ctrl+Tab`/`Ctrl+PageDown`, `Ctrl+Shift+Tab`/`Ctrl+PageUp`, plus GTK's `+`/`-` on the tree. Audit: `doc/qt6-keyboard-audit.md` |
+| Preferences dialog | ✅ observed: `Edit → Preferences` edits existing keys only — negative-in-red and the relative accounting-period start/end. Absolute periods are shown disabled rather than overwritten. The self-test drives the dialog without showing it, checks both keys and that the tree repainted (`prefs_ui_ok=1`) |
 | Report path | ✅ ADR 0015 — out-of-process through Phase 5; the seam is `qt/report-runner.*` |
 | App mode | ✅ `gnucash-qt <book>` opens and stays open; `--self-test` is the CI harness |
 | Report selector | ✅ 63 reports listed from `gnucash-cli -R list` at startup; `Reports` menu plus `View → Reload report` |
@@ -228,8 +229,9 @@ bash ~/src/gnucash/qt/run-smoke-test.sh ~/build/ext4-qt ~/src/gnucash
 
 Expected: `accounts=104 top_level=5 pane_ok=1 tabs_ok=1 keys_ok=1
 events=20/20 in_order=1 on_qt_thread=1 model_ok=1 total_ok=1 period_ok=1
-prefs_ok=1 inserts=1 removes=1 reports=63` and `qt smoke test passed`, exit 0.
-Anything else means the tree, the environment, or the code moved.
+prefs_ok=1 prefs_ui_ok=1 inserts=1 removes=1 reports=63` and `qt smoke test
+passed`, exit 0. Anything else means the tree, the environment, or the code
+moved.
 
 The older hand-rolled recipe (a standalone `make-html.scm` document, then
 `gnucash-qt <backend> <book> <html>`) still works but tests less: it renders a

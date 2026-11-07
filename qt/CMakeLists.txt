@@ -12,6 +12,8 @@ set(qt_gnucash_SOURCES
   main.cpp
   account-model.cpp
   account-model.h
+  preferences-dialog.cpp
+  preferences-dialog.h
   report-runner.cpp
   report-runner.h
 )
