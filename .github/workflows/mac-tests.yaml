@@ -17,12 +17,26 @@ jobs:
         echo "SRCROOT=$HOME/gnucash/source" >> $GITHUB_ENV
         brew install ninja
     - name: download dependency tarball
-      uses: carlosperate/download-file-action@v2
-      id: dependencies
-      with:
-        file-url: 'https://downloads.sourceforge.net/gnucash/Dependencies/gnucash-5.15-mac-dependencies.tar.xz'
-        file-name: gnucash-dependencies.tar.xz
-        sha256: '15d14226e93cf18c60eb36d79686171a6b920ed1f72a815b8bad8f8755c76a02'
+      # downloads.sourceforge.net answers a browser user agent with a 301 to
+      # the HTML "your download will begin shortly" page (and a Cloudflare bot
+      # cookie); a plain curl gets the 302 to the mirror and the file itself.
+      # The mirror also aborts long transfers, hence the retries, and the
+      # checksum is checked here rather than trusted to the action.
+      run: |
+        url='https://master.dl.sourceforge.net/project/gnucash/Dependencies/gnucash-5.15-mac-dependencies.tar.xz'
+        dest="$GITHUB_WORKSPACE/gnucash-dependencies.tar.xz"
+        ok=0
+        for attempt in 1 2 3 4 5; do
+          if curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
+                   --connect-timeout 30 -o "$dest" "$url"; then
+            ok=1
+            break
+          fi
+          echo "attempt $attempt failed; retrying in 15s"
+          sleep 15
+        done
+        [ "$ok" = 1 ] || { echo "::error::could not download the dependency tarball"; exit 1; }
+        echo "15d14226e93cf18c60eb36d79686171a6b920ed1f72a815b8bad8f8755c76a02  $dest" | shasum -a 256 -c -
     - name: download googletest
       uses: carlosperate/download-file-action@v2
 
