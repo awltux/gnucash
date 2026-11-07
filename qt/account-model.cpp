@@ -5,8 +5,10 @@
 #include <QVariant>
 
 extern "C" {
+#include <gnc-accounting-period.h>
 #include <gnc-engine.h>
 #include <gnc-ui-balances.h>
+#include <gnc-ui-util.h>
 }
 
 namespace gncqt
@@ -117,7 +119,7 @@ int AccountModel::rowCount(const QModelIndex& parent) const
 
 int AccountModel::columnCount(const QModelIndex&) const
 {
-    return 2;
+    return 3;
 }
 
 AccountModel::Total AccountModel::total_for(Account* account) const
@@ -130,15 +132,30 @@ AccountModel::Total AccountModel::total_for(Account* account) const
     if (cached != totals_.constEnd())
         return *cached;
 
-    // The same helper the GTK account tree uses, so the strings match: the
-    // present balance including children, in the account's own commodity.
+    // The same helpers the GTK account tree uses, so the strings match: the
+    // present balance including children, and the change over the current
+    // accounting period, both in the account's own commodity.
     gboolean negative = FALSE;
     gchar* text = gnc_ui_account_get_print_balance(
         xaccAccountGetPresentBalanceInCurrency, account, TRUE, &negative);
 
-    total.text = QString::fromUtf8(text != nullptr ? text : "");
-    total.negative = negative;
+    total.present = QString::fromUtf8(text != nullptr ? text : "");
+    total.present_negative = negative;
     g_free(text);
+
+    const time64 start = gnc_accounting_period_fiscal_start();
+    const time64 end = gnc_accounting_period_fiscal_end();
+    if (start <= end)
+    {
+        gnc_numeric change =
+            xaccAccountGetBalanceChangeForPeriod(account, start, end, TRUE);
+        if (gnc_reverse_balance(account))
+            change = gnc_numeric_neg(change);
+
+        total.period_negative = gnc_numeric_negative_p(change);
+        total.period = QString::fromUtf8(gnc_print_amount_with_bidi_ltr_isolate(
+            change, gnc_account_print_info(account, TRUE)));
+    }
 
     totals_.insert(account, total);
     return total;
@@ -153,14 +170,18 @@ QVariant AccountModel::data(const QModelIndex& index, int role) const
     if (account == nullptr)
         return {};
 
-    if (index.column() == TotalColumn)
+    if (index.column() == TotalColumn || index.column() == PeriodTotalColumn)
     {
+        const bool period = index.column() == PeriodTotalColumn;
+        const Total total = total_for(account);
+
         switch (role)
         {
         case Qt::DisplayRole:
-            return total_for(account).text;
+            return period ? total.period : total.present;
         case Qt::ForegroundRole:
-            if (negative_in_red_ && total_for(account).negative)
+            if (negative_in_red_
+                && (period ? total.period_negative : total.present_negative))
                 return QBrush(QColor(0xc0, 0x00, 0x00));
             return {};
         case Qt::TextAlignmentRole:
@@ -189,6 +210,8 @@ QVariant AccountModel::headerData(int section, Qt::Orientation orientation,
         return QStringLiteral("Account");
     case TotalColumn:
         return QStringLiteral("Total");
+    case PeriodTotalColumn:
+        return QStringLiteral("Total (Period)");
     default:
         return {};
     }

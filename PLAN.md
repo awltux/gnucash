@@ -183,6 +183,7 @@ changes the on-disk format.
 | Coexistence rules (GSettings, helper reports, no shared UI state) | ✅ ADR 0013 — rule 1 is now exercised for real: the Qt tree reads `general/negative-in-red` through `gnc-gsettings` (`prefs_ok=1`) and there is still no Qt-only preference store |
 | Account tree model | ✅ implemented and verified under edits — insert/remove signals fire (`model_ok=1 inserts=1 removes=1`) |
 | Account tree totals | ✅ observed: a `Total` column formatted by app-utils' `gnc_ui_account_get_print_balance` (the GTK tree's helper), refreshed from the account-modify events the engine emits when splits are added or removed, including ancestors (`total_ok=1`) |
+| Period total column | ✅ observed: a `Total (Period)` column computed the way the GTK tree computes it (`gnc_accounting_period_fiscal_start/end` + `xaccAccountGetBalanceChangeForPeriod`, reversed for income/expense accounts); the self-test proves an out-of-period split moves the balance and not the period (`period_ok=1`) |
 | Negative totals follow the preference | ✅ observed: red only when `general/negative-in-red` is set; the self-test flips it both ways, checks the read-back and the colour role, then restores it (`prefs_ok=1`) |
 | Report path | ✅ ADR 0015 — out-of-process through Phase 5; the seam is `qt/report-runner.*` |
 | App mode | ✅ `gnucash-qt <book>` opens and stays open; `--self-test` is the CI harness |
@@ -224,9 +225,9 @@ bash ~/src/gnucash/qt/run-smoke-test.sh ~/build/ext4-qt ~/src/gnucash
 ```
 
 Expected: `accounts=104 top_level=5 pane_ok=1 events=20/20 in_order=1
-on_qt_thread=1 model_ok=1 total_ok=1 prefs_ok=1 inserts=1 removes=1 reports=63`
-and `qt smoke test passed`, exit 0. Anything else means the tree, the
-environment, or the code moved.
+on_qt_thread=1 model_ok=1 total_ok=1 period_ok=1 prefs_ok=1 inserts=1
+removes=1 reports=63` and `qt smoke test passed`, exit 0. Anything else means
+the tree, the environment, or the code moved.
 
 The older hand-rolled recipe (a standalone `make-html.scm` document, then
 `gnucash-qt <backend> <book> <html>`) still works but tests less: it renders a

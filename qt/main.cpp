@@ -229,17 +229,23 @@ static Account* make_holding_account(QofBook* book, Account* parent,
     return account;
 }
 
-// Posts a split into a child account and checks the total column followed: the
-// child's total must move, and so must its parent's, because a total includes
-// its children. The parent holds no splits of its own, so its total can only
-// move by recursion.
+// Posts a split into a child account and checks the total columns followed:
+// the child's totals must move, and so must its parent's, because a total
+// includes its children. The parent holds no splits of its own, so its total
+// can only move by recursion. A second split dated ten years ago separates the
+// two columns: it moves the present balance and must leave the period total
+// alone.
 struct TotalTest
 {
     QString before_leaf;
     QString after_leaf;
     QString before_parent;
     QString after_parent;
+    QString after_leaf_period;
+    QString later_present;
+    QString later_period;
     bool ok = false;
+    bool period_ok = false;
 };
 
 TotalTest run_total_test(gncqt::AccountModel* model, QofBook* book, Account* root)
@@ -262,35 +268,43 @@ TotalTest run_total_test(gncqt::AccountModel* model, QofBook* book, Account* roo
         find_account_index(model, QModelIndex(), leaf, gncqt::AccountModel::TotalColumn);
     const QModelIndex parent_total =
         find_account_index(model, QModelIndex(), top, gncqt::AccountModel::TotalColumn);
-    if (!leaf_total.isValid() || !parent_total.isValid())
+    const QModelIndex leaf_period =
+        find_account_index(model, QModelIndex(), leaf,
+                           gncqt::AccountModel::PeriodTotalColumn);
+    if (!leaf_total.isValid() || !parent_total.isValid() || !leaf_period.isValid())
         return result;
 
     result.before_leaf = model->data(leaf_total, Qt::DisplayRole).toString();
     result.before_parent = model->data(parent_total, Qt::DisplayRole).toString();
 
-    Transaction* trans = xaccMallocTransaction(book);
-    xaccTransBeginEdit(trans);
-    xaccTransSetCurrency(trans, commodity);
-    xaccTransSetDatePostedSecsNormalized(trans, gnc_time64_get_today_start());
+    const auto post_split = [&](time64 date, gnc_numeric amount) {
+        Transaction* trans = xaccMallocTransaction(book);
+        xaccTransBeginEdit(trans);
+        xaccTransSetCurrency(trans, commodity);
+        xaccTransSetDatePostedSecsNormalized(trans, date);
 
-    Split* debit = xaccMallocSplit(book);
-    xaccSplitSetAccount(debit, leaf);
-    xaccSplitSetParent(debit, trans);
-    xaccSplitSetAmount(debit, gnc_numeric_create(100, 1));
-    xaccSplitSetValue(debit, gnc_numeric_create(100, 1));
+        Split* debit = xaccMallocSplit(book);
+        xaccSplitSetAccount(debit, leaf);
+        xaccSplitSetParent(debit, trans);
+        xaccSplitSetAmount(debit, amount);
+        xaccSplitSetValue(debit, amount);
 
-    Split* credit = xaccMallocSplit(book);
-    xaccSplitSetAccount(credit, donor);
-    xaccSplitSetParent(credit, trans);
-    xaccSplitSetAmount(credit, gnc_numeric_create(-100, 1));
-    xaccSplitSetValue(credit, gnc_numeric_create(-100, 1));
+        Split* credit = xaccMallocSplit(book);
+        xaccSplitSetAccount(credit, donor);
+        xaccSplitSetParent(credit, trans);
+        xaccSplitSetAmount(credit, gnc_numeric_neg(amount));
+        xaccSplitSetValue(credit, gnc_numeric_neg(amount));
 
-    xaccTransCommitEdit(trans);
+        xaccTransCommitEdit(trans);
+    };
+
+    post_split(gnc_time64_get_today_start(), gnc_numeric_create(100, 1));
 
     // The indexes stay valid: nothing was inserted or removed, and the model
     // dropped its totals when the engine reported the split.
     result.after_leaf = model->data(leaf_total, Qt::DisplayRole).toString();
     result.after_parent = model->data(parent_total, Qt::DisplayRole).toString();
+    result.after_leaf_period = model->data(leaf_period, Qt::DisplayRole).toString();
 
     result.ok = !result.after_leaf.isEmpty()
                 && result.after_leaf != result.before_leaf
@@ -298,6 +312,23 @@ TotalTest run_total_test(gncqt::AccountModel* model, QofBook* book, Account* roo
                 // The parent holds no splits of its own, so its recursive
                 // total must equal its only child's, not merely change.
                 && result.after_parent == result.after_leaf;
+
+    // Ten years before the fiscal period: the balance moves, the period does not.
+    const time64 ten_years_ago =
+        gnc_time64_get_today_start() - static_cast<time64>(10 * 365 * 24 * 60 * 60);
+    post_split(ten_years_ago, gnc_numeric_create(50, 1));
+
+    result.later_present = model->data(leaf_total, Qt::DisplayRole).toString();
+    result.later_period = model->data(leaf_period, Qt::DisplayRole).toString();
+
+    result.period_ok = !result.after_leaf_period.isEmpty()
+                       // The account is fresh, so its only in-period split is
+                       // the one above: both columns read the same number.
+                       && result.after_leaf_period == result.after_leaf
+                       // The out-of-period split moved the balance...
+                       && result.later_present != result.after_leaf
+                       // ...and left the period total alone.
+                       && result.later_period == result.after_leaf_period;
     return result;
 }
 
@@ -495,6 +526,8 @@ int main(int argc, char** argv)
                                          QHeaderView::Stretch);
     tree->header()->setSectionResizeMode(gncqt::AccountModel::TotalColumn,
                                          QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(gncqt::AccountModel::PeriodTotalColumn,
+                                         QHeaderView::ResizeToContents);
 
     // The preference decides the colour; the model only carries the flag.
     PrefWatch prefs{model, tree};
@@ -681,17 +714,18 @@ int main(int argc, char** argv)
         }
 
         std::printf("accounts=%d top_level=%d pane_ok=%d events=%d/%d in_order=%d "
-                    "on_qt_thread=%d model_ok=%d total_ok=%d prefs_ok=%d "
-                    "inserts=%d removes=%d reports=%d\n",
+                    "on_qt_thread=%d model_ok=%d total_ok=%d period_ok=%d "
+                    "prefs_ok=%d inserts=%d removes=%d reports=%d\n",
                     session.descendant_count, top_level,
                     pane_loaded ? 1 : 0, g_event_count.load(), kRenames,
                     in_order ? 1 : 0, g_event_off_thread.load() ? 0 : 1,
-                    edit.ok ? 1 : 0, total.ok ? 1 : 0, prefs_ok ? 1 : 0,
-                    edit.inserts, edit.removes,
+                    edit.ok ? 1 : 0, total.ok ? 1 : 0, total.period_ok ? 1 : 0,
+                    prefs_ok ? 1 : 0, edit.inserts, edit.removes,
                     static_cast<int>(report_names.size()));
 
         app.exit(events_done && in_order && pane_loaded && edit.ok && total.ok
-                         && prefs_ok && !g_event_off_thread.load()
+                         && total.period_ok && prefs_ok
+                         && !g_event_off_thread.load()
                          && !report_names.isEmpty()
                      ? 0
                      : 1);

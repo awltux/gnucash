@@ -30,7 +30,8 @@ public:
     enum Column
     {
         NameColumn = 0,
-        TotalColumn = 1
+        TotalColumn = 1,
+        PeriodTotalColumn = 2
     };
 
     explicit AccountModel(QObject* parent = nullptr);
@@ -71,14 +72,17 @@ private:
     QModelIndex index_of(Account* account) const;
     void forget_subtree(Account* account);
 
-    // The account's total, formatted the way the GTK account tree formats it
-    // (including children, in the account's commodity). Cached because the
-    // view asks for it once per painted cell; the cache is dropped on any
-    // account event.
+    // The account's totals, formatted the way the GTK account tree formats
+    // them (including children, in the account's commodity): the present
+    // balance, and the change over the current accounting period. Cached
+    // because the view asks for them once per painted cell; the cache is
+    // dropped on any account event.
     struct Total
     {
-        QString text;
-        bool negative = false;
+        QString present;
+        bool present_negative = false;
+        QString period;
+        bool period_negative = false;
     };
 
     Total total_for(Account* account) const;
