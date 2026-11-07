@@ -41,3 +41,4 @@ One file per decision, numbered, immutable once accepted.
 | [0015](0015-report-path-out-of-process.md) | Reports leave the process until the report layer is GTK-free | Accepted |
 | [0016](0016-ledger-core-boundary.md) | Phase 3a's boundary is `ledger-core`, not only `register-core` | Accepted |
 | [0017](0017-show-hidden-accounts.md) | Hidden accounts get a shared GSettings key | Proposed |
+| [0018](0018-windows-report-backend.md) | The report pane needs a non-WebEngine backend on Windows | Proposed |

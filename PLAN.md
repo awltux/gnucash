@@ -196,6 +196,7 @@ changes the on-disk format.
 | Phase 3 estimate | ✅ revised again after measurement: 3a is 2–3 months (not 1–2 weeks), of which the `register-core` slice is done and `ledger-core` is the 4–8 week remainder; 3b 5–7 months **only if** 3a covers `ledger-core` |
 | Phase 2 gate | ✅ assessed 2026-11-07: the shell gate passes on evidence, but the literal "browsing parity" criterion cannot be met before Phase 3b. `doc/phase2-gate-assessment.md` recommends three checkpoints (shell now, layer boundary after 3a, register prototype inside 3b) and **awaits ratification** |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
+| Windows report pane | ❌ blocked as planned 2026-11-07: Qt WebEngine does not compile with MinGW and MSYS2 does not package it; [ADR 0018](doc/adr/0018-windows-report-backend.md) (Proposed) splits the report view per platform |
 | CI coverage of the Qt target | ✅ observed 2026-11-07: the `Qt tier smoke test` job ran green on its first execution (run 42395385776, 3m21s, all six steps) after the branch was pushed to `origin`; the same push ran the rest of the matrix (coverage, ci-tests, mac-tests, docker) |
 
 ## 6. How to re-verify, from scratch
@@ -391,8 +392,13 @@ stub while the real Windows work is years away (ADR 0010).
 - That `register-core` being toolkit-free is enough to build a Qt register view.
   It is necessary, not sufficient — `ledger-core` still exposes `GtkWidget` and
   runs modal dialogs, so 3b cannot start on it as it stands.
-- That QtWebEngine on MinGW is workable. Verified only indirectly: the pane
-  spike runs on Linux; the Windows event-loop spike uses QtCore only.
+- ~~That QtWebEngine on MinGW is workable.~~ **Falsified 2026-11-07**: Qt's
+  platform notes state WebEngine does not compile with MinGW and requires
+  Visual Studio; MSYS2 packages `qt6-base` but not `qt6-webengine`. The report
+  pane therefore needs a Windows backend other than WebEngine — see
+  [ADR 0018](doc/adr/0018-windows-report-backend.md) (Proposed: WebView2 or the
+  system browser behind a `ReportView` interface). The Qt widgets tier still
+  builds under MinGW.
 
 ## 11. First hour of a new session
 

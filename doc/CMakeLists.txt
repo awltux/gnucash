@@ -29,6 +29,7 @@ set(doc_noinst_DATA
         adr/0015-report-path-out-of-process.md
         adr/0016-ledger-core-boundary.md
         adr/0017-show-hidden-accounts.md
+        adr/0018-windows-report-backend.md
         adr/README.md
         adr/spike-event-loop/README.md
         adr/spike-event-loop/main.cpp
