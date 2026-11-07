@@ -24,8 +24,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build gettext swig \
+            libxslt-dev xsltproc \
             libglib2.0-dev guile-3.0-dev guile-json \
-            libboost-dev libgtest-dev
+            libboost-all-dev libgtest-dev
 
       - name: Configure
         run: |
