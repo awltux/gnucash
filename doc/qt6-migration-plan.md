@@ -32,14 +32,21 @@ read the ADRs.
 | 0 | Groundwork: presets, dependency manifest, CI, event-loop spike, licence | Spike opens a book; Windows dependency path proven | 2–3 months |
 | 1 | Headless plateau: Qt shell opens books, runs Guile reports, renders HTML offscreen, exports PDF | All standard reports render from the golden corpus; compatibility gate green | 3–4 months |
 | 2 | Read-only shell: main window, actions, tabs, account tree, preferences | Browsing parity; keyboard navigation for tree and tabs | 3–4 months |
-| 3 | Register: **decouple the cell layer from GTK first** (ADR 0011), then a painted Qt view | Parity checklist signed off; performance gates met | 6–9 months, **needs revisiting** |
+| 3a | Register cell layer: remove GTK from `register-core` (ADR 0011) while the GTK register keeps working | GTK-free cell/block API; `gnucash` still builds and passes the register tests | 3–5 months |
+| 3b | Register view: painted Qt view over the decoupled cell layer | Parity checklist signed off; performance gates met | 5–7 months |
 | 4 | Editing: transaction and split editors, reconcile, scheduled transactions, budgets, assistants | Every corpus write path reachable from Qt; interop gate green | 5–7 months |
 | 5 | Import/export and business: QIF, CSV, OFX, invoices, bills, customers, vendors, employees | Import → reconcile → report loop complete | 5–7 months |
-| 6 | Report UI: option widgets, custom report management, print and PDF | User Scheme reports load and run unmodified | 3–4 months |
+| 6 | Report UI: **de-GTKify `gnc-report`/`gnc-html` first** (ADR 0015), then option widgets, custom reports, print and PDF | User Scheme reports load and run unmodified, in-process | 5–6 months |
 | 7 | Parity hardening: accessibility, HiDPI, RTL, i18n audit, packaging | Beta on all three platforms | 4–6 months |
 
-Total: approximately 30–45 person-months. A hard go/no-go follows Phase 2: if
+Total: approximately 35–55 person-months. A hard go/no-go follows Phase 2: if
 read-only browsing is not at parity, stop and ship the GTK 4 path instead.
+
+Phase 3 was estimated at 6–9 months while it was "port the register". ADR 0011
+found that `register-core` includes `<gtk/gtk.h>` and links `gnc-gnome-utils`,
+so it is split into a decoupling (3a) and a view port (3b) with a larger total.
+That revision is a judgement from the include graph and file count, not a
+measured velocity: it should be re-based after 3a's first cells are done.
 
 Post-transition, and only after the UI lands: `QSettings` replacing GSettings
 with a one-time import, `pybind11` replacing SWIG, and direct SQLite/libpq

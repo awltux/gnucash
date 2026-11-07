@@ -29,6 +29,7 @@ out=$(QT_QPA_PLATFORM=offscreen \
       QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
       LD_LIBRARY_PATH="$BUILD/lib:$BUILD/lib/gnucash" \
       "$BUILD/bin/gnucash-qt" \
+      --self-test \
       "$BUILD/lib/gnucash/libgncmod-backend-xml.so" \
       "$BOOK" \
       "Trial Balance" 2>&1)

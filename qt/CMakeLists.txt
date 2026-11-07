@@ -6,8 +6,14 @@
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets WebEngineWidgets)
 
+set(CMAKE_AUTOMOC ON)
+
 set(qt_gnucash_SOURCES
   main.cpp
+  account-model.cpp
+  account-model.h
+  report-runner.cpp
+  report-runner.h
 )
 
 add_executable(gnucash-qt ${qt_gnucash_SOURCES})

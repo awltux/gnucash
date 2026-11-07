@@ -1,36 +1,42 @@
-// GnuCash Qt 6 shell — Phase 2 slice.
+// GnuCash Qt 6 shell.
 //
-// Loads a book through libgnucash, shows its accounts, renders a report for
-// that book through gnucash-cli, and runs an event-load self-test: N renames
-// scheduled on the GLib context must all be observed, in order, on one thread.
+// Two modes:
+//   gnucash-qt <book>                                  open a book, stay open
+//   gnucash-qt --self-test <backend> <book> <report>    headless harness (CI)
 //
-// ADR 0012: the GUI thread owns the engine, so the GLib context is iterated
-// here and engine events arrive on this thread; nothing is marshalled and no
-// worker thread exists. An earlier version pumped a worker thread and hopped
-// every event across a queue, which this design removes.
+// The self-test loads a real book, renders a report for it through the report
+// seam (ADR 0015), and renames an account 20 times on the GLib context; every
+// event must be observed, in order, on this thread (ADR 0012).
+//
+// The GUI thread owns the engine (ADR 0012), so the GLib context is iterated
+// here and engine events arrive on this thread; nothing is marshalled.
 
 #include <atomic>
 #include <cstdio>
 
 #include <dlfcn.h>
 
+#include <QAbstractItemModel>
+#include <QAction>
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QMainWindow>
-#include <QProcess>
-#include <QProcessEnvironment>
+#include <QMenuBar>
+#include <QMessageBox>
 #include <QSplitter>
 #include <QStringList>
 #include <QThread>
 #include <QTimer>
-#include <QTreeWidget>
-#include <QTreeWidgetItem>
+#include <QTreeView>
 #include <QVector>
-#include <QWebEnginePage>
 #include <QWebEngineView>
+
+#include "account-model.h"
+#include "report-runner.h"
 
 extern "C" {
 #include <cashobjects.h>
@@ -49,18 +55,18 @@ using InitFn = void (*)();
 
 constexpr int kRenames = 20;
 
-std::atomic<int> g_qt_event_count{0};
-std::atomic<bool> g_any_event_off_thread{false};
-
-// Written and read only on the Qt thread; the handler posts into it.
+std::atomic<int> g_event_count{0};
+std::atomic<bool> g_event_off_thread{false};
 QVector<QByteArray> g_observed;
+gncqt::AccountModel* g_model = nullptr;
+bool g_self_test = false;
 
-bool load_backend(const char* path)
+bool load_backend(const QString& path)
 {
-    void* handle = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    void* handle = dlopen(path.toUtf8().constData(), RTLD_NOW | RTLD_GLOBAL);
     if (handle == nullptr)
     {
-        std::fprintf(stderr, "dlopen failed: %s\n", dlerror());
+        std::fprintf(stderr, "dlopen failed for %s: %s\n", qPrintable(path), dlerror());
         return false;
     }
 
@@ -69,7 +75,7 @@ bool load_backend(const char* path)
         init = reinterpret_cast<InitFn>(dlsym(handle, "gnc_module_init_backend_xml"));
     if (init == nullptr)
     {
-        std::fprintf(stderr, "no backend init symbol in %s\n", path);
+        std::fprintf(stderr, "no backend init symbol in %s\n", qPrintable(path));
         return false;
     }
 
@@ -77,20 +83,39 @@ bool load_backend(const char* path)
     return true;
 }
 
-// Engine events arrive on the thread that made the change. Per ADR 0012 that is
-// the GUI thread, so nothing is marshalled and nothing is queued.
+QString default_backend_path()
+{
+    const QFileInfo application(QCoreApplication::applicationDirPath());
+    const QString build_dir = application.dir().absolutePath();
+    return build_dir + QStringLiteral("/lib/gnucash/libgncmod-backend-xml.so");
+}
+
+// Events arrive on the thread that made the change, which per ADR 0012 is the
+// GUI thread. The model is updated directly; nothing is queued.
 void on_qof_event(QofInstance* entity, QofEventId type, gpointer, gpointer)
 {
     if (!(type & QOF_EVENT_MODIFY) || entity == nullptr)
         return;
 
+    // Events arrive for every object type — transactions, splits, lots. Only
+    // accounts belong in the account model; casting the rest is undefined
+    // behaviour and trips the engine's own type assertions.
+    if (!GNC_IS_ACCOUNT(entity))
+        return;
+
     if (QThread::currentThread() != QCoreApplication::instance()->thread())
-        g_any_event_off_thread.store(true);
+        g_event_off_thread.store(true);
 
     auto* account = reinterpret_cast<Account*>(entity);
-    const char* name = xaccAccountGetName(account);
-    g_observed.append(QByteArray(name ? name : ""));
-    g_qt_event_count.fetch_add(1);
+    if (g_model != nullptr)
+        g_model->account_changed(account);
+
+    if (g_self_test)
+    {
+        const char* name = xaccAccountGetName(account);
+        g_observed.append(QByteArray(name ? name : ""));
+        g_event_count.fetch_add(1);
+    }
 }
 
 gboolean rename_burst(gpointer data)
@@ -104,68 +129,40 @@ gboolean rename_burst(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
-// A GnuCash report cannot be rendered in this process: gnc-report links GTK3
-// through gnc-html (PLAN.md §9). The shell drives GnuCash's own headless CLI
-// instead and displays the result, so the report is generated for the book
-// rather than hand-written.
-QString find_guile_ccache(const QString& build_dir)
+struct Session
 {
-    const QDir lib_root(build_dir + QStringLiteral("/lib"));
-    for (const QString& entry : lib_root.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-    {
-        const QString candidate =
-            lib_root.absolutePath() + QLatin1Char('/') + entry
-            + QStringLiteral("/guile/3.0/site-ccache");
-        if (QDir(candidate).exists())
-            return candidate;
-    }
-    return {};
-}
+    QofSession* session = nullptr;
+    Account* root = nullptr;
+    int descendant_count = 0;
+};
 
-bool generate_report(const QString& book, const QString& report_name,
-                     const QString& out_path)
+Session open_book(const QString& path)
 {
-    const QFileInfo application(QCoreApplication::applicationDirPath());
-    const QString build_dir = application.dir().absolutePath();
-    const QString cli = build_dir + QStringLiteral("/bin/gnucash-cli");
-    if (!QFileInfo::exists(cli))
+    Session result;
+
+    QofBook* book = qof_book_new();
+    result.session = qof_session_new(book);
+
+    qof_session_begin(result.session, path.toUtf8().constData(), SESSION_READ_ONLY);
+    if (qof_session_get_error(result.session) != ERR_BACKEND_NO_ERR)
     {
-        std::fprintf(stderr, "gnucash-cli not found at %s\n", qPrintable(cli));
-        return false;
+        std::fprintf(stderr, "begin failed: %s\n",
+                     qof_session_get_error_message(result.session));
+        return result;
     }
 
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("LD_LIBRARY_PATH"),
-               build_dir + QStringLiteral("/lib:") + build_dir + QStringLiteral("/lib/gnucash"));
-    env.insert(QStringLiteral("GNC_MODULE_PATH"), build_dir + QStringLiteral("/lib/gnucash"));
-    env.insert(QStringLiteral("GUILE_LOAD_PATH"),
-               build_dir + QStringLiteral("/share/guile/site/3.0"));
-    const QString ccache = find_guile_ccache(build_dir);
-    if (!ccache.isEmpty())
-        env.insert(QStringLiteral("GUILE_LOAD_COMPILED_PATH"), ccache);
-    env.insert(QStringLiteral("GSETTINGS_SCHEMA_DIR"),
-               build_dir + QStringLiteral("/share/glib-2.0/schemas"));
-
-    QProcess process;
-    process.setProcessEnvironment(env);
-    process.start(cli, QStringList{QStringLiteral("-R"), QStringLiteral("run"),
-                                   QStringLiteral("--name"), report_name,
-                                   QStringLiteral("--output-file"), out_path, book});
-    if (!process.waitForStarted(10000))
+    qof_session_load(result.session, nullptr);
+    if (qof_session_get_error(result.session) != ERR_BACKEND_NO_ERR)
     {
-        std::fprintf(stderr, "gnucash-cli failed to start\n");
-        return false;
-    }
-    if (!process.waitForFinished(180000))
-    {
-        process.kill();
-        std::fprintf(stderr, "gnucash-cli timed out\n");
-        return false;
+        std::fprintf(stderr, "load failed: %s\n",
+                     qof_session_get_error_message(result.session));
+        return result;
     }
 
-    const QFileInfo output(out_path);
-    return process.exitStatus() == QProcess::NormalExit && output.exists()
-           && output.size() > 0;
+    QofBook* loaded = qof_session_get_book(result.session);
+    result.root = gnc_book_get_root_account(loaded);
+    result.descendant_count = result.root ? gnc_account_n_descendants(result.root) : 0;
+    return result;
 }
 
 } // namespace
@@ -173,103 +170,123 @@ bool generate_report(const QString& book, const QString& report_name,
 int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
+    QApplication::setApplicationName(QStringLiteral("gnucash-qt"));
 
-    if (argc < 4)
+    const QStringList args = app.arguments();
+    g_self_test = args.size() > 1 && args.at(1) == QStringLiteral("--self-test");
+
+    QString backend_path;
+    QString book_path;
+    QString report_name = QStringLiteral("Trial Balance");
+
+    if (g_self_test)
     {
-        std::fprintf(stderr,
-                     "usage: %s <backend-module> <book.gnucash> <report.html>\n", argv[0]);
-        return 2;
+        if (args.size() < 5)
+        {
+            std::fprintf(stderr,
+                         "usage: %s --self-test <backend-module> <book> <report>\n",
+                         qPrintable(args.at(0)));
+            return 2;
+        }
+        backend_path = args.at(2);
+        book_path = args.at(3);
+        report_name = args.at(4);
+    }
+    else if (args.size() > 1)
+    {
+        book_path = args.at(1);
+        backend_path = default_backend_path();
+    }
+    else
+    {
+        backend_path = default_backend_path();
     }
 
     qof_init();
     cashobjects_register();
-    if (!load_backend(argv[1]))
+    if (!backend_path.isEmpty() && !load_backend(backend_path))
         return 1;
-
-    QofBook* book = qof_book_new();
-    QofSession* session = qof_session_new(book);
-
-    qof_session_begin(session, argv[2], SESSION_READ_ONLY);
-    if (qof_session_get_error(session) != ERR_BACKEND_NO_ERR)
-    {
-        std::fprintf(stderr, "begin failed: %s\n", qof_session_get_error_message(session));
-        return 1;
-    }
-    qof_session_load(session, nullptr);
-    if (qof_session_get_error(session) != ERR_BACKEND_NO_ERR)
-    {
-        std::fprintf(stderr, "load failed: %s\n", qof_session_get_error_message(session));
-        return 1;
-    }
-
-    QofBook* loaded = qof_session_get_book(session);
-    Account* root = gnc_book_get_root_account(loaded);
-    const int total = root ? gnc_account_n_descendants(root) : 0;
-
-    GList* children = root ? gnc_account_get_children(root) : nullptr;
-    Account* target = children ? static_cast<Account*>(children->data) : nullptr;
 
     QMainWindow window;
-    auto* accounts = new QTreeWidget(&window);
-    accounts->setHeaderLabel(QStringLiteral("Accounts"));
-    int top_level = 0;
-    for (GList* node = children; node != nullptr; node = node->next)
-    {
-        auto* account = static_cast<Account*>(node->data);
-        const char* name = xaccAccountGetName(account);
-        accounts->addTopLevelItem(
-            new QTreeWidgetItem(QStringList{QString::fromUtf8(name ? name : "")}));
-        ++top_level;
-    }
-    g_list_free(children);
+    auto* model = new gncqt::AccountModel(&window);
+    g_model = model;
 
-    QFile report;
-    const QString third = QString::fromLocal8Bit(argv[3]);
-    QString html_path = third;
-
-    if (!third.endsWith(QStringLiteral(".html"), Qt::CaseInsensitive))
-    {
-        html_path = QDir::tempPath() + QStringLiteral("/gnucash-qt-report.html");
-        QFile::remove(html_path);
-        if (!generate_report(QString::fromLocal8Bit(argv[2]), third, html_path))
-        {
-            std::fprintf(stderr, "report generation failed for \"%s\"\n", argv[3]);
-            return 1;
-        }
-    }
-
-    report.setFileName(html_path);
-    if (!report.open(QIODevice::ReadOnly))
-    {
-        std::fprintf(stderr, "cannot read %s\n", qPrintable(html_path));
-        return 1;
-    }
-    const QByteArray html = report.readAll();
-    std::printf("report bytes: %d\n", static_cast<int>(html.size()));
+    auto* tree = new QTreeView(&window);
+    tree->setModel(model);
+    tree->setHeaderHidden(false);
 
     auto* view = new QWebEngineView(&window);
+
     auto* splitter = new QSplitter(&window);
-    splitter->addWidget(accounts);
+    splitter->addWidget(tree);
     splitter->addWidget(view);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 3);
     window.setCentralWidget(splitter);
-    window.setWindowTitle(QStringLiteral("GnuCash Qt shell"));
     window.resize(1200, 800);
+    window.setWindowTitle(QStringLiteral("GnuCash (Qt)"));
 
-    // ADR 0012: the GUI thread owns the engine, so the GLib context is iterated
-    // here rather than on a worker. Engine calls and any sources they schedule
-    // therefore run on this thread, as they do under GTK's main loop.
+    Session session;
+    bool pane_loaded = false;
+
+    auto open_and_show = [&](const QString& path) {
+        session = open_book(path);
+        if (session.session == nullptr
+            || qof_session_get_error(session.session) != ERR_BACKEND_NO_ERR)
+        {
+            QMessageBox::warning(&window, QStringLiteral("Cannot open"),
+                                 QStringLiteral("Could not open %1").arg(path));
+            return false;
+        }
+
+        model->set_root_account(session.root);
+        window.setWindowTitle(QStringLiteral("GnuCash (Qt) — %1")
+                                  .arg(QFileInfo(path).fileName()));
+
+        const QString html_path =
+            QDir::tempPath() + QStringLiteral("/gnucash-qt-report.html");
+        QFile::remove(html_path);
+
+        const gncqt::ReportRunner runner;
+        if (!runner.render(path, report_name, html_path))
+        {
+            std::fprintf(stderr, "report generation failed for \"%s\"\n",
+                         qPrintable(report_name));
+            return false;
+        }
+
+        QFile report(html_path);
+        if (!report.open(QIODevice::ReadOnly))
+            return false;
+        const QByteArray html = report.readAll();
+        std::printf("report bytes: %d\n", static_cast<int>(html.size()));
+        view->setHtml(QString::fromUtf8(html));
+        return true;
+    };
+
+    auto* open_action = window.menuBar()->addMenu(QStringLiteral("&File"))->addAction(
+        QStringLiteral("&Open…"));
+    open_action->setShortcut(QKeySequence::Open);
+    QObject::connect(open_action, &QAction::triggered, [&]() {
+        const QString path = QFileDialog::getOpenFileName(
+            &window, QStringLiteral("Open a book"), QString(),
+            QStringLiteral("GnuCash files (*.gnucash *.xac *.xml);;All files (*)"));
+        if (!path.isEmpty())
+            open_and_show(path);
+    });
+
+    auto* file_menu = window.menuBar()->actions().first()->menu();
+    file_menu->addSeparator();
+    auto* quit_action = file_menu->addAction(QStringLiteral("&Quit"));
+    quit_action->setShortcut(QKeySequence::Quit);
+    QObject::connect(quit_action, &QAction::triggered, &app, &QApplication::quit);
+
+    QObject::connect(view, &QWebEngineView::loadFinished, [&](bool ok) {
+        pane_loaded = ok;
+    });
+
+    // The engine may schedule GLib sources; they run on this thread (ADR 0012).
     GMainContext* context = g_main_context_default();
-
-    if (target != nullptr)
-    {
-        GSource* source = g_timeout_source_new(300);
-        g_source_set_callback(source, rename_burst, target, nullptr);
-        g_source_attach(source, context);
-        g_source_unref(source);
-    }
-
-    qof_event_register_handler(on_qof_event, nullptr);
-
     QTimer pump;
     QObject::connect(&pump, &QTimer::timeout, [context]() {
         while (g_main_context_iteration(context, FALSE))
@@ -278,43 +295,72 @@ int main(int argc, char** argv)
     });
     pump.start(5);
 
-    bool pane_loaded = false;
-    QObject::connect(view, &QWebEngineView::loadFinished, [&](bool ok) {
-        pane_loaded = ok;
-    });
+    qof_event_register_handler(on_qof_event, nullptr);
+
+    if (!book_path.isEmpty())
+    {
+        if (!open_and_show(book_path))
+            return 1;
+    }
+
+    if (!g_self_test)
+    {
+        window.show();
+        const int status = app.exec();
+        pump.stop();
+        if (session.session != nullptr)
+            qof_session_end(session.session);
+        return status;
+    }
+
+    // ---- self-test: rename burst, then assert every event was observed ----
+    Account* target = nullptr;
+    if (session.root != nullptr)
+    {
+        GList* children = gnc_account_get_children(session.root);
+        if (children != nullptr)
+            target = static_cast<Account*>(children->data);
+        g_list_free(children);
+    }
+
+    if (target != nullptr)
+    {
+        // Loading the book itself emits modify events; the burst is what this
+        // test measures, so the counters start here rather than at startup.
+        g_observed.clear();
+        g_event_count.store(0);
+        g_event_off_thread.store(false);
+
+        GSource* source = g_timeout_source_new(300);
+        g_source_set_callback(source, rename_burst, target, nullptr);
+        g_source_attach(source, context);
+        g_source_unref(source);
+    }
 
     QTimer poll;
     int ticks = 0;
     QObject::connect(&poll, &QTimer::timeout, [&]() {
-        const bool events_done = g_qt_event_count.load() >= kRenames;
-        // Wait for the pane as well: WebEngine loads asynchronously and takes
-        // longer than a 300 ms rename burst.
+        const bool events_done = g_event_count.load() >= kRenames;
         if ((!events_done || !pane_loaded) && ++ticks < 200)
             return;
 
         bool in_order = (g_observed.size() == kRenames);
-        if (in_order)
+        for (int i = 0; in_order && i < kRenames; ++i)
         {
-            for (int i = 0; i < kRenames; ++i)
-            {
-                const QByteArray expected =
-                    QByteArray("Renamed-") + QByteArray::number(i);
-                if (g_observed.at(i) != expected)
-                {
-                    in_order = false;
-                    break;
-                }
-            }
+            const QByteArray expected = QByteArray("Renamed-") + QByteArray::number(i);
+            in_order = (g_observed.at(i) == expected);
         }
+
+        const int top_level = model->rowCount();
 
         std::printf("accounts=%d top_level=%d pane_ok=%d events=%d/%d in_order=%d "
                     "on_qt_thread=%d\n",
-                    total, top_level, pane_loaded ? 1 : 0,
-                    g_qt_event_count.load(), kRenames, in_order ? 1 : 0,
-                    g_any_event_off_thread.load() ? 0 : 1);
+                    session.descendant_count, top_level, pane_loaded ? 1 : 0,
+                    g_event_count.load(), kRenames, in_order ? 1 : 0,
+                    g_event_off_thread.load() ? 0 : 1);
 
         app.exit(events_done && in_order && pane_loaded
-                     && !g_any_event_off_thread.load() ? 0 : 1);
+                     && !g_event_off_thread.load() ? 0 : 1);
     });
     poll.start(50);
 
@@ -323,12 +369,11 @@ int main(int argc, char** argv)
         app.exit(3);
     });
 
-    view->setHtml(QString::fromUtf8(html));
     window.show();
-
     const int status = app.exec();
 
     pump.stop();
-    qof_session_end(session);
+    if (session.session != nullptr)
+        qof_session_end(session.session);
     return status;
 }

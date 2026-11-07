@@ -171,7 +171,10 @@ changes the on-disk format.
 | Event **load** (20 renames, one burst, in order) | ✅ observed |
 | Engine thread ownership | ✅ ADR 0012 — GUI thread owns it; self-test identical after the worker thread was removed |
 | Coexistence rules (GSettings, helper reports, no shared UI state) | ✅ ADR 0013 — prospective; the preferences rule has not been exercised by a real settings UI |
-| Account tree model | ✅ ADR 0014 — design only; the shell still uses a `QTreeWidget` snapshot |
+| Account tree model | ✅ first cut implemented (`qt/account-model.*`) — lazy children, targeted `dataChanged`, `GNC_IS_ACCOUNT` guard |
+| Report path | ✅ ADR 0015 — out-of-process through Phase 5; the seam is `qt/report-runner.*` |
+| App mode | ✅ `gnucash-qt <book>` opens and stays open; `--self-test` is the CI harness |
+| Phase 3 estimate | ✅ revised in the plan: 3a decoupling 3–5 months, 3b view 5–7; total 35–55 person-months |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
 | CI coverage of the Qt target | ⚠️ job written (`qt-smoke.yml`), never run on GitHub |
 
@@ -281,13 +284,15 @@ All three are done or decided:
 
 What is next, in order:
 
-1. **Decide the report path.** The helper process works but is a stopgap: either
-   accept it for Phase 1 and revisit, or take the ADR 0004 route and de-GTKify
-   `gnc-report`/`gnc-html` so reports can render in-process.
-2. **Revise the Phase 3 estimate** in `doc/qt6-migration-plan.md`: it is a cell
-   decoupling *plus* a view port, not a port.
-3. **Start Phase 2 in earnest**: actions/menus on the Qt shell and an account
-   tree backed by a model rather than a `QTreeWidget` snapshot.
+1. **Phase 2 continues**: more actions (View menu, report selection), an account
+   tree that shows balances, and preferences read through `gnc-gsettings`
+   (ADR 0013). The shell now opens a book and stays open; the next increment is
+   parity for browsing.
+2. **Prove the model under edits**: the first cut handles renames via
+   `dataChanged`; insertions and deletions (`beginInsertRows`) are untested and
+   `parent_of()` no longer asks the engine, so a full tree walk needs a test.
+3. **Phase 3a kickoff**: audit `register-core` cell-by-cell (presentation versus
+   widget behaviour) before writing the abstraction (ADR 0011).
 
 Deferred deliberately: Windows CI for the Qt tier — it would protect a 250-line
 stub while the real Windows work is years away (ADR 0010).
