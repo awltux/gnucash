@@ -29,8 +29,9 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
-#include <QSplitter>
 #include <QStringList>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QThread>
 #include <QTimer>
 #include <QTreeView>
@@ -441,6 +442,15 @@ struct Session
     int descendant_count = 0;
 };
 
+// One report page. Each tab owns its own view: two reports open at once must
+// not fight over one widget, which is what the single-pane shell did.
+struct ReportTab
+{
+    QString name;
+    QWebEngineView* view = nullptr;
+    bool loaded = false;
+};
+
 Session open_book(const QString& path)
 {
     Session result;
@@ -536,36 +546,40 @@ int main(int argc, char** argv)
         GNC_PREFS_GROUP_GENERAL, GNC_PREF_NEGATIVE_IN_RED,
         reinterpret_cast<gpointer>(&on_negative_in_red_changed), &prefs);
 
-    auto* view = new QWebEngineView(&window);
+    auto* tabs = new QTabWidget(&window);
+    tabs->setTabsClosable(true);
+    tabs->setDocumentMode(true);
+    tabs->addTab(tree, QStringLiteral("Accounts"));
+    // The accounts page is the shell's home; only reports close.
+    tabs->tabBar()->setTabButton(0, QTabBar::RightSide, nullptr);
+    tabs->tabBar()->setTabButton(0, QTabBar::LeftSide, nullptr);
 
-    auto* splitter = new QSplitter(&window);
-    splitter->addWidget(tree);
-    splitter->addWidget(view);
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 3);
-    window.setCentralWidget(splitter);
+    window.setCentralWidget(tabs);
     window.resize(1200, 800);
     window.setWindowTitle(QStringLiteral("GnuCash (Qt)"));
 
     Session session;
-    bool pane_loaded = false;
+    bool pane_loaded = false;  // the first report tab, the gate the old harness checked
     QString current_book;
-    QString current_report = report_name;
+    int render_seq = 0;
+
+    QVector<ReportTab*> report_tabs;
 
     const gncqt::ReportRunner runner;
 
-    auto render_current = [&]() -> bool {
-        if (current_book.isEmpty())
+    auto render_into = [&](ReportTab* tab) -> bool {
+        if (current_book.isEmpty() || tab == nullptr || tab->view == nullptr)
             return false;
 
-        const QString html_path =
-            QDir::tempPath() + QStringLiteral("/gnucash-qt-report.html");
+        // One file per render: two tabs must not overwrite each other's HTML.
+        const QString html_path = QDir::tempPath()
+            + QStringLiteral("/gnucash-qt-report-%1.html").arg(++render_seq);
         QFile::remove(html_path);
 
-        if (!runner.render(current_book, current_report, html_path))
+        if (!runner.render(current_book, tab->name, html_path))
         {
             std::fprintf(stderr, "report generation failed for \"%s\"\n",
-                         qPrintable(current_report));
+                         qPrintable(tab->name));
             return false;
         }
 
@@ -575,8 +589,58 @@ int main(int argc, char** argv)
 
         const QByteArray html = report.readAll();
         std::printf("report bytes: %d\n", static_cast<int>(html.size()));
-        view->setHtml(QString::fromUtf8(html));
+        tab->loaded = false;
+        tab->view->setHtml(QString::fromUtf8(html));
         return true;
+    };
+
+    auto all_report_tabs_loaded = [&]() -> bool {
+        if (report_tabs.isEmpty())
+            return false;
+        for (const ReportTab* tab : report_tabs)
+            if (!tab->loaded)
+                return false;
+        return true;
+    };
+
+    auto open_report_tab = [&](const QString& name) -> ReportTab* {
+        for (ReportTab* existing : report_tabs)
+        {
+            if (existing->name == name)
+            {
+                tabs->setCurrentWidget(existing->view);
+                return existing;
+            }
+        }
+
+        auto* tab = new ReportTab;
+        tab->name = name;
+        tab->view = new QWebEngineView(tabs);
+
+        QObject::connect(tab->view, &QWebEngineView::loadFinished, [&, tab](bool ok) {
+            tab->loaded = ok;
+            std::printf("report tab \"%s\" load ok=%d\n",
+                        qPrintable(tab->name), ok ? 1 : 0);
+            if (!report_tabs.isEmpty() && tab == report_tabs.first())
+                pane_loaded = ok;
+        });
+
+        report_tabs.append(tab);
+        tabs->addTab(tab->view, name);
+        tabs->setCurrentWidget(tab->view);
+        render_into(tab);
+        return tab;
+    };
+
+    auto close_report_tabs = [&]() {
+        while (!report_tabs.isEmpty())
+        {
+            ReportTab* stale = report_tabs.takeLast();
+            tabs->removeTab(tabs->indexOf(stale->view));
+            delete stale->view;
+            delete stale;
+        }
+        pane_loaded = false;
     };
 
     auto open_and_show = [&](const QString& path) -> bool {
@@ -593,7 +657,10 @@ int main(int argc, char** argv)
         model->set_root_account(session.root);
         window.setWindowTitle(QStringLiteral("GnuCash (Qt) - %1")
                                   .arg(QFileInfo(path).fileName()));
-        return render_current();
+
+        // A different book invalidates the reports rendered from the old one.
+        close_report_tabs();
+        return open_report_tab(report_name) != nullptr;
     };
 
     auto* file_menu = window.menuBar()->addMenu(QStringLiteral("&File"));
@@ -619,8 +686,7 @@ int main(int argc, char** argv)
     {
         auto* action = reports_menu->addAction(name);
         QObject::connect(action, &QAction::triggered, [&, name]() {
-            current_report = name;
-            render_current();
+            open_report_tab(name);
         });
     }
     if (report_names.isEmpty())
@@ -629,10 +695,51 @@ int main(int argc, char** argv)
     auto* view_menu = window.menuBar()->addMenu(QStringLiteral("&View"));
     auto* reload_action = view_menu->addAction(QStringLiteral("&Reload report"));
     reload_action->setShortcut(QKeySequence::Refresh);
-    QObject::connect(reload_action, &QAction::triggered, [&]() { render_current(); });
+    QObject::connect(reload_action, &QAction::triggered, [&]() {
+        QWidget* current = tabs->currentWidget();
+        for (ReportTab* tab : report_tabs)
+        {
+            if (tab->view == current)
+            {
+                render_into(tab);
+                break;
+            }
+        }
+    });
 
-    QObject::connect(view, &QWebEngineView::loadFinished, [&](bool ok) {
-        pane_loaded = ok;
+    auto* next_tab_action = view_menu->addAction(QStringLiteral("&Next tab"));
+    next_tab_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+Tab")));
+    QObject::connect(next_tab_action, &QAction::triggered, [&]() {
+        if (tabs->count() > 0)
+            tabs->setCurrentIndex((tabs->currentIndex() + 1) % tabs->count());
+    });
+
+    auto* prev_tab_action = view_menu->addAction(QStringLiteral("&Previous tab"));
+    prev_tab_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+Tab")));
+    QObject::connect(prev_tab_action, &QAction::triggered, [&]() {
+        if (tabs->count() > 0)
+            tabs->setCurrentIndex((tabs->currentIndex() + tabs->count() - 1)
+                                  % tabs->count());
+    });
+
+    // Closing a report page drops the tab and its view together; the accounts
+    // page stays, because it is the shell's home.
+    QObject::connect(tabs, &QTabWidget::tabCloseRequested, [&](int index) {
+        if (index <= 0)
+            return;
+
+        QWidget* widget = tabs->widget(index);
+        tabs->removeTab(index);
+        for (int i = 0; i < report_tabs.size(); ++i)
+        {
+            if (report_tabs.at(i)->view == widget)
+            {
+                ReportTab* gone = report_tabs.takeAt(i);
+                delete gone->view;
+                delete gone;
+                break;
+            }
+        }
     });
 
     // The engine may schedule GLib sources; they run on this thread (ADR 0012).
@@ -660,10 +767,24 @@ int main(int argc, char** argv)
         return status;
     }
 
-    // ---- self-test: model edits, totals, rename burst, then assertions ----
+    // ---- self-test: tabs, model edits, totals, rename burst, assertions ----
     // Recorded before the tests run, so the temporary objects they create
     // cannot change what this reports about the book that was loaded.
     const int top_level = model->rowCount();
+
+    // A second report page, to prove tabs are pages and not a relabelled pane.
+    // The helper's list is the source, so this stays true as reports change.
+    QString second_report;
+    for (const QString& name : report_names)
+    {
+        if (name != report_name)
+        {
+            second_report = name;
+            break;
+        }
+    }
+    if (!second_report.isEmpty())
+        open_report_tab(second_report);
 
     EditTest edit;
     TotalTest total;
@@ -703,7 +824,8 @@ int main(int argc, char** argv)
     int ticks = 0;
     QObject::connect(&poll, &QTimer::timeout, [&]() {
         const bool events_done = g_event_count.load() >= kRenames;
-        if ((!events_done || !pane_loaded) && ++ticks < 200)
+        const bool reports_loaded = all_report_tabs_loaded();
+        if ((!events_done || !reports_loaded) && ++ticks < 600)
             return;
 
         bool in_order = (g_observed.size() == kRenames);
@@ -713,18 +835,29 @@ int main(int argc, char** argv)
             in_order = (g_observed.at(i) == expected);
         }
 
-        std::printf("accounts=%d top_level=%d pane_ok=%d events=%d/%d in_order=%d "
-                    "on_qt_thread=%d model_ok=%d total_ok=%d period_ok=%d "
-                    "prefs_ok=%d inserts=%d removes=%d reports=%d\n",
+        // The page model: one accounts page, then a page per report, in the
+        // order the shell opened them.
+        bool tabs_ok = tabs->count() == 1 + report_tabs.size()
+                       && tabs->tabText(0) == QStringLiteral("Accounts");
+        for (int i = 0; tabs_ok && i < report_tabs.size(); ++i)
+            tabs_ok = tabs->tabText(i + 1) == report_tabs.at(i)->name;
+        tabs_ok = tabs_ok && !second_report.isEmpty()
+                  && report_tabs.size() == 2 && reports_loaded;
+
+        std::printf("accounts=%d top_level=%d pane_ok=%d tabs_ok=%d "
+                    "events=%d/%d in_order=%d on_qt_thread=%d model_ok=%d "
+                    "total_ok=%d period_ok=%d prefs_ok=%d inserts=%d removes=%d "
+                    "reports=%d\n",
                     session.descendant_count, top_level,
-                    pane_loaded ? 1 : 0, g_event_count.load(), kRenames,
+                    pane_loaded ? 1 : 0, tabs_ok ? 1 : 0,
+                    g_event_count.load(), kRenames,
                     in_order ? 1 : 0, g_event_off_thread.load() ? 0 : 1,
                     edit.ok ? 1 : 0, total.ok ? 1 : 0, total.period_ok ? 1 : 0,
                     prefs_ok ? 1 : 0, edit.inserts, edit.removes,
                     static_cast<int>(report_names.size()));
 
-        app.exit(events_done && in_order && pane_loaded && edit.ok && total.ok
-                         && total.period_ok && prefs_ok
+        app.exit(events_done && in_order && pane_loaded && tabs_ok && edit.ok
+                         && total.ok && total.period_ok && prefs_ok
                          && !g_event_off_thread.load()
                          && !report_names.isEmpty()
                      ? 0
@@ -732,7 +865,7 @@ int main(int argc, char** argv)
     });
     poll.start(50);
 
-    QTimer::singleShot(30000, &app, [&]() {
+    QTimer::singleShot(60000, &app, [&]() {
         std::fprintf(stderr, "timeout\n");
         app.exit(3);
     });

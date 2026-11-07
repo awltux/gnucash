@@ -185,6 +185,7 @@ changes the on-disk format.
 | Account tree totals | ✅ observed: a `Total` column formatted by app-utils' `gnc_ui_account_get_print_balance` (the GTK tree's helper), refreshed from the account-modify events the engine emits when splits are added or removed, including ancestors (`total_ok=1`) |
 | Period total column | ✅ observed: a `Total (Period)` column computed the way the GTK tree computes it (`gnc_accounting_period_fiscal_start/end` + `xaccAccountGetBalanceChangeForPeriod`, reversed for income/expense accounts); the self-test proves an out-of-period split moves the balance and not the period (`period_ok=1`) |
 | Negative totals follow the preference | ✅ observed: red only when `general/negative-in-red` is set; the self-test flips it both ways, checks the read-back and the colour role, then restores it (`prefs_ok=1`) |
+| Tabs | ✅ observed: an `Accounts` page plus one page per report, each with its own `QWebEngineView` so two reports do not share a pane; report pages close, the accounts page does not; `Ctrl+Tab` / `Ctrl+Shift+Tab` and `View → Next/Previous tab` switch (`tabs_ok=1`) |
 | Report path | ✅ ADR 0015 — out-of-process through Phase 5; the seam is `qt/report-runner.*` |
 | App mode | ✅ `gnucash-qt <book>` opens and stays open; `--self-test` is the CI harness |
 | Report selector | ✅ 63 reports listed from `gnucash-cli -R list` at startup; `Reports` menu plus `View → Reload report` |
@@ -224,7 +225,7 @@ something:
 bash ~/src/gnucash/qt/run-smoke-test.sh ~/build/ext4-qt ~/src/gnucash
 ```
 
-Expected: `accounts=104 top_level=5 pane_ok=1 events=20/20 in_order=1
+Expected: `accounts=104 top_level=5 pane_ok=1 tabs_ok=1 events=20/20 in_order=1
 on_qt_thread=1 model_ok=1 total_ok=1 period_ok=1 prefs_ok=1 inserts=1
 removes=1 reports=63` and `qt smoke test passed`, exit 0. Anything else means
 the tree, the environment, or the code moved.
@@ -295,6 +296,11 @@ document that is not the loaded book. Prefer the script.
 - **The Qt smoke test can fail transiently.** `pane_ok=0` plus "No suitable
   graphics backend found" appeared once and then passed on an unchanged binary.
   Re-run before blaming a change.
+- **Two `QWebEngineView`s need a longer wait than one.** Offscreen, a single
+  page reports `loadFinished` in about two seconds; with two pages in the same
+  process the first version's 10 s poll cap expired and the self-test printed
+  `pane_ok=0 tabs_ok=0` on a correct build. The poll now allows 30 s and the
+  hard timeout is 60 s. If it flaps, raise those; do not "fix" the tabs.
 - `.gitattributes` has no `*.md` rule, so Markdown writes warn about CRLF.
   Harmless; blobs are LF.
 

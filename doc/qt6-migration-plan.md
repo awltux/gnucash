@@ -76,13 +76,13 @@ line as **done** or **deliberately out of scope, with a reason**. Nothing is
 | Account tree: balance and period totals | done | `total_ok=1 period_ok=1`, formatted by the GTK tree's own helpers |
 | Account tree: hidden accounts, sorting | not done | GTK keeps "show hidden" in its view-state file; ADR 0013 forbids sharing that state, so this needs a gschema key or an explicit scope decision |
 | Reports: list, render, select, reload | done | `reports=63`, `pane_ok=1`, `Reports` menu |
-| Reports: more than one open at a time | not done | GTK opens a tab per report; the Qt shell has one pane |
-| Tabs | not done | needs a page model; it is also what "tabs" in the gate refers to |
+| Reports: more than one open at a time | done | one tab per report, each with its own view (`tabs_ok=1`) |
+| Tabs | done | `Accounts` page plus a page per report; `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Preferences read through `gnc-gsettings` | done | `prefs_ok=1`, `general/negative-in-red` |
 | Preferences UI | not done | deferred by decision until the rest is settled; must reuse existing keys |
 | Keyboard: tree navigation | partial | `QTreeView` defaults; not audited against GTK's keys |
-| Keyboard: tab switching | not done | follows tabs |
-| Keyboard: menu shortcuts | partial | Open, Quit, Reload only |
+| Keyboard: tab switching | done | `View → Next/Previous tab`, `Ctrl+Tab`, `Ctrl+Shift+Tab` |
+| Keyboard: menu shortcuts | partial | Open, Quit, Reload, Next/Previous tab |
 | No shared mutable UI state (ADR 0013) | done | no Qt-side store; state file and KVP untouched |
 
 When every line reads done or has a named reason, the gate is a decision about
@@ -122,7 +122,7 @@ Updated as work lands. Last update: 2026-11-07.
 | Report for a loaded book | Done, via helper process | `gnucash-cli -R run` renders Trial Balance for `sample1.gnucash` (29,538 bytes) and the Qt pane displays it; in-process rendering still blocked by `gnc-report`→GTK |
 | Account tree totals | Done | `Total` and `Total (Period)` columns, formatted by the GTK tree's own app-utils helpers, refreshed from engine events including ancestors (`total_ok=1 period_ok=1`) |
 | Preferences read through `gnc-gsettings` | Done | `general/negative-in-red` drives the tree's negative colour; the self-test flips it both ways and restores it (`prefs_ok=1`) |
-| Phase 2 read-only shell | Started | Target opens a book and stays open, with menus, an account tree (names, totals and period totals) and a report pane driven by the helper's own report list. Preferences are read through `gnc-gsettings`; still missing: a preferences UI and tabs — see the gate checklist above |
+| Phase 2 read-only shell | Started | Target opens a book and stays open, with menus, tabs (an `Accounts` page plus a page per report), an account tree (names, totals and period totals) and reports driven by the helper's own list. Preferences are read through `gnc-gsettings`; still missing: a preferences UI and a keyboard audit — see the gate checklist above |
 
 ## Risks
 
