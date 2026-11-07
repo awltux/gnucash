@@ -37,17 +37,39 @@ QString ReportRunner::guile_ccache_directory(const QString& build_dir)
     return {};
 }
 
-bool ReportRunner::render(const QString& book_path, const QString& report_name,
-                          const QString& output_path) const
+QStringList ReportRunner::list_reports() const
 {
     const QString build_dir = build_directory();
     const QString cli = build_dir + QStringLiteral("/bin/gnucash-cli");
     if (!QFileInfo::exists(cli))
+        return {};
+
+    QProcess process;
+    process.setProcessEnvironment(helper_environment(build_dir));
+    process.start(cli, QStringList{QStringLiteral("-R"), QStringLiteral("list")});
+    if (!process.waitForStarted(10000) || !process.waitForFinished(60000))
     {
-        std::fprintf(stderr, "gnucash-cli not found at %s\n", qPrintable(cli));
-        return false;
+        process.kill();
+        return {};
     }
 
+    QStringList reports;
+    const QString output = QString::fromUtf8(process.readAllStandardOutput());
+    for (const QString& line : output.split(QLatin1Char('\n')))
+    {
+        QString trimmed = line.trimmed();
+        if (!trimmed.startsWith(QLatin1Char('*')))
+            continue;
+        trimmed.remove(0, 1);
+        trimmed = trimmed.trimmed();
+        if (!trimmed.isEmpty())
+            reports.append(trimmed);
+    }
+    return reports;
+}
+
+QProcessEnvironment ReportRunner::helper_environment(const QString& build_dir)
+{
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("LD_LIBRARY_PATH"),
                build_dir + QStringLiteral("/lib:") + build_dir
@@ -61,9 +83,22 @@ bool ReportRunner::render(const QString& book_path, const QString& report_name,
     const QString ccache = guile_ccache_directory(build_dir);
     if (!ccache.isEmpty())
         env.insert(QStringLiteral("GUILE_LOAD_COMPILED_PATH"), ccache);
+    return env;
+}
+
+bool ReportRunner::render(const QString& book_path, const QString& report_name,
+                          const QString& output_path) const
+{
+    const QString build_dir = build_directory();
+    const QString cli = build_dir + QStringLiteral("/bin/gnucash-cli");
+    if (!QFileInfo::exists(cli))
+    {
+        std::fprintf(stderr, "gnucash-cli not found at %s\n", qPrintable(cli));
+        return false;
+    }
 
     QProcess process;
-    process.setProcessEnvironment(env);
+    process.setProcessEnvironment(helper_environment(build_dir));
     process.start(cli, QStringList{QStringLiteral("-R"), QStringLiteral("run"),
                                    QStringLiteral("--name"), report_name,
                                    QStringLiteral("--output-file"), output_path,

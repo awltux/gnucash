@@ -1,15 +1,14 @@
 // GnuCash Qt 6 shell.
 //
 // Two modes:
-//   gnucash-qt <book>                                  open a book, stay open
+//   gnucash-qt <book>                                   open a book, stay open
 //   gnucash-qt --self-test <backend> <book> <report>    headless harness (CI)
-//
-// The self-test loads a real book, renders a report for it through the report
-// seam (ADR 0015), and renames an account 20 times on the GLib context; every
-// event must be observed, in order, on this thread (ADR 0012).
 //
 // The GUI thread owns the engine (ADR 0012), so the GLib context is iterated
 // here and engine events arrive on this thread; nothing is marshalled.
+//
+// Reports come from a child process through ReportRunner (ADR 0015): gnc-report
+// links GTK3, so rendering must not happen in this process.
 
 #include <atomic>
 #include <cstdio>
@@ -24,7 +23,9 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QKeySequence>
 #include <QMainWindow>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QSplitter>
@@ -97,9 +98,8 @@ void on_qof_event(QofInstance* entity, QofEventId type, gpointer, gpointer)
     if (entity == nullptr)
         return;
 
-    // Events arrive for every object type — transactions, splits, lots. Only
-    // accounts belong in the account model; casting the rest is undefined
-    // behaviour and trips the engine's own type assertions.
+    // Events arrive for every object type; only accounts belong in this model,
+    // and casting anything else trips the engine's own type assertions.
     if (!GNC_IS_ACCOUNT(entity))
         return;
 
@@ -107,6 +107,7 @@ void on_qof_event(QofInstance* entity, QofEventId type, gpointer, gpointer)
         g_event_off_thread.store(true);
 
     auto* account = reinterpret_cast<Account*>(entity);
+
     if (g_model != nullptr)
     {
         if (type & QOF_EVENT_ADD)
@@ -126,8 +127,7 @@ void on_qof_event(QofInstance* entity, QofEventId type, gpointer, gpointer)
 }
 
 // Adds and removes an account and checks the model followed: one row inserted,
-// one removed, one signal of each kind. This is the path a real editing session
-// takes, which a rename never exercises.
+// one removed, one signal of each kind. A rename never exercises this path.
 struct EditTest
 {
     int baseline = -1;
@@ -261,7 +261,6 @@ int main(int argc, char** argv)
 
     auto* tree = new QTreeView(&window);
     tree->setModel(model);
-    tree->setHeaderHidden(false);
 
     auto* view = new QWebEngineView(&window);
 
@@ -276,8 +275,37 @@ int main(int argc, char** argv)
 
     Session session;
     bool pane_loaded = false;
+    QString current_book;
+    QString current_report = report_name;
 
-    auto open_and_show = [&](const QString& path) {
+    const gncqt::ReportRunner runner;
+
+    auto render_current = [&]() -> bool {
+        if (current_book.isEmpty())
+            return false;
+
+        const QString html_path =
+            QDir::tempPath() + QStringLiteral("/gnucash-qt-report.html");
+        QFile::remove(html_path);
+
+        if (!runner.render(current_book, current_report, html_path))
+        {
+            std::fprintf(stderr, "report generation failed for \"%s\"\n",
+                         qPrintable(current_report));
+            return false;
+        }
+
+        QFile report(html_path);
+        if (!report.open(QIODevice::ReadOnly))
+            return false;
+
+        const QByteArray html = report.readAll();
+        std::printf("report bytes: %d\n", static_cast<int>(html.size()));
+        view->setHtml(QString::fromUtf8(html));
+        return true;
+    };
+
+    auto open_and_show = [&](const QString& path) -> bool {
         session = open_book(path);
         if (session.session == nullptr
             || qof_session_get_error(session.session) != ERR_BACKEND_NO_ERR)
@@ -287,33 +315,15 @@ int main(int argc, char** argv)
             return false;
         }
 
+        current_book = path;
         model->set_root_account(session.root);
-        window.setWindowTitle(QStringLiteral("GnuCash (Qt) — %1")
+        window.setWindowTitle(QStringLiteral("GnuCash (Qt) - %1")
                                   .arg(QFileInfo(path).fileName()));
-
-        const QString html_path =
-            QDir::tempPath() + QStringLiteral("/gnucash-qt-report.html");
-        QFile::remove(html_path);
-
-        const gncqt::ReportRunner runner;
-        if (!runner.render(path, report_name, html_path))
-        {
-            std::fprintf(stderr, "report generation failed for \"%s\"\n",
-                         qPrintable(report_name));
-            return false;
-        }
-
-        QFile report(html_path);
-        if (!report.open(QIODevice::ReadOnly))
-            return false;
-        const QByteArray html = report.readAll();
-        std::printf("report bytes: %d\n", static_cast<int>(html.size()));
-        view->setHtml(QString::fromUtf8(html));
-        return true;
+        return render_current();
     };
 
-    auto* open_action = window.menuBar()->addMenu(QStringLiteral("&File"))->addAction(
-        QStringLiteral("&Open…"));
+    auto* file_menu = window.menuBar()->addMenu(QStringLiteral("&File"));
+    auto* open_action = file_menu->addAction(QStringLiteral("&Open..."));
     open_action->setShortcut(QKeySequence::Open);
     QObject::connect(open_action, &QAction::triggered, [&]() {
         const QString path = QFileDialog::getOpenFileName(
@@ -322,12 +332,30 @@ int main(int argc, char** argv)
         if (!path.isEmpty())
             open_and_show(path);
     });
-
-    auto* file_menu = window.menuBar()->actions().first()->menu();
     file_menu->addSeparator();
     auto* quit_action = file_menu->addAction(QStringLiteral("&Quit"));
     quit_action->setShortcut(QKeySequence::Quit);
     QObject::connect(quit_action, &QAction::triggered, &app, &QApplication::quit);
+
+    // The report list comes from the helper: this build's installed reports,
+    // not a hardcoded table.
+    const QStringList report_names = runner.list_reports();
+    auto* reports_menu = window.menuBar()->addMenu(QStringLiteral("&Reports"));
+    for (const QString& name : report_names)
+    {
+        auto* action = reports_menu->addAction(name);
+        QObject::connect(action, &QAction::triggered, [&, name]() {
+            current_report = name;
+            render_current();
+        });
+    }
+    if (report_names.isEmpty())
+        reports_menu->addAction(QStringLiteral("(none available)"))->setEnabled(false);
+
+    auto* view_menu = window.menuBar()->addMenu(QStringLiteral("&View"));
+    auto* reload_action = view_menu->addAction(QStringLiteral("&Reload report"));
+    reload_action->setShortcut(QKeySequence::Refresh);
+    QObject::connect(reload_action, &QAction::triggered, [&]() { render_current(); });
 
     QObject::connect(view, &QWebEngineView::loadFinished, [&](bool ok) {
         pane_loaded = ok;
@@ -345,11 +373,8 @@ int main(int argc, char** argv)
 
     qof_event_register_handler(on_qof_event, nullptr);
 
-    if (!book_path.isEmpty())
-    {
-        if (!open_and_show(book_path))
-            return 1;
-    }
+    if (!book_path.isEmpty() && !open_and_show(book_path))
+        return 1;
 
     if (!g_self_test)
     {
@@ -404,17 +429,18 @@ int main(int argc, char** argv)
             in_order = (g_observed.at(i) == expected);
         }
 
-        const int top_level = model->rowCount();
-
         std::printf("accounts=%d top_level=%d pane_ok=%d events=%d/%d in_order=%d "
-                    "on_qt_thread=%d model_ok=%d inserts=%d removes=%d\n",
-                    session.descendant_count, top_level, pane_loaded ? 1 : 0,
-                    g_event_count.load(), kRenames, in_order ? 1 : 0,
-                    g_event_off_thread.load() ? 0 : 1, edit.ok ? 1 : 0,
-                    edit.inserts, edit.removes);
+                    "on_qt_thread=%d model_ok=%d inserts=%d removes=%d reports=%d\n",
+                    session.descendant_count, model->rowCount(),
+                    pane_loaded ? 1 : 0, g_event_count.load(), kRenames,
+                    in_order ? 1 : 0, g_event_off_thread.load() ? 0 : 1,
+                    edit.ok ? 1 : 0, edit.inserts, edit.removes,
+                    static_cast<int>(report_names.size()));
 
         app.exit(events_done && in_order && pane_loaded && edit.ok
-                     && !g_event_off_thread.load() ? 0 : 1);
+                         && !g_event_off_thread.load() && !report_names.isEmpty()
+                     ? 0
+                     : 1);
     });
     poll.start(50);
 

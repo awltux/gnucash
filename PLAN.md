@@ -174,6 +174,7 @@ changes the on-disk format.
 | Account tree model | ✅ implemented and verified under edits — insert/remove signals fire (`model_ok=1 inserts=1 removes=1`) |
 | Report path | ✅ ADR 0015 — out-of-process through Phase 5; the seam is `qt/report-runner.*` |
 | App mode | ✅ `gnucash-qt <book>` opens and stays open; `--self-test` is the CI harness |
+| Report selector | ✅ 63 reports listed from `gnucash-cli -R list` at startup; `Reports` menu plus `View → Reload report` |
 | Phase 3 estimate | ✅ revised in the plan: 3a decoupling 3–5 months, 3b view 5–7; total 35–55 person-months |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
 | CI coverage of the Qt target | ⚠️ job written (`qt-smoke.yml`), never run on GitHub |

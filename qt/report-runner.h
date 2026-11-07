@@ -8,7 +8,9 @@
 #ifndef GNC_QT_REPORT_RUNNER_H
 #define GNC_QT_REPORT_RUNNER_H
 
+#include <QProcessEnvironment>
 #include <QString>
+#include <QStringList>
 
 namespace gncqt
 {
@@ -22,9 +24,14 @@ public:
     bool render(const QString& book_path, const QString& report_name,
                 const QString& output_path) const;
 
+    // The report names this build can produce. Empty if the helper cannot be
+    // asked, which the caller should treat as "no report menu".
+    QStringList list_reports() const;
+
 private:
     static QString build_directory();
     static QString guile_ccache_directory(const QString& build_dir);
+    static QProcessEnvironment helper_environment(const QString& build_dir);
 };
 
 } // namespace gncqt

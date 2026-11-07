@@ -41,6 +41,7 @@ echo "$out"
 echo "$out" | grep -q "events=20/20 in_order=1 on_qt_thread=1" || fail "event load test"
 echo "$out" | grep -q "pane_ok=1" || fail "report pane did not render"
 echo "$out" | grep -q "model_ok=1" || fail "account model did not follow an edit"
+echo "$out" | grep -qE "reports=[1-9][0-9]*" || fail "no reports listed from the helper"
 echo "$out" | grep -qE "report bytes: [1-9][0-9]+" || fail "report was not generated"
 
 echo "qt smoke test passed"
