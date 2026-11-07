@@ -29,6 +29,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QShortcut>
 #include <QStringList>
 #include <QTabBar>
 #include <QTabWidget>
@@ -558,6 +559,38 @@ int main(int argc, char** argv)
     window.resize(1200, 800);
     window.setWindowTitle(QStringLiteral("GnuCash (Qt)"));
 
+    // Bindings compared against GTK in doc/qt6-keyboard-audit.md. They are
+    // declared once so the self-test can assert the same objects the UI uses.
+    const QKeySequence kOpen(QStringLiteral("Ctrl+O"));
+    const QKeySequence kQuit(QStringLiteral("Ctrl+Q"));
+    const QKeySequence kReloadKeys[] = {
+        QKeySequence::Refresh, QKeySequence(QStringLiteral("Ctrl+R"))
+    };
+    const QKeySequence kClosePage(QStringLiteral("Ctrl+W"));
+    const QKeySequence kNextTab[] = {
+        QKeySequence(QStringLiteral("Ctrl+Tab")),
+        QKeySequence(QStringLiteral("Ctrl+PageDown"))
+    };
+    const QKeySequence kPrevTab[] = {
+        QKeySequence(QStringLiteral("Ctrl+Shift+Tab")),
+        QKeySequence(QStringLiteral("Ctrl+PageUp"))
+    };
+
+    // GTK's tree expands and collapses with +/- (GtkTreeView defaults); the Qt
+    // tree has no such binding, so it gets one scoped to itself.
+    auto* expand_key = new QShortcut(QKeySequence(Qt::Key_Plus), tree);
+    expand_key->setContext(Qt::WidgetWithChildrenShortcut);
+    QObject::connect(expand_key, &QShortcut::activated, [&]() {
+        if (tree->currentIndex().isValid())
+            tree->expand(tree->currentIndex());
+    });
+    auto* collapse_key = new QShortcut(QKeySequence(Qt::Key_Minus), tree);
+    collapse_key->setContext(Qt::WidgetWithChildrenShortcut);
+    QObject::connect(collapse_key, &QShortcut::activated, [&]() {
+        if (tree->currentIndex().isValid())
+            tree->collapse(tree->currentIndex());
+    });
+
     Session session;
     bool pane_loaded = false;  // the first report tab, the gate the old harness checked
     QString current_book;
@@ -663,9 +696,29 @@ int main(int argc, char** argv)
         return open_report_tab(report_name) != nullptr;
     };
 
+    // Closing a page drops its tab and its view together. The accounts page is
+    // the shell's home and cannot be closed.
+    auto close_page = [&](int index) {
+        if (index <= 0 || index >= tabs->count())
+            return;
+
+        QWidget* widget = tabs->widget(index);
+        tabs->removeTab(index);
+        for (int i = 0; i < report_tabs.size(); ++i)
+        {
+            if (report_tabs.at(i)->view == widget)
+            {
+                ReportTab* gone = report_tabs.takeAt(i);
+                delete gone->view;
+                delete gone;
+                break;
+            }
+        }
+    };
+
     auto* file_menu = window.menuBar()->addMenu(QStringLiteral("&File"));
     auto* open_action = file_menu->addAction(QStringLiteral("&Open..."));
-    open_action->setShortcut(QKeySequence::Open);
+    open_action->setShortcuts({kOpen});
     QObject::connect(open_action, &QAction::triggered, [&]() {
         const QString path = QFileDialog::getOpenFileName(
             &window, QStringLiteral("Open a book"), QString(),
@@ -674,8 +727,14 @@ int main(int argc, char** argv)
             open_and_show(path);
     });
     file_menu->addSeparator();
+    auto* close_action = file_menu->addAction(QStringLiteral("&Close page"));
+    close_action->setShortcuts({kClosePage});
+    QObject::connect(close_action, &QAction::triggered, [&]() {
+        close_page(tabs->currentIndex());
+    });
+    file_menu->addSeparator();
     auto* quit_action = file_menu->addAction(QStringLiteral("&Quit"));
-    quit_action->setShortcut(QKeySequence::Quit);
+    quit_action->setShortcuts({kQuit});
     QObject::connect(quit_action, &QAction::triggered, &app, &QApplication::quit);
 
     // The report list comes from the helper: this build's installed reports,
@@ -694,7 +753,7 @@ int main(int argc, char** argv)
 
     auto* view_menu = window.menuBar()->addMenu(QStringLiteral("&View"));
     auto* reload_action = view_menu->addAction(QStringLiteral("&Reload report"));
-    reload_action->setShortcut(QKeySequence::Refresh);
+    reload_action->setShortcuts({kReloadKeys[0], kReloadKeys[1]});
     QObject::connect(reload_action, &QAction::triggered, [&]() {
         QWidget* current = tabs->currentWidget();
         for (ReportTab* tab : report_tabs)
@@ -708,38 +767,23 @@ int main(int argc, char** argv)
     });
 
     auto* next_tab_action = view_menu->addAction(QStringLiteral("&Next tab"));
-    next_tab_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+Tab")));
+    next_tab_action->setShortcuts({kNextTab[0], kNextTab[1]});
     QObject::connect(next_tab_action, &QAction::triggered, [&]() {
         if (tabs->count() > 0)
             tabs->setCurrentIndex((tabs->currentIndex() + 1) % tabs->count());
     });
 
     auto* prev_tab_action = view_menu->addAction(QStringLiteral("&Previous tab"));
-    prev_tab_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+Tab")));
+    prev_tab_action->setShortcuts({kPrevTab[0], kPrevTab[1]});
     QObject::connect(prev_tab_action, &QAction::triggered, [&]() {
         if (tabs->count() > 0)
             tabs->setCurrentIndex((tabs->currentIndex() + tabs->count() - 1)
                                   % tabs->count());
     });
 
-    // Closing a report page drops the tab and its view together; the accounts
-    // page stays, because it is the shell's home.
+    // The tab bar's close button and Ctrl+W do the same thing.
     QObject::connect(tabs, &QTabWidget::tabCloseRequested, [&](int index) {
-        if (index <= 0)
-            return;
-
-        QWidget* widget = tabs->widget(index);
-        tabs->removeTab(index);
-        for (int i = 0; i < report_tabs.size(); ++i)
-        {
-            if (report_tabs.at(i)->view == widget)
-            {
-                ReportTab* gone = report_tabs.takeAt(i);
-                delete gone->view;
-                delete gone;
-                break;
-            }
-        }
+        close_page(index);
     });
 
     // The engine may schedule GLib sources; they run on this thread (ADR 0012).
@@ -797,6 +841,37 @@ int main(int argc, char** argv)
         prefs_ok = run_prefs_test(model, book, session.root, &prefs) && pref_cb != 0;
     }
 
+    // The keyboard audit's browsing bindings, asserted on the actions rather
+    // than by sending key events: the action is what the menu and the shortcut
+    // both go through.
+    const auto has_shortcut = [](const QAction* action, const QKeySequence& keys) {
+        return action != nullptr && action->shortcuts().contains(keys);
+    };
+    const bool keys_ok =
+        has_shortcut(open_action, kOpen)
+        && has_shortcut(quit_action, kQuit)
+        && has_shortcut(reload_action, kReloadKeys[0])
+        && has_shortcut(reload_action, kReloadKeys[1])
+        && has_shortcut(close_action, kClosePage)
+        && has_shortcut(next_tab_action, kNextTab[0])
+        && has_shortcut(next_tab_action, kNextTab[1])
+        && has_shortcut(prev_tab_action, kPrevTab[0])
+        && has_shortcut(prev_tab_action, kPrevTab[1])
+        && tree->findChildren<QShortcut*>().size() == 2;
+
+    std::printf("keys: open=%d quit=%d reload_f5=%d reload_cr=%d close=%d "
+                "next_tab=%d next_pg=%d prev_tab=%d prev_pg=%d tree=%d\n",
+                has_shortcut(open_action, kOpen) ? 1 : 0,
+                has_shortcut(quit_action, kQuit) ? 1 : 0,
+                has_shortcut(reload_action, kReloadKeys[0]) ? 1 : 0,
+                has_shortcut(reload_action, kReloadKeys[1]) ? 1 : 0,
+                has_shortcut(close_action, kClosePage) ? 1 : 0,
+                has_shortcut(next_tab_action, kNextTab[0]) ? 1 : 0,
+                has_shortcut(next_tab_action, kNextTab[1]) ? 1 : 0,
+                has_shortcut(prev_tab_action, kPrevTab[0]) ? 1 : 0,
+                has_shortcut(prev_tab_action, kPrevTab[1]) ? 1 : 0,
+                static_cast<int>(tree->findChildren<QShortcut*>().size()));
+
     Account* target = nullptr;
     if (session.root != nullptr)
     {
@@ -844,20 +919,20 @@ int main(int argc, char** argv)
         tabs_ok = tabs_ok && !second_report.isEmpty()
                   && report_tabs.size() == 2 && reports_loaded;
 
-        std::printf("accounts=%d top_level=%d pane_ok=%d tabs_ok=%d "
+        std::printf("accounts=%d top_level=%d pane_ok=%d tabs_ok=%d keys_ok=%d "
                     "events=%d/%d in_order=%d on_qt_thread=%d model_ok=%d "
                     "total_ok=%d period_ok=%d prefs_ok=%d inserts=%d removes=%d "
                     "reports=%d\n",
                     session.descendant_count, top_level,
-                    pane_loaded ? 1 : 0, tabs_ok ? 1 : 0,
+                    pane_loaded ? 1 : 0, tabs_ok ? 1 : 0, keys_ok ? 1 : 0,
                     g_event_count.load(), kRenames,
                     in_order ? 1 : 0, g_event_off_thread.load() ? 0 : 1,
                     edit.ok ? 1 : 0, total.ok ? 1 : 0, total.period_ok ? 1 : 0,
                     prefs_ok ? 1 : 0, edit.inserts, edit.removes,
                     static_cast<int>(report_names.size()));
 
-        app.exit(events_done && in_order && pane_loaded && tabs_ok && edit.ok
-                         && total.ok && total.period_ok && prefs_ok
+        app.exit(events_done && in_order && pane_loaded && tabs_ok && keys_ok
+                         && edit.ok && total.ok && total.period_ok && prefs_ok
                          && !g_event_off_thread.load()
                          && !report_names.isEmpty()
                      ? 0

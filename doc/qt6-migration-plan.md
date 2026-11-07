@@ -80,9 +80,9 @@ line as **done** or **deliberately out of scope, with a reason**. Nothing is
 | Tabs | done | `Accounts` page plus a page per report; `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Preferences read through `gnc-gsettings` | done | `prefs_ok=1`, `general/negative-in-red` |
 | Preferences UI | not done | deferred by decision until the rest is settled; must reuse existing keys |
-| Keyboard: tree navigation | partial | `QTreeView` defaults; not audited against GTK's keys |
-| Keyboard: tab switching | done | `View → Next/Previous tab`, `Ctrl+Tab`, `Ctrl+Shift+Tab` |
-| Keyboard: menu shortcuts | partial | Open, Quit, Reload, Next/Previous tab |
+| Keyboard: tree navigation | done | arrows, Home/End, Page Up/Down and type-ahead are `QTreeView` defaults; `+`/`-` added to match GtkTreeView (`keys_ok=1`, see [the audit](qt6-keyboard-audit.md)) |
+| Keyboard: tab switching | done | `View → Next/Previous tab`, `Ctrl+Tab` / `Ctrl+Shift+Tab` and `Ctrl+Page Down/Up` |
+| Keyboard: menu shortcuts | done (browsing) | Open `Ctrl+O`, Quit `Ctrl+Q`, Reload `F5`/`Ctrl+R`, Close page `Ctrl+W`; editing shortcuts are Phase 4 |
 | No shared mutable UI state (ADR 0013) | done | no Qt-side store; state file and KVP untouched |
 
 When every line reads done or has a named reason, the gate is a decision about

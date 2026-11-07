@@ -8,6 +8,7 @@ set(doc_noinst_DATA
         CMakeLists.txt gnucash.1.in
         gnucash-cli.1.in tip_of_the_day.list.c README.txt
         register-core-audit.md
+        qt6-keyboard-audit.md
         qt6-migration-plan.md
         dev-setup-windows.md
         adr/0001-qt6-presentation-tier.md
