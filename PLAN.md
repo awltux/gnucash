@@ -253,14 +253,31 @@ exit 0. Anything else means the tree, the environment, or the code moved.
 
 1. ~~**Event load test.**~~ ✅ done: 20 renames in one burst from the GLib thread,
    all 20 delivered to the Qt slot, in order, none lost, exit 0.
-2. **Report for the loaded book — blocked on architecture.** `gnc-report` links
-   `PkgConfig::GTK3` (`gnucash/report/CMakeLists.txt`), and it depends on
-   `gnc-html`, which is where WebKit lives. Rendering a report in-process would
-   therefore drag GTK into the Qt application — the exact coupling the migration
-   exists to remove. Two ways forward: (a) render in a helper process (the path
-   `gnucash-cli --report` already takes) and load the HTML into the pane — real
-   but two processes; (b) decouple the report layer from GTK first, which is the
-   direction of ADR 0004 and the more valuable work.
+2. **Report for the loaded book — blocked, with evidence for both routes.**
+   *Architectural:* `gnc-report` links `PkgConfig::GTK3`
+   (`gnucash/report/CMakeLists.txt`) and depends on `gnc-html`, where WebKit
+   lives, so rendering in-process would drag GTK into the Qt application.
+   *Empirical, helper process:* `gnucash-cli` builds (target `gnucash-cli`, after
+   `scm-reports scm-reports-standard`), `-R list` enumerates reports, but
+   `-R run --name "<any report>"` writes no file and exits 0 with
+
+   ```
+   In procedure symbol->string: Wrong type argument in position 1
+   (expecting symbol): #f
+   ```
+
+   for "Trial Balance", "Balance Sheet" and "Account Summary" alike. Also needed:
+   `GSETTINGS_SCHEMA_DIR` pointing at the build's schema dir with
+   `glib-compile-schemas` run once, or every preference lookup logs
+   `schema failed`.
+   *Empirical, Guile script:* `(gnucash engine)` exposes `qof-session-new` but
+   **not** `qof-session-begin`/`load`, so a script cannot open a book through the
+   bindings; the engine also logs
+   `failed to load gncmod-backend-xml from relative path`.
+
+   Next investigation, in order: why `symbol->string` receives `#f` (likely
+   `reportname->templates` or `gnc:error` in `report-core.scm`), and whether
+   `GNC_MODULE_PATH` needs Guile-list syntax rather than a colon path.
 3. **Register model note — reframed, not written.** The register is not a row
    model, so the "map rows onto `QAbstractItemModel`" framing was wrong.
    `gnucash/register/register-core` is a **virtual-cell** architecture
