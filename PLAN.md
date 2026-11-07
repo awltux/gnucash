@@ -170,6 +170,8 @@ changes the on-disk format.
 | Report **for a loaded book** | ✅ observed via helper process (see §9) |
 | Event **load** (20 renames, one burst, in order) | ✅ observed |
 | Engine thread ownership | ✅ ADR 0012 — GUI thread owns it; self-test identical after the worker thread was removed |
+| Coexistence rules (GSettings, helper reports, no shared UI state) | ✅ ADR 0013 — prospective; the preferences rule has not been exercised by a real settings UI |
+| Account tree model | ✅ ADR 0014 — design only; the shell still uses a `QTreeWidget` snapshot |
 | Windows build of engine/shell | ❌ impossible today (no mingw Guile, no libdbi) |
 | CI coverage of the Qt target | ⚠️ job written (`qt-smoke.yml`), never run on GitHub |
 
