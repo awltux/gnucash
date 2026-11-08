@@ -35,6 +35,10 @@ extern "C" {
 #include <qofbook.h>
 #include <qofsession.h>
 #include <Account.h>
+#include <Split.h>
+#include <Transaction.h>
+#include <gnc-numeric.h>
+#include <gnc-date.h>
 }
 
 namespace
@@ -188,6 +192,52 @@ reports_json ()
     return body;
 }
 
+std::string
+register_json (Account* account)
+{
+    GNCPrintAmountInfo info = gnc_account_print_info (account, TRUE);
+    std::string out = "{\"account\":\"";
+    out += json_escape (xaccAccountGetName (account));
+    out += "\",\"splits\":[";
+
+    const bool newest_first = true;
+    GList* splits = xaccAccountGetSplitList (account);
+    if (newest_first)
+        splits = g_list_reverse (g_list_copy (splits));
+    else
+        splits = g_list_copy (splits);
+
+    bool first = true;
+    for (GList* node = splits; node != nullptr; node = node->next)
+    {
+        auto* split = static_cast<Split*>(node->data);
+        if (!first)
+            out += ",";
+        first = false;
+
+        char date[16] = {0};
+        qof_print_date_buff (date, sizeof date, xaccTransGetDate (xaccSplitGetParent (split)));
+
+        out += "{\"date\":\"";
+        out += date;
+        out += "\",\"description\":\"";
+        out += json_escape (xaccTransGetDescription (xaccSplitGetParent (split)));
+        out += "\",\"account\":\"";
+        out += json_escape (xaccAccountGetName (xaccSplitGetAccount (split)));
+        out += "\",\"amount\":\"";
+        const gchar* amount = xaccPrintAmount (xaccSplitGetAmount (split), info);
+        out += json_escape (amount != nullptr ? amount : "");
+        out += "\",\"reconciled\":";
+        out += xaccSplitGetReconcile (split) == YREC ? "true" : "false";
+        out += "}";
+    }
+    g_list_free (splits);
+
+
+    out += "]}";
+    return out;
+}
+
 /* Reads until the end of the request headers. Returns the path, or an empty
  * string if the request is malformed. */
 std::string
@@ -282,6 +332,31 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     {
         send_response (connection, "200 OK", "application/json",
                        account_json (g_server.root));
+    }
+    else if (route.compare (0, 13, "api/register/") == 0)
+    {
+        /* Reports link to accounts by GUID; this is the endpoint those links
+         * will be rewritten to point at. Accepts both "acct-guid=<guid>" (the
+         * form the report HTML uses) and a bare GUID. */
+        std::string spec = url_decode (route.substr (13));
+        const std::string prefix = "acct-guid=";
+        if (spec.compare (0, prefix.size (), prefix) == 0)
+            spec = spec.substr (prefix.size ());
+
+        GncGUID guid;
+        Account* account = nullptr;
+        if (string_to_guid (spec.c_str (), &guid))
+            account = xaccAccountLookup (&guid, gnc_account_get_book (g_server.root));
+
+        if (account == nullptr)
+        {
+            send_response (connection, "404 Not Found", "text/plain",
+                           "no such account\n");
+            return TRUE;
+        }
+
+        send_response (connection, "200 OK", "application/json",
+                       register_json (account));
     }
     else if (route == "api/reports")
     {
