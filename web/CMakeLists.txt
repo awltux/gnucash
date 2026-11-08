@@ -29,6 +29,13 @@ target_compile_definitions(gnc-webd PRIVATE
 
 set_source_files_properties(${webd_SOURCES} PROPERTIES OBJECT_DEPENDS ${CONFIG_H})
 
+# GnuCash sets -mwindows in CMAKE_EXE_LINKER_FLAGS on Windows, which would make
+# this a GUI-subsystem binary: its "listening on http://..." line would never
+# reach stdout, and that line is how a user and the tests find the server.
+if (WIN32)
+  target_link_options(gnc-webd PRIVATE -mconsole)
+endif()
+
 target_include_directories(gnc-webd PRIVATE
   ${CMAKE_SOURCE_DIR}/common
   ${CMAKE_BINARY_DIR}/common
