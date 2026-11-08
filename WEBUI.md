@@ -47,9 +47,11 @@ change that. The session is opened read-only; there are no write endpoints.
 | `/<token>/` | the UI (`web/ui/index.html`) |
 | `/<token>/api/book` | `{"accounts":N,"top_level":M}` |
 | `/<token>/api/accounts` | the account tree with formatted totals |
+| `/<token>/api/reports` | the names of the registered reports |
 | `/<token>/report/<name>` | the report's HTML, rendered in this process |
 
-Report names are URL-decoded, so `/report/Trial%20Balance` works.
+Report names are URL-decoded, so `/report/Trial%20Balance` works. The UI lists
+`/api/reports` and shows a report in a frame, so it never leaves the page.
 
 ## How it is put together
 

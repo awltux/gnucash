@@ -62,6 +62,12 @@ accounts=$(curl -fsS "${URL}api/accounts") || fail "GET api/accounts failed"
 echo "$accounts" | grep -q '"name"' || fail "account tree has no names"
 echo "$accounts" | grep -q '"total"' || fail "account tree has no totals"
 
+reports=$(curl -fsS "${URL}api/reports") || fail "GET api/reports failed"
+echo "$reports" | grep -q '"Trial Balance"' || fail "report list has no Trial Balance"
+report_count=$(echo "$reports" | tr ',' '\n' | grep -c '^"')
+[ "$report_count" -gt 20 ] || fail "report list looks short ($report_count entries)"
+echo "reports listed: $report_count"
+
 # Reports are rendered in this process, not by a helper.
 report=$(curl -fsS "${URL}report/Trial%20Balance") || { cat "$LOG" >&2; fail "GET report failed"; }
 echo "$report" | grep -q "<html" || fail "report is not HTML"

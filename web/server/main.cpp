@@ -127,6 +127,7 @@ send_response (GSocketConnection* connection, const char* status,
     response += "\r\nContent-Length: ";
     response += std::to_string (body.size());
     response += "\r\nConnection: close\r\n";
+    response += "Cache-Control: no-store\r\n";
     response += "X-Content-Type-Options: nosniff\r\n\r\n";
     response += body;
 
@@ -156,6 +157,35 @@ url_decode (const std::string& in)
         out += in[i] == '+' ? ' ' : in[i];
     }
     return out;
+}
+
+std::string
+reports_json ()
+{
+    /* The report system knows its own templates; ask it rather than keeping a
+     * list here that would drift. */
+    SCM names = scm_c_eval_string (
+        "(let ((names '()))"
+        "  (gnc:report-templates-for-each"
+        "    (lambda (id tmpl)"
+        "      (set! names (cons (gnc:report-template-name tmpl) names))))"
+        "  names)");
+
+    std::string body = "[";
+    bool first = true;
+    for (SCM node = names; scm_is_pair (node); node = scm_cdr (node))
+    {
+        char* name = scm_to_utf8_string (scm_car (node));
+        if (!first)
+            body += ",";
+        first = false;
+        body += "\"";
+        body += json_escape (name);
+        body += "\"";
+        free (name);
+    }
+    body += "]";
+    return body;
 }
 
 /* Reads until the end of the request headers. Returns the path, or an empty
@@ -246,6 +276,10 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     {
         send_response (connection, "200 OK", "application/json",
                        account_json (g_server.root));
+    }
+    else if (route == "api/reports")
+    {
+        send_response (connection, "200 OK", "application/json", reports_json ());
     }
     else if (route.compare (0, 7, "report/") == 0)
     {

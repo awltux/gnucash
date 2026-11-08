@@ -14,6 +14,11 @@
   li > span.total.negative { color: #c00; }
   ul.collapsed { display: none; }
   .error { color: #c00; }
+  #reports { margin-top: 1.5rem; }
+  #report-list { display: flex; flex-wrap: wrap; gap: .25rem 1rem; padding-left: 0; }
+  #report-list a { color: #0645ad; }
+  #view { width: 100%; height: 70vh; border: 1px solid #ccc; margin-top: 1rem; }
+  #view[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -22,6 +27,11 @@
   <p id="summary">Loading…</p>
 </header>
 <main id="tree"></main>
+<section id="reports">
+  <h2>Reports</h2>
+  <ul id="report-list"></ul>
+  <iframe id="view" title="Report" hidden></iframe>
+</section>
 <script>
 "use strict";
 
@@ -64,6 +74,24 @@ async function load() {
     const list = el("ul");
     for (const account of root.children) list.append(renderAccount(account));
     tree.append(list);
+
+    // Reports are rendered by the server and shown in the frame below the
+    // tree, so one is a click away and the page never navigates away.
+    const names = (await (await fetch(api("api/reports"))).json()).sort();
+    const reports = document.getElementById("report-list");
+    const view = document.getElementById("view");
+    for (const name of names) {
+      const li = el("li");
+      const link = el("a", null, name);
+      link.href = api("report/" + encodeURIComponent(name));
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        view.hidden = false;
+        view.src = link.href;
+      });
+      li.append(link);
+      reports.append(li);
+    }
   } catch (err) {
     document.getElementById("summary").textContent = "Could not load the book.";
     document.getElementById("summary").className = "error";
