@@ -7,6 +7,9 @@ on:
     branches: ['webui/**']
   pull_request:
     branches: ['webui/**']
+  # Also run on demand: the branch is developed without waiting for pushes,
+  # and a manual run is how a skipped push gets exercised.
+  workflow_dispatch:
 permissions: {}
 
 jobs:
