@@ -25,7 +25,14 @@ if (!url) {
 }
 const screenshotPath = process.argv[3];
 
-const browser = await chromium.launch({ channel: 'chrome', headless: true });
+const browser = await chromium.launch({
+    // PW_CHANNEL=chrome drives an installed browser (no download); without it
+    // the bundled Chromium of the full `playwright` package is used.
+    ...(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {}),
+    headless: true,
+    // For containers that disable user namespaces.
+    args: process.env.PW_NO_SANDBOX ? ['--no-sandbox'] : [],
+});
 const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
 
 // A favicon miss is not a defect; anything else is.

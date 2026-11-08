@@ -947,6 +947,7 @@ endif()
 set(web_DIST
   web/CMakeLists.txt
   web/run-smoke-test.sh
+  web/run-ui-test.sh
   web/server/main.cpp
   web/ui/index.html
   web/test/ui-test.mjs)

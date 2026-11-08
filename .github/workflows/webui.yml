@@ -62,6 +62,27 @@ jobs:
       - name: Smoke test
         run: bash web/run-smoke-test.sh "$PWD/build" "$PWD"
 
+      - name: Install Playwright
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund playwright
+          npx playwright install --with-deps chromium
+
+      - name: Browser UI test
+        env:
+          NODE_PATH: ${{ runner.temp }}/pw/node_modules
+          PW_NO_SANDBOX: '1'
+        run: bash web/run-ui-test.sh "$PWD/build" "$PWD" "$PWD/ui-screenshot.png"
+
+      - name: Upload UI screenshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: webd-ui-screenshot
+          path: ui-screenshot.png
+          if-no-files-found: ignore
+
       # Packaging is not checked here: MakeDist.cmake refuses to build a
       # tarball when WITH_GNUCASH=OFF ("Creation of dist tarballs is not
       # supported when WITH_GNUCASH=OFF"), so a toolkit-free job cannot see
