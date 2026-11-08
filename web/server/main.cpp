@@ -308,9 +308,13 @@ register_html (Account* account)
     out += html_escape (balance != nullptr ? balance : "");
 
     out += "</p><table><thead><tr><th>Date</th><th>Description</th>"
-           "<th>Transfer</th><th class='num'>Amount</th></tr></thead><tbody>";
+           "<th>Transfer</th><th class='num'>Amount</th>"
+           "<th class='num'>Balance</th></tr></thead><tbody>";
 
     GList* splits = g_list_reverse (g_list_copy (xaccAccountGetSplitList (account)));
+    /* Newest first, walking the account's balance backwards: each row shows the
+     * balance after that entry, which is what a register column means. */
+    gnc_numeric running = xaccAccountGetBalance (account);
     for (GList* node = splits; node != nullptr; node = node->next)
     {
         auto* split = static_cast<Split*>(node->data);
@@ -329,7 +333,13 @@ register_html (Account* account)
         out += "</td><td class='num'>";
         const gchar* amount = xaccPrintAmount (xaccSplitGetAmount (split), info);
         out += html_escape (amount != nullptr ? amount : "");
+        out += "</td><td class='num'>";
+        const gchar* running_text = xaccPrintAmount (running, info);
+        out += html_escape (running_text != nullptr ? running_text : "");
         out += "</td></tr>";
+
+        running = gnc_numeric_sub (running, xaccSplitGetAmount (split),
+                                   GNC_DENOM_AUTO, GNC_HOW_RND_ROUND_HALF_UP);
     }
     g_list_free (splits);
 
