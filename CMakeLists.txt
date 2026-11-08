@@ -64,6 +64,7 @@ include (CheckStructHasMember)
 option (WITH_SQL "Build this project with SQL (libdbi) support" ON)
 option (WITH_AQBANKING "Build this project with aqbanking (online banking and a variety of file import formats) support" ON)
 option (WITH_GNUCASH "Build all of GnuCash, not just the library" ON)
+option (WITH_GUILE "Build the Guile bindings and the report engine (requires Guile)" ON)
 option (WITH_REPORT "Build the report engine and its Scheme reports" ON)
 option (WITH_WEBUI "Build the local web server (gnc-webd) and its browser UI" OFF)
 option (WITH_OFX "compile with ofx support (needs LibOFX)" ON)
@@ -74,6 +75,24 @@ option (COVERAGE "Instrument a Debug or Asan build for coverage reporting" OFF)
 option (GUILE_COVERAGE "Compute testing coverage of Scheme code. WARNING: 15X slowdown!" OFF)
 option (LEAKS "Report leaks for tests in a non-Apple Asan build." OFF)
 option (ODR "Report One Definition Rule violations in tests in a non-Apple Asan build." OFF)
+# ############################################################
+
+# Guile is not needed by the engine: accounts, transactions, backends and the
+# web UI are C/C++. It is needed by the report engine (all Scheme) and by the
+# GTK application, which starts inside scm_boot_guile. WITH_GUILE=OFF builds
+# the engine and the toolkit-free web UI with no Guile installed at all.
+if (NOT WITH_GUILE)
+  if (GUILE_COVERAGE)
+    message (FATAL_ERROR "GUILE_COVERAGE requires WITH_GUILE=ON.")
+  endif()
+  if (WITH_GNUCASH)
+    message (FATAL_ERROR "WITH_GNUCASH=ON requires Guile: the GTK application starts inside scm_boot_guile and builds its report menus in Scheme. Re-run with -DWITH_GNUCASH=OFF to build the engine and the web UI without Guile.")
+  endif()
+  if (WITH_REPORT)
+    message (STATUS "WITH_GUILE=OFF: disabling WITH_REPORT, because the report engine is written in Scheme.")
+    set (WITH_REPORT OFF)
+  endif()
+endif()
 # ############################################################
 
 # These are also settable from the command line in a similar way.
@@ -316,6 +335,8 @@ include (${SWIG_USE_FILE})
 
 # Find Guile and determine which version we are using.
 # Look for guile versions in this order: 3.0 > 2.2 > 2.0
+# Skipped entirely for WITH_GUILE=OFF: nothing below may require Guile then.
+if (WITH_GUILE)
 
 # guile library and include dir
 pkg_check_modules (GUILE3 guile-3.0 QUIET)
@@ -411,6 +432,8 @@ endif()
 
 # Determine where to install our guile modules libraries.
 find_guile_dirs()
+
+endif() # WITH_GUILE
 
 # ############################################################
 if (WITH_AQBANKING)
@@ -1056,7 +1079,11 @@ configure_file(
 add_custom_target(uninstall
         COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
 
-set(_MODULES gnc-core-utils gnc-engine gnc-app-utils gnc-module gnc-locale-tax gnc-backend-xml-utils gnucash-guile)
+set(_MODULES gnc-core-utils gnc-engine gnc-app-utils gnc-module gnc-backend-xml-utils)
+
+if (WITH_GUILE)
+  list(APPEND _MODULES gnc-locale-tax gnucash-guile)
+endif()
 
 if (WITH_SQL)
   list(APPEND _MODULES gnc-backend-sql)

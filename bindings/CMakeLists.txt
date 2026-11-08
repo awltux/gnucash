@@ -1,4 +1,6 @@
-add_subdirectory(guile)
+if (WITH_GUILE)
+  add_subdirectory(guile)
+endif()
 add_subdirectory(python)
 
 set_local_dist(bindings_DIST_local

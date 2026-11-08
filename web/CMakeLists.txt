@@ -10,19 +10,28 @@ set(webd_SOURCES
 
 add_executable(gnc-webd ${webd_SOURCES})
 
+# The report engine is the only Guile consumer in this tier. Without it the
+# report routes are compiled out of main.cpp and the binary links neither
+# gnc-report nor gnucash-guile; the engine and the rest of the UI still build.
+set(webd_report_LIBRARIES)
+set(webd_report_DEFINITIONS)
+if (WITH_GUILE AND WITH_REPORT)
+  list(APPEND webd_report_LIBRARIES gnc-report gnucash-guile ${GUILE_LDFLAGS})
+  list(APPEND webd_report_DEFINITIONS GNC_WITH_REPORT)
+endif()
+
 target_link_libraries(gnc-webd
-  gnc-report
+  ${webd_report_LIBRARIES}
   gnc-app-utils
   gnc-engine
   gnc-core-utils
-  gnucash-guile
   PkgConfig::GLIB2
   ${GIO_LIBRARIES}
-  ${GUILE_LDFLAGS}
   ${CMAKE_DL_LIBS}
 )
 
 target_compile_definitions(gnc-webd PRIVATE
+  ${webd_report_DEFINITIONS}
   -DG_LOG_DOMAIN=\"gnc.webd\"
   -DGNC_WEBUI_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ui"
 )

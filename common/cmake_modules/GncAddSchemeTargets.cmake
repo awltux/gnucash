@@ -154,6 +154,13 @@ endmacro(find_guile_dirs)
 # set up for this build, with the OUTPUT_DIR appended to it. For example:
 # /usr/local/lib/x86_64-linux-gnu/guile/2.0/site-cache/gnucash
 function(gnc_add_scheme_targets _TARGET)
+  # Compiling Scheme is a Guile-only operation. Subdirectories that are always
+  # configured (notably borrowed/guile-json) call this without knowing about
+  # WITH_GUILE, so make the call a no-op in a Guile-free build.
+  if (NOT WITH_GUILE)
+    return()
+  endif()
+
   set(noValues MAKE_LINKS TEST)
   set(singleValues OUTPUT_DIR)
   set(multiValues SOURCES DEPENDS)

@@ -28,7 +28,8 @@ if [ ! -f "$SCHEMAS/gschemas.compiled" ]; then
 fi
 
 LOG=$(mktemp)
-trap 'kill "$SERVER_PID" 2>/dev/null; rm -f "$LOG"' EXIT
+REPORTS_FILE=$(mktemp)
+trap 'kill "$SERVER_PID" 2>/dev/null; rm -f "$LOG" "$REPORTS_FILE"' EXIT
 
 env GNC_UNINSTALLED=YES GNC_BUILDDIR="$BUILD" \
     ${SCHEMAS:+GSETTINGS_SCHEMA_DIR="$SCHEMAS"} \
@@ -62,17 +63,27 @@ accounts=$(curl -fsS "${URL}api/accounts") || fail "GET api/accounts failed"
 echo "$accounts" | grep -q '"name"' || fail "account tree has no names"
 echo "$accounts" | grep -q '"total"' || fail "account tree has no totals"
 
-reports=$(curl -fsS "${URL}api/reports") || fail "GET api/reports failed"
-echo "$reports" | grep -q '"Trial Balance"' || fail "report list has no Trial Balance"
-report_count=$(echo "$reports" | tr ',' '\n' | grep -c '^"')
-[ "$report_count" -gt 20 ] || fail "report list looks short ($report_count entries)"
-echo "reports listed: $report_count"
+# Reports are optional. A build without Guile has no report engine and answers
+# 501 here (404 would also mean absent); skip the report checks in that case.
+# A build with reports must still pass them strictly.
+reports_code=$(curl -sS -o "$REPORTS_FILE" -w '%{http_code}' "${URL}api/reports") \
+    || { cat "$LOG" >&2; fail "GET api/reports failed"; }
+if [ "$reports_code" = "404" ] || [ "$reports_code" = "501" ]; then
+    echo "note: reports are not available in this build (api/reports answered $reports_code); skipping report checks"
+else
+    [ "$reports_code" = "200" ] || { cat "$LOG" >&2; fail "GET api/reports answered $reports_code"; }
+    reports=$(cat "$REPORTS_FILE")
+    echo "$reports" | grep -q '"Trial Balance"' || fail "report list has no Trial Balance"
+    report_count=$(echo "$reports" | tr ',' '\n' | grep -c '^"')
+    [ "$report_count" -gt 20 ] || fail "report list looks short ($report_count entries)"
+    echo "reports listed: $report_count"
 
-# Reports are rendered in this process, not by a helper.
-report=$(curl -fsS "${URL}report/Trial%20Balance") || { cat "$LOG" >&2; fail "GET report failed"; }
-echo "$report" | grep -q "<html" || fail "report is not HTML"
-[ "${#report}" -gt 5000 ] || fail "report looks empty (${#report} bytes)"
-echo "report bytes: ${#report}"
+    # Reports are rendered in this process, not by a helper.
+    report=$(curl -fsS "${URL}report/Trial%20Balance") || { cat "$LOG" >&2; fail "GET report failed"; }
+    echo "$report" | grep -q "<html" || fail "report is not HTML"
+    [ "${#report}" -gt 5000 ] || fail "report looks empty (${#report} bytes)"
+    echo "report bytes: ${#report}"
+fi
 
 # Without the token the same path must not answer.
 PORT=$(echo "$URL" | sed -E 's|.*:([0-9]+)/.*|\1|')

@@ -7,7 +7,10 @@ add_subdirectory (core-utils)
 add_subdirectory (engine)
 add_subdirectory (gnc-module)
 add_subdirectory (quotes)
-add_subdirectory (tax)
+# The locale tax module is a Guile library plus Scheme tax tables.
+if (WITH_GUILE)
+  add_subdirectory (tax)
+endif()
 
 add_definitions (-DHAVE_CONFIG_H)
 

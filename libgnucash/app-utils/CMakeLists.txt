@@ -96,6 +96,9 @@ install (TARGETS gnc-app-utils
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+# The old expression parser (gfec, gnc-exp-parser) evaluates functions through
+# Guile and is only used by the GTK front end, so it is built only with Guile.
+if (WITH_GUILE)
 set(expressions_SOURCES
         calculation/expression_parser.c
         calculation/fin.c
@@ -148,6 +151,8 @@ install(TARGETS gnc-expressions
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         )
+
+endif() # WITH_GUILE
 
 
 install(FILES ${app_utils_HEADERS} ${expressions_HEADERS}

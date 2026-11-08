@@ -27,10 +27,12 @@ if (UNIX)
 endif()
 
 # Command to generate the swig-unittest-support-guile.c wrapper file
-gnc_add_swig_guile_command (swig-unittest-support-guile-c
-    SWIG_UNITTEST_SUPPORT_GUILE_C swig-unittest-support-guile.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/unittest-support.i "" ${test_core_HEADERS}
-)
+if (WITH_GUILE)
+  gnc_add_swig_guile_command (swig-unittest-support-guile-c
+      SWIG_UNITTEST_SUPPORT_GUILE_C swig-unittest-support-guile.c
+      ${CMAKE_CURRENT_SOURCE_DIR}/unittest-support.i "" ${test_core_HEADERS}
+  )
+endif()
 
 # Command to generate the swig-unittest-support-python.c wrapper file
 gnc_add_swig_python_command (swig-unittest-support-python
@@ -39,9 +41,11 @@ gnc_add_swig_python_command (swig-unittest-support-python
     ${CMAKE_CURRENT_SOURCE_DIR}/unittest-support.i ""
 )
 
-add_library(test-core-guile ${SWIG_UNITTEST_SUPPORT_GUILE_C})
-target_link_libraries(test-core-guile test-core ${GUILE_LDFLAGS} PkgConfig::GLIB2)
-add_dependencies (test-core-guile swig-unittest-support-guile-c )
+if (WITH_GUILE)
+  add_library(test-core-guile ${SWIG_UNITTEST_SUPPORT_GUILE_C})
+  target_link_libraries(test-core-guile test-core ${GUILE_LDFLAGS} PkgConfig::GLIB2)
+  add_dependencies (test-core-guile swig-unittest-support-guile-c )
+endif()
 
 if (WITH_PYTHON)
   add_library(unittest_support MODULE ${SWIG_UNITTEST_SUPPORT_PYTHON_C})
@@ -53,18 +57,20 @@ if (WITH_PYTHON)
   endif()
 endif()
 
-set(test_core_SCHEME unittest-support.scm)
+if (WITH_GUILE)
+  set(test_core_SCHEME unittest-support.scm)
 
-set(GUILE_OUTPUT_DIR   tests)
-set(GUILE_DEPENDS      test-core-guile)
+  set(GUILE_OUTPUT_DIR   tests)
+  set(GUILE_DEPENDS      test-core-guile)
 
 
-gnc_add_scheme_test_targets(scm-test-core
-    SOURCES ${test_core_SCHEME}
-    OUTPUT_DIR ${GUILE_OUTPUT_DIR}
-    DEPENDS "${GUILE_DEPENDS}")
+  gnc_add_scheme_test_targets(scm-test-core
+      SOURCES ${test_core_SCHEME}
+      OUTPUT_DIR ${GUILE_OUTPUT_DIR}
+      DEPENDS "${GUILE_DEPENDS}")
 
-add_dependencies(check scm-test-core)
+  add_dependencies(check scm-test-core)
+endif()
 
 
 if (GTEST_SRC_DIR)

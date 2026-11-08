@@ -2,7 +2,7 @@
  * gnucash-webd -- a local web server that owns the engine          *
  *                                                                  *
  * The engine is single-threaded (no locking model), so everything  *
- * happens on one thread: Guile initialises here, the book is       *
+ * happens on one thread: the engine initialises here, the book is  *
  * opened here, and every request is handled on the GMainLoop that  *
  * this file runs. No worker threads, no marshalling.               *
  *                                                                  *
@@ -21,12 +21,16 @@
 
 #include <gio/gio.h>
 #include <glib.h>
+#ifdef GNC_WITH_REPORT
 #include <libguile.h>
+#endif
 
 extern "C" {
 #include <cashobjects.h>
 #include <gnc-engine.h>
+#ifdef GNC_WITH_REPORT
 #include <gnc-report.h>
+#endif
 #include <gnc-session.h>
 #include <gnc-ui-balances.h>
 #include <gnc-ui-util.h>
@@ -162,6 +166,7 @@ url_decode (const std::string& in)
     return out;
 }
 
+#ifdef GNC_WITH_REPORT
 std::string
 reports_json ()
 {
@@ -190,6 +195,18 @@ reports_json ()
     body += "]";
     return body;
 }
+#else
+/* This build has no Guile and therefore no report engine. Answer the report
+ * routes explicitly: a 501 says the feature is absent, where the generic 404
+ * would read as a bad report name. */
+void
+reports_unavailable (GSocketConnection* connection)
+{
+    send_response (connection, "501 Not Implemented", "text/plain",
+                   "reports are not available in this build: "
+                   "no Guile/report engine\n");
+}
+#endif
 
 std::string
 register_json (Account* account)
@@ -257,6 +274,7 @@ html_escape (const char* text)
     return out;
 }
 
+#ifdef GNC_WITH_REPORT
 /* A report links to its accounts with gnc-register:acct-guid=... , which is a
  * GnuCash URL type no browser can follow. Point those at this server instead,
  * and report-to-report links at the report route. */
@@ -283,6 +301,7 @@ rewrite_links (const std::string& html, const std::string& token)
     }
     return out;
 }
+#endif
 
 /* A server-rendered register page: the frame the report navigates into. */
 std::string
@@ -442,8 +461,9 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         send_response (connection, "200 OK", "application/json",
                        account_json (g_server.root));
     }
-    else if (route.compare (0, 15, "report-id/") == 0)
+    else if (route.compare (0, 10, "report-id/") == 0)
     {
+#ifdef GNC_WITH_REPORT
         /* Report-to-report links carry the engine's own id string. */
         const std::string id_string = url_decode (route.substr (10));
         char* html = nullptr;
@@ -462,6 +482,9 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
                            errmsg != nullptr ? errmsg : "no such report\n");
             g_free (errmsg);
         }
+#else
+        reports_unavailable (connection);
+#endif
     }
     else if (route.compare (0, 9, "register/") == 0)
     {
@@ -514,10 +537,15 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     }
     else if (route == "api/reports")
     {
+#ifdef GNC_WITH_REPORT
         send_response (connection, "200 OK", "application/json", reports_json ());
+#else
+        reports_unavailable (connection);
+#endif
     }
     else if (route.compare (0, 7, "report/") == 0)
     {
+#ifdef GNC_WITH_REPORT
         /* Rendered here, in this process: the report engine is toolkit-free,
          * so there is no helper process to spawn and no GTK to avoid. */
         const std::string name = url_decode (route.substr (7));
@@ -547,6 +575,9 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
                            errmsg != nullptr ? errmsg : "report failed\n");
             g_free (errmsg);
         }
+#else
+        reports_unavailable (connection);
+#endif
     }
     else if (route.empty() || route == "index.html")
     {
@@ -593,10 +624,11 @@ struct Arguments
 };
 
 void
-webd_main (void* data, int, char**)
+webd_main (void* data, int argc, char** argv)
 {
     auto* args = static_cast<Arguments*>(data);
 
+#ifdef GNC_WITH_REPORT
     /* The same prelude the CLI uses for `-R run`: the Guile modules bring up
      * the engine (qof_init and the object registry) themselves, and doing it
      * again here trips the engine's own assertions. Backends are found through
@@ -607,6 +639,12 @@ webd_main (void* data, int, char**)
     scm_c_use_module ("gnucash reports");
 
     gnc_report_init ();
+#else
+    /* No Guile and no report engine: bring the engine up directly. This is
+     * what libgnucash-guile's module initialiser did in the Guile build --
+     * qof_init, the core object registry and the backend modules. */
+    gnc_engine_init (argc, argv);
+#endif
 
     QofSession* session = gnc_get_current_session ();
     if (session == nullptr)
@@ -691,7 +729,11 @@ main (int argc, char** argv)
         return 2;
     }
 
+#ifdef GNC_WITH_REPORT
     /* Guile owns the main thread; everything above happens inside this. */
     scm_boot_guile (argc, argv, webd_main, &args);
+#else
+    webd_main (&args, argc, argv);
+#endif
     return 0;
 }

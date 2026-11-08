@@ -12,24 +12,29 @@ set(APP_UTILS_TEST_INCLUDE_DIRS
 
 set(APP_UTILS_TEST_LIBS
         gnc-app-utils
-        gnc-expressions
         gnc-test-engine
         test-core
         ${GIO_LDFLAGS}
         ${GUILE_LDFLAGS})
 
+# The old expression parser is built only with Guile; the tests that need it
+# are gated on WITH_GUILE below.
+set(APP_UTILS_GUILE_TEST_LIBS ${APP_UTILS_TEST_LIBS} gnc-expressions)
+
 macro(add_app_utils_test _TARGET _SOURCE_FILES)
   gnc_add_test(${_TARGET} "${_SOURCE_FILES}" APP_UTILS_TEST_INCLUDE_DIRS APP_UTILS_TEST_LIBS)
 endmacro()
 
-gnc_add_test_with_guile(test-exp-parser test-exp-parser.c
-  APP_UTILS_TEST_INCLUDE_DIRS APP_UTILS_TEST_LIBS
+if (WITH_GUILE)
+  gnc_add_test_with_guile(test-exp-parser test-exp-parser.c
+    APP_UTILS_TEST_INCLUDE_DIRS APP_UTILS_GUILE_TEST_LIBS
+    )
+  add_dependencies(test-exp-parser scm-expressions)
+  gnc_add_test_with_guile(test-sx test-sx.cpp
+    APP_UTILS_TEST_INCLUDE_DIRS APP_UTILS_GUILE_TEST_LIBS
   )
-add_dependencies(test-exp-parser scm-expressions)
+endif()
 add_app_utils_test(test-print-parse-amount test-print-parse-amount.cpp)
-gnc_add_test_with_guile(test-sx test-sx.cpp
-  APP_UTILS_TEST_INCLUDE_DIRS APP_UTILS_TEST_LIBS
-)
 
 set (test_gnc_app_utils_SOURCES
      gtest-ui-util.cpp
