@@ -59,6 +59,23 @@ jobs:
       - name: Smoke test
         run: bash web/run-smoke-test.sh "$PWD/build" "$PWD"
 
+      # A file that is missing from a set_dist_list is silently absent from the
+      # release tarball, and only distcheck finds out -- after a full GTK build.
+      # This checks the same thing in seconds.
+      - name: Check the tarball ships the new files
+        run: |
+          cmake --build build --target dist
+          tarball=$(ls build/gnucash-*.tar.gz | head -1)
+          echo "tarball: $tarball"
+          for f in gnc-html-url.cpp gnc-html-url.h web/server/main.cpp WEBUI.md; do
+            if tar tzf "$tarball" | grep -q "$f"; then
+              echo "in dist: $f"
+            else
+              echo "::error::$f is not in $tarball (missing from a dist list)"
+              exit 1
+            fi
+          done
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
