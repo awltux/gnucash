@@ -974,6 +974,7 @@ set(web_DIST
   web/WINDOWS.md
   web/server/main.cpp
   web/ui/index.html
+  web/test/report-parity.sh
   web/test/ui-test.mjs)
 add_subdirectory (bindings)
 add_subdirectory (test-templates)

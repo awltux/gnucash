@@ -63,26 +63,44 @@ accounts=$(curl -fsS "${URL}api/accounts") || fail "GET api/accounts failed"
 echo "$accounts" | grep -q '"name"' || fail "account tree has no names"
 echo "$accounts" | grep -q '"total"' || fail "account tree has no totals"
 
-# Reports are optional. A build without Guile has no report engine and answers
-# 501 here (404 would also mean absent); skip the report checks in that case.
-# A build with reports must still pass them strictly.
+# Reports are native in every build: the Trial Balance is rendered by the
+# C++ report layer, which does not need Guile.  A Guile build additionally
+# lists the Scheme reports and falls back to them for names the native layer
+# does not know; a build without Guile answers 501 for those.
+HAS_GUILE=0
+if [ -f "$BUILD/lib/gnucash/libgnc-report.so" ] ||
+   [ -f "$BUILD/lib/libgnc-report.so" ]; then
+    HAS_GUILE=1
+fi
+
 reports_code=$(curl -sS -o "$REPORTS_FILE" -w '%{http_code}' "${URL}api/reports") \
     || { cat "$LOG" >&2; fail "GET api/reports failed"; }
-if [ "$reports_code" = "404" ] || [ "$reports_code" = "501" ]; then
-    echo "note: reports are not available in this build (api/reports answered $reports_code); skipping report checks"
-else
-    [ "$reports_code" = "200" ] || { cat "$LOG" >&2; fail "GET api/reports answered $reports_code"; }
-    reports=$(cat "$REPORTS_FILE")
-    echo "$reports" | grep -q '"Trial Balance"' || fail "report list has no Trial Balance"
-    report_count=$(echo "$reports" | tr ',' '\n' | grep -c '^"')
+[ "$reports_code" = "200" ] || fail "GET api/reports answered $reports_code"
+reports=$(cat "$REPORTS_FILE")
+echo "$reports" | grep -q '"Trial Balance"' || fail "report list has no Trial Balance"
+report_count=$(echo "$reports" | tr ',' '\n' | sed 's/^\[//' | grep -c '^"')
+if [ "$HAS_GUILE" = 1 ]; then
     [ "$report_count" -gt 20 ] || fail "report list looks short ($report_count entries)"
-    echo "reports listed: $report_count"
+fi
+echo "reports listed: $report_count"
 
-    # Reports are rendered in this process, not by a helper.
-    report=$(curl -fsS "${URL}report/Trial%20Balance") || { cat "$LOG" >&2; fail "GET report failed"; }
-    echo "$report" | grep -q "<html" || fail "report is not HTML"
-    [ "${#report}" -gt 5000 ] || fail "report looks empty (${#report} bytes)"
-    echo "report bytes: ${#report}"
+# Reports are rendered in this process, not by a helper.
+report=$(curl -fsS "${URL}report/Trial%20Balance") || { cat "$LOG" >&2; fail "GET report failed"; }
+echo "$report" | grep -q "<html" || fail "report is not HTML"
+echo "$report" | grep -q "number-cell" || fail "native report has no amount cells"
+echo "$report" | grep -q "Accounts Payable" || fail "native report has no account rows"
+[ "${#report}" -gt 5000 ] || fail "report looks empty (${#report} bytes)"
+echo "report bytes: ${#report}"
+
+if [ "$HAS_GUILE" = 1 ]; then
+    # The Scheme engine is still the fallback for reports not ported yet.
+    curl -fsS "${URL}report/Income%20Statement" | grep -q "<html" \
+        || fail "Scheme fallback did not render Income Statement"
+else
+    unknown_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+        "${URL}report/Income%20Statement")
+    [ "$unknown_code" = "501" ] \
+        || fail "a non-native report answered $unknown_code without Guile (expected 501)"
 fi
 
 # Without the token the same path must not answer.

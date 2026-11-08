@@ -31,6 +31,7 @@ extern "C" {
 #ifdef GNC_WITH_REPORT
 #include <gnc-report.h>
 #endif
+#include <gnc-prefs-utils.h>
 #include <gnc-session.h>
 #include <gnc-ui-balances.h>
 #include <gnc-ui-util.h>
@@ -43,6 +44,8 @@ extern "C" {
 #include <gnc-numeric.h>
 #include <gnc-date.h>
 }
+
+#include <gnc-report.hpp>
 
 namespace
 {
@@ -196,9 +199,29 @@ reports_json ()
     return body;
 }
 #else
-/* This build has no Guile and therefore no report engine. Answer the report
- * routes explicitly: a 501 says the feature is absent, where the generic 404
- * would read as a bad report name. */
+std::string
+native_reports_json ()
+{
+    std::string body = "[";
+    bool first = true;
+    for (const std::string& name : gnc::report::native_report_names ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "\"";
+        body += json_escape (name.c_str ());
+        body += "\"";
+    }
+    body += "]";
+    return body;
+}
+
+/* This build has no Guile and therefore no Scheme report engine.  Native
+ * reports still exist, so api/reports answers from their registry; the
+ * report routes themselves answer 501 for names the native layer does not
+ * know.  A 501 says the feature is absent, where a generic 404 would read
+ * as a bad report name. */
 void
 reports_unavailable (GSocketConnection* connection)
 {
@@ -274,10 +297,10 @@ html_escape (const char* text)
     return out;
 }
 
-#ifdef GNC_WITH_REPORT
 /* A report links to its accounts with gnc-register:acct-guid=... , which is a
  * GnuCash URL type no browser can follow. Point those at this server instead,
- * and report-to-report links at the report route. */
+ * and report-to-report links at the report route.  Native reports use the
+ * same URL type, so this applies to both engines. */
 std::string
 rewrite_links (const std::string& html, const std::string& token)
 {
@@ -301,7 +324,6 @@ rewrite_links (const std::string& html, const std::string& token)
     }
     return out;
 }
-#endif
 
 /* A server-rendered register page: the frame the report navigates into. */
 std::string
@@ -540,43 +562,64 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
 #ifdef GNC_WITH_REPORT
         send_response (connection, "200 OK", "application/json", reports_json ());
 #else
-        reports_unavailable (connection);
+        send_response (connection, "200 OK", "application/json",
+                       native_reports_json ());
 #endif
     }
     else if (route.compare (0, 7, "report/") == 0)
     {
-#ifdef GNC_WITH_REPORT
-        /* Rendered here, in this process: the report engine is toolkit-free,
-         * so there is no helper process to spawn and no GTK to avoid. */
+        /* Native reports are rendered in this process and need no Guile.
+         * When the build also has the Scheme engine, names the native layer
+         * does not know fall through to it; without Guile they stay 501. */
         const std::string name = url_decode (route.substr (7));
-        SCM get_id = scm_c_eval_string ("gnc:cmdline-get-report-id");
-        SCM id = scm_call_1 (get_id, scm_from_utf8_string (name.c_str ()));
 
-        if (scm_is_false (id))
+        std::string native_html;
+        if (gnc::report::render_report (name, g_server.root, native_html))
         {
-            send_response (connection, "404 Not Found", "text/plain",
-                           "no such report\n");
-            return TRUE;
-        }
-
-        char* html = nullptr;
-        char* errmsg = nullptr;
-        if (gnc_run_report_with_error_handling (scm_to_int (id), &html, &errmsg))
-        {
-            const std::string document = rewrite_links (
-                html != nullptr ? html : "", g_server.token);
             send_response (connection, "200 OK", "text/html; charset=utf-8",
-                           document);
-            g_free (html);
+                           rewrite_links (native_html, g_server.token));
         }
+#ifdef GNC_WITH_REPORT
         else
         {
-            send_response (connection, "500 Internal Server Error", "text/plain",
-                           errmsg != nullptr ? errmsg : "report failed\n");
-            g_free (errmsg);
+            /* Rendered here, in this process: the report engine is
+             * toolkit-free, so there is no helper process to spawn and no
+             * GTK to avoid. */
+            SCM get_id = scm_c_eval_string ("gnc:cmdline-get-report-id");
+            SCM id = scm_call_1 (get_id, scm_from_utf8_string (name.c_str ()));
+
+            if (scm_is_false (id))
+            {
+                send_response (connection, "404 Not Found", "text/plain",
+                               "no such report\n");
+                return TRUE;
+            }
+
+            char* html = nullptr;
+            char* errmsg = nullptr;
+            if (gnc_run_report_with_error_handling (scm_to_int (id), &html,
+                                                    &errmsg))
+            {
+                const std::string document = rewrite_links (
+                    html != nullptr ? html : "", g_server.token);
+                send_response (connection, "200 OK",
+                               "text/html; charset=utf-8", document);
+                g_free (html);
+            }
+            else
+            {
+                send_response (connection, "500 Internal Server Error",
+                               "text/plain",
+                               errmsg != nullptr ? errmsg
+                                                 : "report failed\n");
+                g_free (errmsg);
+            }
         }
 #else
-        reports_unavailable (connection);
+        else
+        {
+            reports_unavailable (connection);
+        }
 #endif
     }
     else if (route.empty() || route == "index.html")
@@ -642,8 +685,11 @@ webd_main (void* data, int argc, char** argv)
 #else
     /* No Guile and no report engine: bring the engine up directly. This is
      * what libgnucash-guile's module initialiser did in the Guile build --
-     * qof_init, the core object registry and the backend modules. */
+     * qof_init, the core object registry and the backend modules.  The
+     * app-utils preferences are part of that prelude as well: report
+     * defaults (the accounting-period end date, print formats) read them. */
     gnc_engine_init (argc, argv);
+    gnc_prefs_init ();
 #endif
 
     QofSession* session = gnc_get_current_session ();

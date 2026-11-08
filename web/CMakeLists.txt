@@ -22,6 +22,7 @@ endif()
 
 target_link_libraries(gnc-webd
   ${webd_report_LIBRARIES}
+  gnc-reports
   gnc-app-utils
   gnc-engine
   gnc-core-utils
