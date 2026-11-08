@@ -42,8 +42,10 @@ env GNC_UNINSTALLED=YES GNC_BUILDDIR="$BUILD" \
 SERVER_PID=$!
 
 # The server prints "webd listening on http://127.0.0.1:<port>/<token>/".
+# The Guile build's prelude can take tens of seconds on a cold cache, so wait
+# up to a minute rather than thirty seconds.
 URL=""
-for _ in $(seq 1 150); do
+for _ in $(seq 1 300); do
     URL=$(grep -oE 'http://127\.0\.0\.1:[0-9]+/[0-9a-f]+/' "$LOG" | head -1)
     [ -n "$URL" ] && break
     kill -0 "$SERVER_PID" 2>/dev/null || break

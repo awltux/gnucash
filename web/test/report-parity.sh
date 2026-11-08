@@ -2,26 +2,37 @@
 # Report parity: the Scheme report versus the native one, report by report.
 #
 # Usage: report-parity.sh <guile-build> <native-build> <source-dir>
-#                         [book] [report] [start] [end]
+#                         [book] [report] [start] [end] [accounts]
 #
 # <guile-build> must contain bin/gnucash-cli (a WITH_GNUCASH build); override
 # the binary with GNC_CLI=/path/to/gnucash-cli.  <native-build> contains
 # gnc-webd.  Both run against the same book.
 #
-# [report] defaults to "Trial Balance"; "Balance Sheet", "Income Statement"
-# and "Profit & Loss" are supported.  Each report has its own extractor
-# (see extractor_for below), because the reports do not agree on what a row
-# is: the Trial Balance is (account, debit, credit), the balance sheet and
-# P&L are (label, amount) with section headings and totals.
+# [report] defaults to "Trial Balance"; "Balance Sheet", "Income Statement",
+# "Profit & Loss", "Transaction Report" and "General Ledger" are supported.
+# Each report has its own extractor (see extractor_for below), because the
+# reports do not agree on what a row is: the Trial Balance is (account, debit,
+# credit), the balance sheet and P&L are (label, amount) with section headings
+# and totals.
 #
-# [start] and [end] are optional YYYY-MM-DD dates.  When given, the native
-# report is asked for that period with ?start=&end=, and the Scheme report is
-# asked for the same period through a saved-report variant written into the
-# oracle build's user data directory (gnucash-cli has no command line for
-# report options).  Without them both engines use the report's own defaults,
-# which is the real parity claim; the dates exist because the fixture books
-# predate the current accounting period, so a period report on its defaults
-# renders zeros and proves only the shape.
+# [start] and [end] are optional YYYY-MM-DD dates.  [accounts] is optional:
+# "all", or a comma-separated list of account GUIDs.  Each GUID means that
+# account and its whole subtree (which is what the native route does), so the
+# oracle is asked for the same expanded list.  When any option is given the
+# native report is asked with the report route's query parameters and the
+# Scheme report is asked for the same options through a saved-report variant
+# written into the oracle build's user data directory (gnucash-cli has no
+# command line for report options).  Without options both engines use the
+# report's own defaults, which is the real parity claim; the dates exist
+# because the fixture books predate the current accounting period, so a period
+# report on its defaults renders zeros and proves only the shape.
+#
+# The Trial Balance and Balance Sheet are as-of reports: the Scheme Trial
+# Balance's current variant ignores its start date and the balance sheet has a
+# single date option.  The native route accepts a start date for them (so a
+# range can be handed to any report) but only the end date changes the figures;
+# the harness sends the start date to the oracle where the report has that
+# option.
 #
 # Numbers are compared as numbers, so currency symbols, thousands separators
 # and the table markup itself do not count as a diff.
@@ -29,13 +40,14 @@
 # Exit status: 0 when every row and total matches, 1 otherwise.
 set -u
 
-GUILE_BUILD=${1:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end]}
-NATIVE_BUILD=${2:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end]}
-SRC=${3:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end]}
+GUILE_BUILD=${1:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end] [accounts]}
+NATIVE_BUILD=${2:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end] [accounts]}
+SRC=${3:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end] [accounts]}
 BOOK=${4:-$SRC/libgnucash/backend/xml/test/test-files/load-save/sample1.gnucash}
 REPORT=${5:-Trial Balance}
 START=${6:-}
 END=${7:-}
+ACCOUNTS=${8:-}
 
 CLI=${GNC_CLI:-$GUILE_BUILD/bin/gnucash-cli}
 WEBDBIN="$NATIVE_BUILD/bin/gnc-webd"
@@ -60,10 +72,10 @@ extractor_for() {
 
 report_guid() {
     case "$1" in
-        "Trial Balance")    echo "d1e1b1f19b3d4bb0a1e0e1c2b7b0b8a1" ;;
+        "Trial Balance")    echo "216cd0cf6931453ebcce85415aba7082" ;;
         "Balance Sheet")    echo "c4173ac99b2b448289bf4d11c731af13" ;;
-        "Income Statement"|"Profit & Loss")
-                            echo "0b81a3bdfd504aff849ec2e8630524bc" ;;
+        "Income Statement") echo "0b81a3bdfd504aff849ec2e8630524bc" ;;
+        "Profit & Loss")    echo "8758ba23984c40dea5527f5f0ca2779e" ;;
         "Transaction Report") echo "2fe3b9833af044abb929a88d5a59620f" ;;
         "General Ledger")   echo "2e22929e5c5b4b769f615a815ef0c20f" ;;
         *) return 1 ;;
@@ -79,8 +91,35 @@ needs_accounts() {
     esac
 }
 
+# The Scheme option names that carry the period.  They differ per report: the
+# Trial Balance calls its end date "Date of Report" and its start date "Start
+# of Adjusting/Closing", the balance sheet has one date, and the P&L and the
+# transaction reports use "Start Date"/"End Date".
+scheme_start_option() {
+    case "$1" in
+        "Trial Balance") echo "Start of Adjusting/Closing" ;;
+        # The balance sheet has a single date option and no start.
+        "Balance Sheet") echo "" ;;
+        *) echo "Start Date" ;;
+    esac
+}
+
+scheme_end_option() {
+    case "$1" in
+        "Trial Balance") echo "Date of Report" ;;
+        "Balance Sheet") echo "Balance Sheet Date" ;;
+        *) echo "End Date" ;;
+    esac
+}
+
+# The native route's own option surface.  Only the transaction engine reports
+# have an account selection.
+native_takes_accounts() {
+    needs_accounts "$1"
+}
+
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger)"
 
 [ -x "$CLI" ] || fail "no gnucash-cli at $CLI (need a WITH_GNUCASH Guile build, or set GNC_CLI)"
 [ -x "$WEBDBIN" ] || fail "gnc-webd was not built at $WEBDBIN"
@@ -115,17 +154,68 @@ trap cleanup EXIT
 # oracle build is a test build, so writing it is fair game; it is restored
 # on exit.
 ORACLE_NAME="$REPORT"
-if [ -n "$START" ] && [ -n "$END" ]; then
+
+if [ -n "$START" ] && [ -z "$END" ]; then
+    fail "a start date needs an end date too (got start=$START)"
+fi
+if [ -n "$ACCOUNTS" ] && ! native_takes_accounts "$REPORT"; then
+    fail "$REPORT has no account selection, so [accounts] cannot be used"
+fi
+
+if [ -n "$START" ] || [ -n "$END" ] || [ -n "$ACCOUNTS" ]; then
     GUID=$(report_guid "$REPORT") || fail "unknown report guid for '$REPORT'"
-    START_T64=$(date -u -d "$START 12:00:00" +%s) \
-        || fail "cannot parse start date '$START' (want YYYY-MM-DD)"
-    END_T64=$(date -u -d "$END 12:00:00" +%s) \
-        || fail "cannot parse end date '$END' (want YYYY-MM-DD)"
+
+    START_T64=
+    END_T64=
+    if [ -n "$START" ]; then
+        START_T64=$(date -u -d "$START 12:00:00" +%s) \
+            || fail "cannot parse start date '$START' (want YYYY-MM-DD)"
+    fi
+    if [ -n "$END" ]; then
+        END_T64=$(date -u -d "$END 12:00:00" +%s) \
+            || fail "cannot parse end date '$END' (want YYYY-MM-DD)"
+    fi
+
+    DATE_OPTIONS=""
+    START_OPTION=$(scheme_start_option "$REPORT")
+    if [ -n "$START" ] && [ -n "$START_OPTION" ]; then
+        DATE_OPTIONS="$DATE_OPTIONS
+      (gnc-set-option (gnc:optiondb options) \"General\" \"$START_OPTION\"
+                      (cons 'absolute $START_T64))"
+    fi
+    if [ -n "$END" ]; then
+        DATE_OPTIONS="$DATE_OPTIONS
+      (gnc-set-option (gnc:optiondb options) \"General\" \"$(scheme_end_option "$REPORT")\"
+                      (cons 'absolute $END_T64))"
+    fi
 
     ACCOUNT_OPTION=""
-    if needs_accounts "$REPORT"; then
-        ACCOUNT_OPTION='(gnc-set-option (gnc:optiondb options) "Accounts" "Accounts"
-                        (gnc-account-get-descendants-sorted (gnc-get-current-root-account)))'
+    if [ -n "$ACCOUNTS" ]; then
+        if [ "$ACCOUNTS" = "all" ]; then
+            ACCOUNT_EXPR='(gnc-account-get-descendants-sorted (gnc-get-current-root-account))'
+        else
+            # The native route expands each GUID to that account's subtree, so
+            # give the oracle the same list rather than the bare GUIDs.
+            GUID_LIST=""
+            OLDIFS=$IFS
+            IFS=,
+            for guid in $ACCOUNTS; do
+                [ -n "$guid" ] || continue
+                GUID_LIST="$GUID_LIST \"$guid\""
+            done
+            IFS=$OLDIFS
+            ACCOUNT_EXPR="(let* ((root (gnc-get-current-root-account))
+                           (all (cons root (gnc-account-get-descendants-sorted root)))
+                           (wanted (list$GUID_LIST)))
+                      (apply append
+                             (map (lambda (a)
+                                    (cons a (gnc-account-get-descendants-sorted a)))
+                                  (filter (lambda (a)
+                                            (member (gncAccountGetGUID a) wanted))
+                                          all))))"
+        fi
+        ACCOUNT_OPTION="(gnc-set-option (gnc:optiondb options) \"Accounts\" \"Accounts\"
+                        $ACCOUNT_EXPR)"
     fi
 
     mkdir -p "$(dirname "$SAVED_REPORTS")"
@@ -140,10 +230,7 @@ if [ -n "$START" ] && [ -n "$END" ]; then
   (define (options-gen)
     (let ((options (gnc:report-template-new-options/report-guid "$GUID" "$REPORT"))
           (new-embedded-report-ids '()))
-      (gnc-set-option (gnc:optiondb options) "General" "Start Date"
-                      (cons 'absolute $START_T64))
-      (gnc-set-option (gnc:optiondb options) "General" "End Date"
-                      (cons 'absolute $END_T64))
+      $DATE_OPTIONS
       $ACCOUNT_OPTION
       options))
   (gnc:define-report
@@ -199,7 +286,7 @@ env GNC_UNINSTALLED=YES GNC_BUILDDIR="$NATIVE_BUILD" \
 SERVER_PID=$!
 
 URL=""
-for _ in $(seq 1 150); do
+for _ in $(seq 1 300); do
     URL=$(grep -oE 'http://127\.0\.0\.1:[0-9]+/[0-9a-f]+/' "$TMP/server.log" | head -1)
     [ -n "$URL" ] && break
     kill -0 "$SERVER_PID" 2>/dev/null || break
@@ -209,15 +296,22 @@ done
 
 REQUEST_NAME=$(printf '%s' "$REPORT" | sed 's/ /%20/g')
 REQUEST_QUERY=""
-if [ -n "$START" ] && [ -n "$END" ]; then
-    REQUEST_QUERY="?start=$START&end=$END"
-    # The transaction reports' default account selection is empty, so a
-    # period alone would still render the warning; ask for the same
-    # selection the oracle variant sets.
-    if needs_accounts "$REPORT"; then
-        REQUEST_QUERY="$REQUEST_QUERY&accounts=all"
-    fi
+add_param() { REQUEST_QUERY="${REQUEST_QUERY}${REQUEST_QUERY:+&}$1"; }
+if [ -n "$START" ]; then
+    add_param "start=$START"
 fi
+if [ -n "$END" ]; then
+    add_param "end=$END"
+fi
+if [ -n "$ACCOUNTS" ]; then
+    add_param "accounts=$ACCOUNTS"
+elif needs_accounts "$REPORT" && { [ -n "$START" ] || [ -n "$END" ]; }; then
+    # Backwards compatibility: a period on the transaction reports used to
+    # imply "every account" in this harness.  The route still has to be asked
+    # for it explicitly, and that is what this is.
+    add_param "accounts=all"
+fi
+[ -n "$REQUEST_QUERY" ] && REQUEST_QUERY="?$REQUEST_QUERY"
 curl -fsS "${URL%/}/report/$REQUEST_NAME$REQUEST_QUERY" -o "$TMP/native.html" \
     || { cat "$TMP/server.log" >&2; fail "the native report request failed"; }
 [ -s "$TMP/native.html" ] || fail "the native report is empty"

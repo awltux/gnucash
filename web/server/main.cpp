@@ -17,7 +17,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <set>
 #include <string>
+#include <vector>
 
 #include <gio/gio.h>
 #include <glib.h>
@@ -41,8 +43,10 @@ extern "C" {
 #include <Account.h>
 #include <Split.h>
 #include <Transaction.h>
+#include <gnc-commodity.h>
 #include <gnc-numeric.h>
 #include <gnc-date.h>
+#include <guid.h>
 }
 
 #include <gnc-report.hpp>
@@ -95,10 +99,21 @@ json_escape (const char* text)
 }
 
 std::string
+account_guid_text (Account* account)
+{
+    gchar* text = guid_to_string (xaccAccountGetGUID (account));
+    std::string result = text != nullptr ? text : "";
+    g_free (text);
+    return result;
+}
+
+std::string
 account_json (Account* account)
 {
     std::string out = "{\"name\":\"";
     out += json_escape (xaccAccountGetName (account));
+    out += "\",\"guid\":\"";
+    out += json_escape (account_guid_text (account).c_str ());
     out += "\",\"total\":\"";
 
     gboolean negative = FALSE;
@@ -230,6 +245,108 @@ reports_unavailable (GSocketConnection* connection)
                    "no Guile/report engine\n");
 }
 #endif
+
+/* ---------------------------------------------------------- report options */
+
+const char*
+option_type_name (gnc::report::OptionType type)
+{
+    switch (type)
+    {
+    case gnc::report::OptionType::Date:        return "date";
+    case gnc::report::OptionType::AccountList: return "account-list";
+    case gnc::report::OptionType::Currency:    return "currency";
+    case gnc::report::OptionType::Choice:      return "choice";
+    }
+    return "";
+}
+
+std::string
+option_json (const gnc::report::OptionDescriptor& option)
+{
+    std::string out = "{\"name\":\"";
+    out += json_escape (option.name.c_str ());
+    out += "\",\"type\":\"";
+    out += option_type_name (option.type);
+    out += "\",\"label\":\"";
+    out += json_escape (option.label.c_str ());
+    out += "\",\"description\":\"";
+    out += json_escape (option.description.c_str ());
+    out += "\",\"default\":";
+    /* An account selection defaults to the empty list, everything else to a
+     * string; keep the JSON types honest so a form can use them as is. */
+    if (option.type == gnc::report::OptionType::AccountList)
+        out += "[]";
+    else
+    {
+        out += "\"";
+        out += json_escape (option.default_value.c_str ());
+        out += "\"";
+    }
+    if (!option.choices.empty ())
+    {
+        out += ",\"choices\":[";
+        bool first = true;
+        for (const std::string& choice : option.choices)
+        {
+            if (!first)
+                out += ",";
+            first = false;
+            out += "\"";
+            out += json_escape (choice.c_str ());
+            out += "\"";
+        }
+        out += "]";
+    }
+    out += "}";
+    return out;
+}
+
+std::string
+options_json (const std::vector<gnc::report::OptionDescriptor>& options)
+{
+    std::string body = "[";
+    bool first = true;
+    for (const auto& option : options)
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += option_json (option);
+    }
+    body += "]";
+    return body;
+}
+
+std::string
+report_options_json (const std::string& name)
+{
+    std::string body = "{\"report\":\"";
+    body += json_escape (name.c_str ());
+    body += "\",\"options\":";
+    body += options_json (gnc::report::report_options (name));
+    body += "}";
+    return body;
+}
+
+/* /api/reports?options=1: the native reports, each with the options it
+ * accepts.  The plain /api/reports list keeps its shape (an array of names)
+ * because the UI and the smoke test already depend on it. */
+std::string
+native_reports_options_json ()
+{
+    std::string body = "[";
+    bool first = true;
+    for (const std::string& name : gnc::report::native_report_names ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += report_options_json (name);
+    }
+    body += "]";
+    return body;
+}
 
 std::string
 register_json (Account* account)
@@ -421,64 +538,316 @@ read_request_path (GSocketConnection* connection)
     return line.substr (first + 1, second - first - 1);
 }
 
-/* The report route accepts start/end dates, "YYYY-MM-DD", so a caller can
- * ask for the same period it asks the Scheme engine for through that
- * report's own options.  It also accepts "accounts=all", which selects every
- * account under the root for the reports whose Scheme default selection is
- * empty (Transaction Report, General Ledger).  Without it those reports keep
- * the empty default selection -- an empty selection is not "the whole book".
- * Stage 3 will grow this into the full option surface; the parity harness is
- * the first user. */
-bool
-parse_date_param (const std::string& query, const char* key, bool day_end,
-                  time64& out)
+/* The report route's option surface.  The names and defaults come from the
+ * native layer's descriptors (report_options()), so a form and a caller can
+ * ask the same questions.  Everything a caller sends is validated here:
+ * unknown options, bad dates and unknown GUIDs are rejected with a message
+ * naming the problem, never ignored.
+ *
+ * The one thing that is not a descriptor is "period": it is a convenience
+ * that resolves to the same start/end pair the report's own date options
+ * default to (this-year), the previous period (last-year), or no bounds at
+ * all (all). */
+
+struct QueryParam
 {
-    const std::string prefix = std::string (key) + "=";
+    std::string name;
+    std::string value;
+};
+
+bool
+parse_query (const std::string& query, std::vector<QueryParam>& out,
+             std::string& error)
+{
     size_t pos = 0;
     while (pos < query.size ())
     {
         const size_t next = query.find ('&', pos);
         const std::string pair = query.substr (
             pos, next == std::string::npos ? std::string::npos : next - pos);
-        if (pair.compare (0, prefix.size (), prefix) == 0)
+        if (!pair.empty ())
         {
-            int year = 0;
-            int month = 0;
-            int day = 0;
-            if (std::sscanf (pair.c_str () + prefix.size (), "%d-%d-%d",
-                             &year, &month, &day) == 3)
+            const size_t equals = pair.find ('=');
+            if (equals == std::string::npos)
             {
-                out = day_end ? gnc_dmy2time64_end (day, month, year)
-                              : gnc_dmy2time64 (day, month, year);
-                return true;
+                error = "malformed query parameter '" + pair +
+                        "' (expected name=value)";
+                return false;
             }
-            return false;
+            out.push_back ({url_decode (pair.substr (0, equals)),
+                            url_decode (pair.substr (equals + 1))});
         }
         if (next == std::string::npos)
             break;
         pos = next + 1;
     }
-    return false;
+    return true;
+}
+
+/* A date parameter is exactly YYYY-MM-DD, so a typo cannot silently mean a
+ * different day. */
+bool
+parse_iso_date (const std::string& text, bool day_end, time64& out)
+{
+    if (text.size () != 10 || text[4] != '-' || text[7] != '-')
+        return false;
+
+    int digits[8] = {0};
+    for (int index = 0, digit = 0; index < 10; ++index)
+    {
+        if (index == 4 || index == 7)
+            continue;
+        if (!g_ascii_isdigit (text[index]))
+            return false;
+        digits[digit++] = text[index] - '0';
+    }
+
+    const int year = digits[0] * 1000 + digits[1] * 100 + digits[2] * 10 +
+                     digits[3];
+    const int month = digits[4] * 10 + digits[5];
+    const int day = digits[6] * 10 + digits[7];
+    if (!g_date_valid_dmy (day, static_cast<GDateMonth> (month), year))
+        return false;
+
+    out = day_end ? gnc_dmy2time64_end (day, month, year)
+                  : gnc_dmy2time64 (day, month, year);
+    return true;
+}
+
+/* Resolve the ?accounts selection.  Each GUID means that account and its
+ * whole subtree, which is what a caller naming "Expenses" means; "all" means
+ * every account under the root account.  Accounts reachable twice are listed
+ * once. */
+bool
+apply_accounts (bool all, const std::vector<std::string>& guids,
+                std::vector<Account*>& accounts, std::string& error)
+{
+    if (g_server.root == nullptr)
+    {
+        error = "no book is open";
+        return false;
+    }
+    QofBook* book = gnc_account_get_book (g_server.root);
+
+    std::vector<Account*> selected;
+    if (all)
+    {
+        GList* descendants = gnc_account_get_descendants_sorted (g_server.root);
+        for (GList* node = descendants; node != nullptr; node = node->next)
+            selected.push_back (static_cast<Account*> (node->data));
+        g_list_free (descendants);
+    }
+    else
+    {
+        for (const std::string& text : guids)
+        {
+            GncGUID guid;
+            if (!string_to_guid (text.c_str (), &guid))
+            {
+                error = "invalid account GUID '" + text + "'";
+                return false;
+            }
+            Account* account = xaccAccountLookup (&guid, book);
+            if (account == nullptr)
+            {
+                error = "unknown account GUID '" + text + "'";
+                return false;
+            }
+            selected.push_back (account);
+            GList* descendants = gnc_account_get_descendants_sorted (account);
+            for (GList* node = descendants; node != nullptr; node = node->next)
+                selected.push_back (static_cast<Account*> (node->data));
+            g_list_free (descendants);
+        }
+    }
+
+    std::set<std::string> seen;
+    for (Account* account : selected)
+    {
+        if (seen.insert (account_guid_text (account)).second)
+            accounts.push_back (account);
+    }
+    return true;
 }
 
 bool
-wants_all_accounts (const std::string& query)
+build_report_request (const std::string& report, const std::string& query,
+                      gnc::report::ReportRequest& request, std::string& error)
 {
-    size_t pos = 0;
-    while (pos < query.size ())
-    {
-        const size_t next = query.find ('&', pos);
-        const std::string pair = query.substr (
-            pos, next == std::string::npos ? std::string::npos : next - pos);
-        if (pair == "accounts=all")
-            return true;
-        if (next == std::string::npos)
-            break;
-        pos = next + 1;
-    }
-    return false;
-}
+    std::vector<QueryParam> params;
+    if (!parse_query (query, params, error))
+        return false;
 
+    const bool native = !gnc::report::report_options (report).empty ();
+    if (!native)
+    {
+        error = "report '" + report +
+                "' is not a native report and takes no options";
+        return false;
+    }
+    if (params.empty ())
+        return true;
+
+    bool have_start = false;
+    bool have_end = false;
+    bool have_accounts = false;
+    bool all_accounts = false;
+    bool have_period = false;
+    bool have_currency = false;
+    std::string period;
+    std::string currency;
+    std::vector<std::string> guids;
+
+    for (const QueryParam& param : params)
+    {
+        if (param.name == "start" || param.name == "end")
+        {
+            if (!gnc::report::report_has_option (report, param.name))
+            {
+                error = "report '" + report + "' does not accept a '" +
+                        param.name + "' option";
+                return false;
+            }
+            time64 when = 0;
+            if (!parse_iso_date (param.value, param.name == "end", when))
+            {
+                error = "invalid " + param.name + " date '" + param.value +
+                        "' (expected YYYY-MM-DD)";
+                return false;
+            }
+            if (param.name == "start")
+            {
+                request.start = when;
+                have_start = true;
+            }
+            else
+            {
+                request.end = when;
+                have_end = true;
+            }
+        }
+        else if (param.name == "accounts")
+        {
+            if (!gnc::report::report_has_option (report, "accounts"))
+            {
+                error = "report '" + report +
+                        "' does not accept an 'accounts' option";
+                return false;
+            }
+            have_accounts = true;
+            if (param.value == "all")
+            {
+                all_accounts = true;
+                continue;
+            }
+            if (param.value.empty ())
+            {
+                error = "empty 'accounts' value (expected GUIDs or 'all')";
+                return false;
+            }
+            size_t pos = 0;
+            while (pos <= param.value.size ())
+            {
+                const size_t comma = param.value.find (',', pos);
+                const std::string guid = param.value.substr (
+                    pos, comma == std::string::npos ? std::string::npos
+                                                    : comma - pos);
+                if (guid.empty ())
+                {
+                    error = "empty account GUID in 'accounts=" +
+                            param.value + "'";
+                    return false;
+                }
+                guids.push_back (guid);
+                if (comma == std::string::npos)
+                    break;
+                pos = comma + 1;
+            }
+        }
+        else if (param.name == "currency")
+        {
+            if (!gnc::report::report_has_option (report, "currency"))
+            {
+                error = "report '" + report +
+                        "' does not accept a 'currency' option";
+                return false;
+            }
+            if (param.value.empty ())
+            {
+                error = "empty 'currency' value (expected a commodity "
+                        "mnemonic)";
+                return false;
+            }
+            have_currency = true;
+            currency = param.value;
+        }
+        else if (param.name == "period")
+        {
+            have_period = true;
+            period = param.value;
+        }
+        else
+        {
+            error = "unknown option '" + param.name + "' for report '" +
+                    report + "'";
+            return false;
+        }
+    }
+
+    if (have_period)
+    {
+        if (have_start || have_end)
+        {
+            error = "'period' cannot be combined with 'start' or 'end'";
+            return false;
+        }
+        gnc::report::DateRange range;
+        if (!gnc::report::resolve_period (period, range))
+        {
+            error = "unknown period '" + period +
+                    "' (expected this-year, last-year or all)";
+            return false;
+        }
+        if (period == "all")
+            request.all_dates = true;
+        else
+        {
+            request.start = range.start;
+            request.end = range.end;
+        }
+    }
+
+    if (have_accounts)
+    {
+        if (all_accounts && !guids.empty ())
+        {
+            error = "'accounts=all' cannot be combined with account GUIDs";
+            return false;
+        }
+        if (!apply_accounts (all_accounts, guids, request.accounts, error))
+            return false;
+    }
+
+    if (have_currency)
+    {
+        QofBook* book = g_server.root != nullptr
+                            ? gnc_account_get_book (g_server.root)
+                            : nullptr;
+        gnc_commodity* commodity = nullptr;
+        if (book != nullptr)
+            commodity = gnc_commodity_table_lookup (
+                gnc_commodity_table_get_table (book),
+                GNC_COMMODITY_NS_CURRENCY, currency.c_str ());
+        if (commodity == nullptr)
+        {
+            error = "unknown currency '" + currency + "'";
+            return false;
+        }
+        request.currency = commodity;
+    }
+
+    return true;
+}
 
 /* The first path segment is the token. Anything else is a 404, which is also
  * what an attacker without the token sees. */
@@ -526,7 +895,14 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     }
 
     const std::string prefix = "/" + g_server.token + "/";
-    const std::string route = path.substr (prefix.size());
+    std::string route = path.substr (prefix.size());
+    std::string query;
+    const size_t question = route.find ('?');
+    if (question != std::string::npos)
+    {
+        query = route.substr (question + 1);
+        route.resize (question);
+    }
 
     if (route == "api/book")
     {
@@ -618,45 +994,74 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     }
     else if (route == "api/reports")
     {
+        /* ?options=1 lists the native reports with the options each accepts,
+         * which is what an options form needs.  The bare list keeps its old
+         * shape (an array of names) for the UI and the smoke test. */
+        if (query == "options=1")
+        {
+            send_response (connection, "200 OK", "application/json",
+                           native_reports_options_json ());
+        }
+        else
+        {
 #ifdef GNC_WITH_REPORT
-        send_response (connection, "200 OK", "application/json", reports_json ());
+            send_response (connection, "200 OK", "application/json",
+                           reports_json ());
 #else
-        send_response (connection, "200 OK", "application/json",
-                       native_reports_json ());
+            send_response (connection, "200 OK", "application/json",
+                           native_reports_json ());
 #endif
+        }
+    }
+    else if (route.compare (0, 11, "api/report/") == 0)
+    {
+        /* /api/report/<name>/options -- the option descriptors as JSON.  A
+         * native report always answers; a name the native layer does not
+         * know is a 404, because there is no descriptor to invent. */
+        const std::string rest = route.substr (11);
+        const std::string suffix = "/options";
+        if (rest.size () <= suffix.size () ||
+            rest.compare (rest.size () - suffix.size (), suffix.size (),
+                          suffix) != 0)
+        {
+            send_response (connection, "404 Not Found", "text/plain",
+                           "not found\n");
+        }
+        else
+        {
+            const std::string name =
+                url_decode (rest.substr (0, rest.size () - suffix.size ()));
+            if (gnc::report::report_options (name).empty ())
+                send_response (connection, "404 Not Found", "text/plain",
+                               "no options for '" + name + "'\n");
+            else
+                send_response (connection, "200 OK", "application/json",
+                               report_options_json (name));
+        }
     }
     else if (route.compare (0, 7, "report/") == 0)
     {
         /* Native reports are rendered in this process and need no Guile.
          * When the build also has the Scheme engine, names the native layer
          * does not know fall through to it; without Guile they stay 501.
-         * A query string can pin the period (?start=YYYY-MM-DD&end=...) and,
-         * for the reports whose default selection is empty, ask for every
-         * account (?accounts=all). */
-        std::string name_part = route.substr (7);
-        std::string query;
-        const size_t question = name_part.find ('?');
-        if (question != std::string::npos)
-        {
-            query = name_part.substr (question + 1);
-            name_part.resize (question);
-        }
-        const std::string name = url_decode (name_part);
+         * The query string is the report's option surface: start/end dates,
+         * accounts, currency and the period presets. */
+        const std::string name = url_decode (route.substr (7));
 
         gnc::report::ReportRequest request;
-        time64 request_start = 0;
-        time64 request_end = 0;
-        if (parse_date_param (query, "start", false, request_start))
-            request.start = request_start;
-        if (parse_date_param (query, "end", true, request_end))
-            request.end = request_end;
-        if (g_server.root != nullptr && wants_all_accounts (query))
+        std::string error;
+        /* A report the native layer does not know falls through to the
+         * Scheme engine (or the 501 when there is none); only a native
+         * report, or one asked with options at all, goes through the
+         * option validator. */
+        if (!gnc::report::report_options (name).empty () || !query.empty ())
         {
-            GList* accounts = gnc_account_get_descendants_sorted (g_server.root);
-            for (GList* node = accounts; node != nullptr; node = node->next)
-                request.accounts.push_back (
-                    static_cast<Account*> (node->data));
-            g_list_free (accounts);
+            if (!build_report_request (name, query, request, error))
+            {
+                send_response (connection, "400 Bad Request", "text/plain",
+                               error + "\n");
+                return TRUE;
+            }
         }
 
         std::string native_html;

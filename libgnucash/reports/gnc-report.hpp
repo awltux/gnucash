@@ -125,12 +125,24 @@ Table account_table (Account* root, const Query& query,
 
 /* --------------------------------------------------------------- reports */
 
+/** The reports take an optional date range so stage 3's options can ask for
+ *  a period or an as-of date.  A missing bound means that side is not
+ *  bounded: the whole book for an as-of report, every split for a period
+ *  report.  A null `currency` means the report's default commodity
+ *  (gnc_default_report_currency(), falling back to the root account's
+ *  commodity); a non-null one is what the report converts into. */
+
 /** The Trial Balance "current" variant, matching the Scheme report's
  *  defaults for the fixture book: every account in the selected account
  *  types, its own balance at `end_date`, positive in the debit column and
  *  negative (shown as an absolute credit) in the credit column, plus the
- *  two column totals. */
-Table trial_balance (Account* root, time64 end_date);
+ *  two column totals.
+ *
+ *  The Scheme "current" variant ignores its start date (its account table
+ *  is given only an end date), so this report is as-of: a caller's start
+ *  date is accepted by the route for range symmetry but has no effect. */
+Table trial_balance (Account* root, std::optional<time64> end_date,
+                     gnc_commodity* currency = nullptr);
 
 /** The Balance Sheet ("Balance Sheet", balance-sheet.scm) with the Scheme
  *  report's defaults: single-column form, assets/liabilities/equity in that
@@ -138,8 +150,12 @@ Table trial_balance (Account* root, time64 end_date);
  *  amounts sign-reversed, section labels and section totals, and the income
  *  and expense balances rolled up into retained earnings.  Accounts deeper
  *  than the Scheme default display depth (3 levels) are shown flat, which is
- *  the same thing the Scheme report does for the books we test. */
-Table balance_sheet (Account* root, time64 as_of);
+ *  the same thing the Scheme report does for the books we test.
+ *
+ *  The Scheme report has a single "Balance Sheet Date" option, so this
+ *  report is as-of too: a start date has no effect. */
+Table balance_sheet (Account* root, std::optional<time64> as_of,
+                     gnc_commodity* currency = nullptr);
 
 /** The Income Statement / Profit & Loss ("Income Statement" and
  *  "Profit & Loss", both income-statement.scm) with the Scheme report's
@@ -147,7 +163,9 @@ Table balance_sheet (Account* root, time64 as_of);
  *  [start, end], sign-reversed income, section totals, and net income.
  *  Closing entries are excluded, as the Scheme report's pre-closing mode
  *  does. */
-Table income_statement (Account* root, time64 start, time64 end);
+Table income_statement (Account* root, std::optional<time64> start,
+                        std::optional<time64> end,
+                        gnc_commodity* currency = nullptr);
 
 /** The end date the Scheme report's date option defaults to. */
 time64 default_end_date ();
@@ -174,6 +192,9 @@ struct CellTable
 {
     std::vector<std::string> headings;
     std::vector<std::vector<Cell>> rows;
+    /** A date-interval line under the title, as the Scheme transaction
+     *  engine prints above its table ("01/01/2018 to 12/31/2018"). */
+    std::string subtitle;
 };
 
 std::string render_cell_table (const CellTable& table, const std::string& title);
@@ -210,8 +231,8 @@ CellTable general_ledger (Account* root,
  *  empty: "No accounts selected", and the explanation that the report needs
  *  accounts chosen in its options.  This is the correct output for the
  *  default options of the transaction report and the general ledger -- not
- *  an error -- and stage 3 replaces it with real output once options can be
- *  set. */
+ *  an error -- and stays their default until a caller passes the accounts
+ *  option (or "accounts=all"). */
 std::string render_no_accounts (const std::string& title,
                                 bool with_title_heading);
 
@@ -219,17 +240,82 @@ std::string render_no_accounts (const std::string& title,
  * the Scheme engine (when the build has one). */
 std::vector<std::string> native_report_names ();
 
+/* --------------------------------------------------------------- options */
+
+/** What a caller may set for a native report.  The names are the query
+ *  parameters of the /report/<name> route and the keys of the JSON
+ *  descriptor the option endpoint returns, so they are part of the API. */
+enum class OptionType
+{
+    /** An absolute date, written "YYYY-MM-DD". */
+    Date,
+    /** An account selection: one or more account GUIDs, or "all". */
+    AccountList,
+    /** A commodity mnemonic the report converts into, e.g. "USD". */
+    Currency,
+    /** One of `choices`, e.g. a period preset. */
+    Choice,
+};
+
+struct OptionDescriptor
+{
+    std::string name;
+    OptionType type = OptionType::Date;
+    /** Human label, taken from the Scheme report's own option name where it
+     *  has one (e.g. "Date of Report" for the Trial Balance). */
+    std::string label;
+    std::string description;
+    /** The default as text: an ISO date, "" for an empty account list, a
+     *  commodity mnemonic, or the chosen `choices` entry. */
+    std::string default_value;
+    std::vector<std::string> choices;
+};
+
+/** The options a native report accepts, in display order.  Empty for a name
+ *  the native layer does not know. */
+std::vector<OptionDescriptor> report_options (const std::string& name);
+
+/** Whether `report` accepts the option `option`.  This is what the route
+ *  consults before rejecting an option a report does not have. */
+bool report_has_option (const std::string& report, const std::string& option);
+
+/** A date range resolved from an accounting-period preset.  Both bounds may
+ *  be unset ("all"). */
+struct DateRange
+{
+    std::optional<time64> start;
+    std::optional<time64> end;
+};
+
+/** The period presets the native reports offer. */
+std::vector<std::string> period_presets ();
+
+/** Resolve "this-year", "last-year" or "all" against the engine's
+ *  accounting-period helpers.  "this-year" is the interval
+ *  gnc_accounting_period_fiscal_start()/end() report, i.e. the interval the
+ *  reports' own date options default to; "last-year" is that interval one
+ *  year earlier; "all" leaves both bounds unset.  Returns false for an
+ *  unknown preset. */
+bool resolve_period (const std::string& preset, DateRange& range);
+
 /** Dates and account selection a caller may pin instead of the report's own
  *  defaults.  Stage 3 (options over HTTP) builds on this; the parity harness
  *  is its first user, because the Scheme reports can only be asked for a
  *  period and a selection through their own options.  An empty `accounts`
  *  means the report's default selection, which for the transaction report
- *  and the general ledger is empty and therefore renders the warning. */
+ *  and the general ledger is empty and therefore renders the warning.
+ *
+ *  `currency` is the report currency option; null means the report's
+ *  default.  `all_dates` says the caller asked for no date bound at all
+ *  (period=all), which is different from "use the report's default
+ *  period" -- the defaults are a real period, not the whole book. */
 struct ReportRequest
 {
     std::optional<time64> start;
     std::optional<time64> end;
     std::vector<Account*> accounts;
+    gnc_commodity* currency = nullptr;
+    bool all_dates = false;
 };
 
 bool render_report (const std::string& name, Account* root,

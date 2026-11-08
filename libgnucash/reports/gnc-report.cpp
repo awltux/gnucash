@@ -96,6 +96,19 @@ account_guid (const Account* account)
     return result;
 }
 
+/* The currency a report converts into: the caller's explicit option value,
+ * else the report default, falling back to the root account's commodity. */
+gnc_commodity*
+report_currency (Account* root, gnc_commodity* requested)
+{
+    if (requested != nullptr)
+        return requested;
+    gnc_commodity* currency = gnc_default_report_currency ();
+    if (currency == nullptr && root != nullptr)
+        currency = xaccAccountGetCommodity (root);
+    return currency;
+}
+
 /* ------------------------------------------------ account type buckets */
 
 /* The same buckets gnc:decompose-accountlist() uses: the balance sheet and
@@ -543,9 +556,7 @@ CellTable
 transaction_report (Account* root, const std::vector<Account*>& accounts,
                     std::optional<time64> start, std::optional<time64> end)
 {
-    gnc_commodity* currency = gnc_default_report_currency ();
-    if (currency == nullptr && root != nullptr)
-        currency = xaccAccountGetCommodity (root);
+    gnc_commodity* currency = report_currency (root, nullptr);
 
     Query query;
     query.scope = root;
@@ -655,9 +666,7 @@ CellTable
 general_ledger (Account* root, const std::vector<Account*>& accounts,
                 std::optional<time64> start, std::optional<time64> end)
 {
-    gnc_commodity* currency = gnc_default_report_currency ();
-    if (currency == nullptr && root != nullptr)
-        currency = xaccAccountGetCommodity (root);
+    gnc_commodity* currency = report_currency (root, nullptr);
 
     Query query;
     query.scope = root;
@@ -808,11 +817,10 @@ general_ledger (Account* root, const std::vector<Account*>& accounts,
 }
 
 Table
-trial_balance (Account* root, time64 end_date)
+trial_balance (Account* root, std::optional<time64> end_date,
+               gnc_commodity* requested_currency)
 {
-    gnc_commodity* currency = gnc_default_report_currency ();
-    if (currency == nullptr && root != nullptr)
-        currency = xaccAccountGetCommodity (root);
+    gnc_commodity* currency = report_currency (root, requested_currency);
 
     Query query;
     query.scope = root;
@@ -870,11 +878,10 @@ default_start_date ()
 /* -------------------------------------------------------- balance sheet */
 
 Table
-balance_sheet (Account* root, time64 as_of)
+balance_sheet (Account* root, std::optional<time64> as_of,
+               gnc_commodity* requested_currency)
 {
-    gnc_commodity* currency = gnc_default_report_currency ();
-    if (currency == nullptr && root != nullptr)
-        currency = xaccAccountGetCommodity (root);
+    gnc_commodity* currency = report_currency (root, requested_currency);
 
     Query query;
     query.scope = root;
@@ -995,11 +1002,11 @@ balance_sheet (Account* root, time64 as_of)
 /* ----------------------------------------------------- income statement */
 
 Table
-income_statement (Account* root, time64 start, time64 end)
+income_statement (Account* root, std::optional<time64> start,
+                  std::optional<time64> end,
+                  gnc_commodity* requested_currency)
 {
-    gnc_commodity* currency = gnc_default_report_currency ();
-    if (currency == nullptr && root != nullptr)
-        currency = xaccAccountGetCommodity (root);
+    gnc_commodity* currency = report_currency (root, requested_currency);
 
     Query query;
     query.scope = root;
@@ -1269,8 +1276,13 @@ render_cell_table (const CellTable& table, const std::string& title)
            "font-variant-numeric:tabular-nums}"
            "td.total-label-cell,td.total-number-cell{font-weight:600}"
            "</style></head><body><h3>"
-        << html_escape (title) << "</h3>\n"
-        << "<table cellspacing='0' cellpadding='4' border='0'><thead><tr>";
+        << html_escape (title) << "</h3>\n";
+    /* The Scheme transaction engine prints the date interval as a heading of
+     * its own above the table; do the same so the period is visible even
+     * though the document title stays the report name. */
+    if (!table.subtitle.empty ())
+        out << "<h3>" << html_escape (table.subtitle) << "</h3>\n";
+    out << "<table cellspacing='0' cellpadding='4' border='0'><thead><tr>";
     for (const std::string& heading : table.headings)
         out << "<th>" << html_escape (heading) << "</th>";
     out << "</tr></thead><tbody>\n";
@@ -1301,6 +1313,216 @@ native_report_names ()
             "Profit & Loss", "Transaction Report", "General Ledger"};
 }
 
+/* --------------------------------------------------------------- options */
+
+std::vector<std::string>
+period_presets ()
+{
+    return {"this-year", "last-year", "all"};
+}
+
+bool
+resolve_period (const std::string& preset, DateRange& range)
+{
+    if (preset == "all")
+    {
+        range.start.reset ();
+        range.end.reset ();
+        return true;
+    }
+    if (preset != "this-year" && preset != "last-year")
+        return false;
+
+    /* The interval the reports' date options default to: the engine's
+     * accounting period. */
+    time64 start = gnc_accounting_period_fiscal_start ();
+    time64 end = gnc_accounting_period_fiscal_end ();
+    if (start <= 0)
+        start = default_start_date ();
+    if (end <= 0)
+        end = default_end_date ();
+
+    if (preset == "last-year")
+    {
+        /* The accounting-period helpers answer for the current period only,
+         * so the previous period is the same interval one year earlier.  The
+         * day-of-month is preserved and 29 February clamps to the 28th. */
+        GDate start_date = time64_to_gdate (start);
+        GDate end_date = time64_to_gdate (end);
+        g_date_subtract_years (&start_date, 1);
+        g_date_subtract_years (&end_date, 1);
+        start = gnc_time64_get_day_start_gdate (&start_date);
+        end = gnc_time64_get_day_end_gdate (&end_date);
+    }
+
+    range.start = start;
+    range.end = end;
+    return true;
+}
+
+namespace
+{
+
+/* The descriptor's default as the route accepts it: an ISO 8601 date with
+ * the time (and the local date format) chopped off. */
+std::string
+iso_date (time64 when)
+{
+    char buffer[64] = {0};
+    gnc_time64_to_iso8601_buff (when, buffer);
+    std::string text (buffer);
+    const size_t separator = text.find_first_of ("T ");
+    if (separator != std::string::npos)
+        text.resize (separator);
+    return text;
+}
+
+std::string
+default_currency_code ()
+{
+    gnc_commodity* currency = gnc_default_report_currency ();
+    if (currency == nullptr)
+        return {};
+    const char* code = gnc_commodity_get_mnemonic (currency);
+    return code != nullptr ? code : "";
+}
+
+OptionDescriptor
+date_option (const char* name, const char* label, const char* description,
+             time64 default_date)
+{
+    OptionDescriptor option;
+    option.name = name;
+    option.type = OptionType::Date;
+    option.label = label;
+    option.description = description;
+    option.default_value = iso_date (default_date);
+    return option;
+}
+
+OptionDescriptor
+accounts_option ()
+{
+    OptionDescriptor option;
+    option.name = "accounts";
+    option.type = OptionType::AccountList;
+    option.label = "Accounts";
+    option.description =
+        "Accounts to report on, as a comma-separated list of account GUIDs; "
+        "each GUID selects that account's subtree.  \"all\" selects every "
+        "account in the book.  Without the option the report's own default "
+        "selection applies, which for this report is empty.";
+    return option;
+}
+
+OptionDescriptor
+currency_option ()
+{
+    OptionDescriptor option;
+    option.name = "currency";
+    option.type = OptionType::Currency;
+    option.label = "Report's currency";
+    option.description =
+        "The commodity the report's amounts are converted into.";
+    option.default_value = default_currency_code ();
+    return option;
+}
+
+OptionDescriptor
+period_option ()
+{
+    OptionDescriptor option;
+    option.name = "period";
+    option.type = OptionType::Choice;
+    option.label = "Period";
+    option.description =
+        "Resolve the date range from the accounting period instead of "
+        "taking literal start/end dates.";
+    option.default_value = "this-year";
+    option.choices = period_presets ();
+    return option;
+}
+
+} // namespace
+
+std::vector<OptionDescriptor>
+report_options (const std::string& name)
+{
+    std::vector<OptionDescriptor> options;
+
+    if (name == "Trial Balance")
+    {
+        options.push_back (date_option (
+            "start", "Start of Adjusting/Closing",
+            "The Scheme trial balance's work-sheet variants collect adjusting "
+            "and closing entries from this date.  The native report implements "
+            "the 'current' variant, whose account table is given only an end "
+            "date, so this option is accepted but has no effect.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "Date of Report",
+            "The date the account balances are calculated at.",
+            default_end_date ()));
+        options.push_back (currency_option ());
+    }
+    else if (name == "Balance Sheet")
+    {
+        options.push_back (date_option (
+            "start", "Start Date",
+            "Accepted so a date range can be handed to any report; the "
+            "balance sheet is drawn as of its end date and does not use a "
+            "start date.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "Balance Sheet Date",
+            "The date the balance sheet is drawn at.",
+            default_end_date ()));
+        options.push_back (currency_option ());
+    }
+    else if (name == "Income Statement" || name == "Profit & Loss")
+    {
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the period the report covers.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the period the report covers.",
+            default_end_date ()));
+        options.push_back (currency_option ());
+    }
+    else if (name == "Transaction Report" || name == "General Ledger")
+    {
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the period the report covers.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the period the report covers.",
+            default_end_date ()));
+        options.push_back (accounts_option ());
+    }
+    else
+    {
+        return {};
+    }
+
+    options.push_back (period_option ());
+    return options;
+}
+
+bool
+report_has_option (const std::string& report, const std::string& option)
+{
+    for (const OptionDescriptor& descriptor : report_options (report))
+    {
+        if (descriptor.name == option)
+            return true;
+    }
+    return false;
+}
+
 bool
 render_report (const std::string& name, Account* root,
                const ReportRequest& request, std::string& html)
@@ -1308,51 +1530,67 @@ render_report (const std::string& name, Account* root,
     if (root == nullptr)
         return false;
 
-    const time64 end = request.end.value_or (default_end_date ());
-    const time64 start = request.start.value_or (default_start_date ());
+    /* The reports' own defaults are a real period (the accounting period),
+     * not the whole book; period=all is the one way to ask for no bounds at
+     * all. */
+    const bool unbounded = request.all_dates;
+    const std::optional<time64> start =
+        unbounded ? std::nullopt
+                  : std::optional<time64> (
+                        request.start.value_or (default_start_date ()));
+    const std::optional<time64> end =
+        unbounded ? std::nullopt
+                  : std::optional<time64> (
+                        request.end.value_or (default_end_date ()));
 
-    char date[32] = {0};
-    qof_print_date_buff (date, sizeof date, end);
+    auto date_text = [] (std::optional<time64> when)
+    {
+        if (!when.has_value ())
+            return std::string ("All Dates");
+        char date[32] = {0};
+        qof_print_date_buff (date, sizeof date, *when);
+        return std::string (date);
+    };
+    const std::string interval =
+        unbounded ? std::string ("All Dates")
+                  : date_text (start) + " to " + date_text (end);
 
     if (name == "Trial Balance")
     {
-        html = render_html (trial_balance (root, end),
-                            std::string ("Trial Balance ") + date);
+        html = render_html (trial_balance (root, end, request.currency),
+                            "Trial Balance " + date_text (end));
         return true;
     }
     if (name == "Balance Sheet")
     {
-        html = render_html (balance_sheet (root, end),
-                            std::string (" Balance Sheet ") + date);
+        html = render_html (balance_sheet (root, end, request.currency),
+                            "Balance Sheet " + date_text (end));
         return true;
     }
     if (name == "Income Statement" || name == "Profit & Loss")
     {
-        char from[32] = {0};
-        qof_print_date_buff (from, sizeof from, start);
         std::string title = name;
         title += " For Period Covering ";
-        title += from;
-        title += " to ";
-        title += date;
-        html = render_html (income_statement (root, start, end), title);
+        title += interval;
+        html = render_html (
+            income_statement (root, start, end, request.currency), title);
         return true;
     }
     if (name == "Transaction Report")
     {
         /* The Scheme report's default account selection is empty, and an
          * empty selection produces its "No accounts selected" warning, not a
-         * report over the whole book.  Same output here until the options
-         * surface (stage 3) can choose accounts. */
+         * report over the whole book.  Same output here until the caller
+         * chooses accounts. */
         if (request.accounts.empty ())
         {
             html = render_no_accounts ("Transaction Report", false);
             return true;
         }
-        html = render_cell_table (
-            transaction_report (root, request.accounts, request.start,
-                                request.end),
-            "Transaction Report");
+        CellTable table =
+            transaction_report (root, request.accounts, start, end);
+        table.subtitle = interval;
+        html = render_cell_table (table, "Transaction Report");
         return true;
     }
     if (name == "General Ledger")
@@ -1362,10 +1600,9 @@ render_report (const std::string& name, Account* root,
             html = render_no_accounts ("General Ledger", true);
             return true;
         }
-        html = render_cell_table (
-            general_ledger (root, request.accounts, request.start,
-                            request.end),
-            "General Ledger");
+        CellTable table = general_ledger (root, request.accounts, start, end);
+        table.subtitle = interval;
+        html = render_cell_table (table, "General Ledger");
         return true;
     }
     return false;

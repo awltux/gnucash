@@ -41,8 +41,10 @@ env GNC_UNINSTALLED=YES GNC_BUILDDIR="$BUILD" \
     "$BUILD/bin/gnc-webd" "$BOOK" > "$LOG" 2>&1 &
 SERVER_PID=$!
 
+# The Guile prelude can take tens of seconds on a cold cache, so wait a
+# minute for the token URL rather than thirty seconds.
 URL=""
-for _ in $(seq 1 150); do
+for _ in $(seq 1 300); do
     URL=$(grep -oE 'http://127\.0\.0\.1:[0-9]+/[0-9a-f]+/' "$LOG" | head -1)
     [ -n "$URL" ] && break
     kill -0 "$SERVER_PID" 2>/dev/null || break
