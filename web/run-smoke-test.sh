@@ -78,6 +78,10 @@ reports_code=$(curl -sS -o "$REPORTS_FILE" -w '%{http_code}' "${URL}api/reports"
 [ "$reports_code" = "200" ] || fail "GET api/reports answered $reports_code"
 reports=$(cat "$REPORTS_FILE")
 echo "$reports" | grep -q '"Trial Balance"' || fail "report list has no Trial Balance"
+for native_report in "Balance Sheet" "Income Statement" "Profit & Loss"; do
+    echo "$reports" | grep -q "\"$native_report\"" \
+        || fail "report list has no $native_report"
+done
 report_count=$(echo "$reports" | tr ',' '\n' | sed 's/^\[//' | grep -c '^"')
 if [ "$HAS_GUILE" = 1 ]; then
     [ "$report_count" -gt 20 ] || fail "report list looks short ($report_count entries)"
@@ -92,13 +96,30 @@ echo "$report" | grep -q "Accounts Payable" || fail "native report has no accoun
 [ "${#report}" -gt 5000 ] || fail "report looks empty (${#report} bytes)"
 echo "report bytes: ${#report}"
 
+# The balance sheet and the P&L are native too: same engine, different
+# grouping.  Check the numbers that make them recognisable rather than just
+# that HTML came back.
+balance_sheet=$(curl -fsS "${URL}report/Balance%20Sheet") \
+    || { cat "$LOG" >&2; fail "GET Balance Sheet failed"; }
+echo "$balance_sheet" | grep -q "Total Assets" || fail "balance sheet has no assets total"
+echo "$balance_sheet" | grep -q "Total Liabilities &amp; Equity" \
+    || fail "balance sheet has no liabilities+equity total"
+echo "$balance_sheet" | grep -q "10,000.00" || fail "balance sheet lost the asset total"
+
+income_statement=$(curl -fsS "${URL}report/Income%20Statement") \
+    || { cat "$LOG" >&2; fail "GET Income Statement failed"; }
+echo "$income_statement" | grep -q "Total Revenue" || fail "income statement has no revenue total"
+echo "$income_statement" | grep -q "Total Expenses" || fail "income statement has no expense total"
+echo "$income_statement" | grep -q "Net income for Period\|Net loss for Period" \
+    || fail "income statement has no net line"
+
 if [ "$HAS_GUILE" = 1 ]; then
     # The Scheme engine is still the fallback for reports not ported yet.
-    curl -fsS "${URL}report/Income%20Statement" | grep -q "<html" \
-        || fail "Scheme fallback did not render Income Statement"
+    curl -fsS "${URL}report/Income%20Statement%20(Multicolumn)" | grep -q "<html" \
+        || fail "Scheme fallback did not render Income Statement (Multicolumn)"
 else
     unknown_code=$(curl -sS -o /dev/null -w '%{http_code}' \
-        "${URL}report/Income%20Statement")
+        "${URL}report/Income%20Statement%20(Multicolumn)")
     [ "$unknown_code" = "501" ] \
         || fail "a non-native report answered $unknown_code without Guile (expected 501)"
 fi

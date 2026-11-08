@@ -421,6 +421,65 @@ read_request_path (GSocketConnection* connection)
     return line.substr (first + 1, second - first - 1);
 }
 
+/* The report route accepts start/end dates, "YYYY-MM-DD", so a caller can
+ * ask for the same period it asks the Scheme engine for through that
+ * report's own options.  It also accepts "accounts=all", which selects every
+ * account under the root for the reports whose Scheme default selection is
+ * empty (Transaction Report, General Ledger).  Without it those reports keep
+ * the empty default selection -- an empty selection is not "the whole book".
+ * Stage 3 will grow this into the full option surface; the parity harness is
+ * the first user. */
+bool
+parse_date_param (const std::string& query, const char* key, bool day_end,
+                  time64& out)
+{
+    const std::string prefix = std::string (key) + "=";
+    size_t pos = 0;
+    while (pos < query.size ())
+    {
+        const size_t next = query.find ('&', pos);
+        const std::string pair = query.substr (
+            pos, next == std::string::npos ? std::string::npos : next - pos);
+        if (pair.compare (0, prefix.size (), prefix) == 0)
+        {
+            int year = 0;
+            int month = 0;
+            int day = 0;
+            if (std::sscanf (pair.c_str () + prefix.size (), "%d-%d-%d",
+                             &year, &month, &day) == 3)
+            {
+                out = day_end ? gnc_dmy2time64_end (day, month, year)
+                              : gnc_dmy2time64 (day, month, year);
+                return true;
+            }
+            return false;
+        }
+        if (next == std::string::npos)
+            break;
+        pos = next + 1;
+    }
+    return false;
+}
+
+bool
+wants_all_accounts (const std::string& query)
+{
+    size_t pos = 0;
+    while (pos < query.size ())
+    {
+        const size_t next = query.find ('&', pos);
+        const std::string pair = query.substr (
+            pos, next == std::string::npos ? std::string::npos : next - pos);
+        if (pair == "accounts=all")
+            return true;
+        if (next == std::string::npos)
+            break;
+        pos = next + 1;
+    }
+    return false;
+}
+
+
 /* The first path segment is the token. Anything else is a 404, which is also
  * what an attacker without the token sees. */
 bool
@@ -570,11 +629,39 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     {
         /* Native reports are rendered in this process and need no Guile.
          * When the build also has the Scheme engine, names the native layer
-         * does not know fall through to it; without Guile they stay 501. */
-        const std::string name = url_decode (route.substr (7));
+         * does not know fall through to it; without Guile they stay 501.
+         * A query string can pin the period (?start=YYYY-MM-DD&end=...) and,
+         * for the reports whose default selection is empty, ask for every
+         * account (?accounts=all). */
+        std::string name_part = route.substr (7);
+        std::string query;
+        const size_t question = name_part.find ('?');
+        if (question != std::string::npos)
+        {
+            query = name_part.substr (question + 1);
+            name_part.resize (question);
+        }
+        const std::string name = url_decode (name_part);
+
+        gnc::report::ReportRequest request;
+        time64 request_start = 0;
+        time64 request_end = 0;
+        if (parse_date_param (query, "start", false, request_start))
+            request.start = request_start;
+        if (parse_date_param (query, "end", true, request_end))
+            request.end = request_end;
+        if (g_server.root != nullptr && wants_all_accounts (query))
+        {
+            GList* accounts = gnc_account_get_descendants_sorted (g_server.root);
+            for (GList* node = accounts; node != nullptr; node = node->next)
+                request.accounts.push_back (
+                    static_cast<Account*> (node->data));
+            g_list_free (accounts);
+        }
 
         std::string native_html;
-        if (gnc::report::render_report (name, g_server.root, native_html))
+        if (gnc::report::render_report (name, g_server.root, request,
+                                        native_html))
         {
             send_response (connection, "200 OK", "text/html; charset=utf-8",
                            rewrite_links (native_html, g_server.token));
@@ -682,6 +769,11 @@ webd_main (void* data, int argc, char** argv)
     scm_c_use_module ("gnucash reports");
 
     gnc_report_init ();
+    /* The native reports read preferences too -- the sign-reversal rule that
+     * decides whether an equity or income running balance is shown negated
+     * comes from gsettings -- and the Guile modules do not load the backend
+     * for us. */
+    gnc_prefs_init ();
 #else
     /* No Guile and no report engine: bring the engine up directly. This is
      * what libgnucash-guile's module initialiser did in the Guile build --

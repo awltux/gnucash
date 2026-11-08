@@ -1,27 +1,86 @@
 #!/bin/bash
-# Report parity: the Scheme Trial Balance versus the native one.
+# Report parity: the Scheme report versus the native one, report by report.
 #
-# Usage: report-parity.sh <guile-build> <native-build> <source-dir> [book]
+# Usage: report-parity.sh <guile-build> <native-build> <source-dir>
+#                         [book] [report] [start] [end]
 #
 # <guile-build> must contain bin/gnucash-cli (a WITH_GNUCASH build); override
 # the binary with GNC_CLI=/path/to/gnucash-cli.  <native-build> contains
-# gnc-webd.  Both run against the same fixture book, and the extracted rows
-# (account name, debit, credit) are compared as numbers, so currency symbols,
-# thousands separators and the table markup itself do not count as a diff.
+# gnc-webd.  Both run against the same book.
 #
-# Exit status: 0 when every row and both totals match, 1 otherwise.
+# [report] defaults to "Trial Balance"; "Balance Sheet", "Income Statement"
+# and "Profit & Loss" are supported.  Each report has its own extractor
+# (see extractor_for below), because the reports do not agree on what a row
+# is: the Trial Balance is (account, debit, credit), the balance sheet and
+# P&L are (label, amount) with section headings and totals.
+#
+# [start] and [end] are optional YYYY-MM-DD dates.  When given, the native
+# report is asked for that period with ?start=&end=, and the Scheme report is
+# asked for the same period through a saved-report variant written into the
+# oracle build's user data directory (gnucash-cli has no command line for
+# report options).  Without them both engines use the report's own defaults,
+# which is the real parity claim; the dates exist because the fixture books
+# predate the current accounting period, so a period report on its defaults
+# renders zeros and proves only the shape.
+#
+# Numbers are compared as numbers, so currency symbols, thousands separators
+# and the table markup itself do not count as a diff.
+#
+# Exit status: 0 when every row and total matches, 1 otherwise.
 set -u
 
-GUILE_BUILD=${1:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book]}
-NATIVE_BUILD=${2:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book]}
-SRC=${3:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book]}
+GUILE_BUILD=${1:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end]}
+NATIVE_BUILD=${2:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end]}
+SRC=${3:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end]}
 BOOK=${4:-$SRC/libgnucash/backend/xml/test/test-files/load-save/sample1.gnucash}
+REPORT=${5:-Trial Balance}
+START=${6:-}
+END=${7:-}
 
 CLI=${GNC_CLI:-$GUILE_BUILD/bin/gnucash-cli}
 WEBDBIN="$NATIVE_BUILD/bin/gnc-webd"
 BACKEND="$NATIVE_BUILD/lib/gnucash/libgncmod-backend-xml.so"
+SAVED_REPORTS="$GUILE_BUILD/gnc_data_home/saved-reports-2.8"
+VARIANT_NAME="Native parity report"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# The Scheme report and the native report must exist, and the extractor must
+# know how to read their tables.
+extractor_for() {
+    case "$1" in
+        "Trial Balance")    echo trial-balance ;;
+        "Balance Sheet")    echo balance-sheet ;;
+        "Income Statement"|"Profit & Loss") echo balance-sheet ;;
+        "Transaction Report") echo transaction-report ;;
+        "General Ledger")   echo general-ledger ;;
+        *) return 1 ;;
+    esac
+}
+
+report_guid() {
+    case "$1" in
+        "Trial Balance")    echo "d1e1b1f19b3d4bb0a1e0e1c2b7b0b8a1" ;;
+        "Balance Sheet")    echo "c4173ac99b2b448289bf4d11c731af13" ;;
+        "Income Statement"|"Profit & Loss")
+                            echo "0b81a3bdfd504aff849ec2e8630524bc" ;;
+        "Transaction Report") echo "2fe3b9833af044abb929a88d5a59620f" ;;
+        "General Ledger")   echo "2e22929e5c5b4b769f615a815ef0c20f" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Reports whose Scheme table is produced by the transaction engine, and which
+# therefore need an explicit account selection as well as a period.
+needs_accounts() {
+    case "$1" in
+        "Transaction Report"|"General Ledger") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+EXTRACTOR=$(extractor_for "$REPORT") \
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss)"
 
 [ -x "$CLI" ] || fail "no gnucash-cli at $CLI (need a WITH_GNUCASH Guile build, or set GNC_CLI)"
 [ -x "$WEBDBIN" ] || fail "gnc-webd was not built at $WEBDBIN"
@@ -29,21 +88,88 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 TMP=$(mktemp -d)
 SERVER_PID=
-trap 'kill "$SERVER_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
+SAVED_REPORTS_BACKUP=
+SAVED_REPORTS_WRITTEN=
+cleanup() {
+    kill "$SERVER_PID" 2>/dev/null
+    # Put the oracle build's saved reports back exactly as they were.  When
+    # the file did not exist before this run, remove the one we wrote.
+    if [ -n "$SAVED_REPORTS_WRITTEN" ]; then
+        if [ -f "$SAVED_REPORTS_BACKUP" ]; then
+            mv -f "$SAVED_REPORTS_BACKUP" "$SAVED_REPORTS"
+        else
+            rm -f "$SAVED_REPORTS"
+        fi
+    fi
+    rm -rf "$TMP"
+}
+trap cleanup EXIT
 
 # ------------------------------------------------------------------ oracle
+#
+# gnucash-cli can only run a report with its default options.  To ask the
+# Scheme report for a period (and, for the transaction reports, an account
+# selection), add a saved report to the build's user data directory that
+# inherits the report's renderer and sets the options.  This is exactly the
+# file GnuCash writes when a user saves a report configuration, and the
+# oracle build is a test build, so writing it is fair game; it is restored
+# on exit.
+ORACLE_NAME="$REPORT"
+if [ -n "$START" ] && [ -n "$END" ]; then
+    GUID=$(report_guid "$REPORT") || fail "unknown report guid for '$REPORT'"
+    START_T64=$(date -u -d "$START 12:00:00" +%s) \
+        || fail "cannot parse start date '$START' (want YYYY-MM-DD)"
+    END_T64=$(date -u -d "$END 12:00:00" +%s) \
+        || fail "cannot parse end date '$END' (want YYYY-MM-DD)"
+
+    ACCOUNT_OPTION=""
+    if needs_accounts "$REPORT"; then
+        ACCOUNT_OPTION='(gnc-set-option (gnc:optiondb options) "Accounts" "Accounts"
+                        (gnc-account-get-descendants-sorted (gnc-get-current-root-account)))'
+    fi
+
+    mkdir -p "$(dirname "$SAVED_REPORTS")"
+    if [ -f "$SAVED_REPORTS" ]; then
+        SAVED_REPORTS_BACKUP="$TMP/saved-reports.orig"
+        cp "$SAVED_REPORTS" "$SAVED_REPORTS_BACKUP"
+    fi
+    SAVED_REPORTS_WRITTEN=1
+    cat > "$SAVED_REPORTS" <<EOF
+;; Written by web/test/report-parity.sh; removed when the run ends.
+(let ()
+  (define (options-gen)
+    (let ((options (gnc:report-template-new-options/report-guid "$GUID" "$REPORT"))
+          (new-embedded-report-ids '()))
+      (gnc-set-option (gnc:optiondb options) "General" "Start Date"
+                      (cons 'absolute $START_T64))
+      (gnc-set-option (gnc:optiondb options) "General" "End Date"
+                      (cons 'absolute $END_T64))
+      $ACCOUNT_OPTION
+      options))
+  (gnc:define-report
+    'version 1
+    'name "$VARIANT_NAME"
+    'report-guid "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"
+    'parent-type "$GUID"
+    'options-generator options-gen
+    'menu-path (list gnc:menuname-custom)
+    'renderer (gnc:report-template-renderer/report-guid "$GUID" "$REPORT")))
+EOF
+    ORACLE_NAME="$VARIANT_NAME"
+fi
+
 SCHEMAS="$GUILE_BUILD/share/glib-2.0/schemas"
 [ -f "$SCHEMAS/gschemas.compiled" ] || SCHEMAS=""
 CCACHE=$(ls -d "$GUILE_BUILD"/lib/*/guile/3.0/site-ccache 2>/dev/null | head -1)
 
-echo "oracle: $CLI"
+echo "oracle: $CLI ($ORACLE_NAME)"
 env GNC_UNINSTALLED=YES GNC_BUILDDIR="$GUILE_BUILD" \
     ${SCHEMAS:+GSETTINGS_SCHEMA_DIR="$SCHEMAS"} \
     LD_LIBRARY_PATH="$GUILE_BUILD/lib:$GUILE_BUILD/lib/gnucash" \
     GNC_MODULE_PATH="$GUILE_BUILD/lib/gnucash" \
     GUILE_LOAD_PATH="$GUILE_BUILD/share/guile/site/3.0" \
     GUILE_LOAD_COMPILED_PATH="${CCACHE:-}" \
-    "$CLI" "$BOOK" -R run --name "Trial Balance" \
+    "$CLI" "$BOOK" -R run --name "$ORACLE_NAME" \
     --output-file "$TMP/scheme.html" > "$TMP/scheme.log" 2>&1 \
     || { cat "$TMP/scheme.log" >&2; fail "the Scheme report failed"; }
 [ -s "$TMP/scheme.html" ] || fail "the Scheme report is empty"
@@ -81,24 +207,36 @@ for _ in $(seq 1 150); do
 done
 [ -n "$URL" ] || { cat "$TMP/server.log" >&2; fail "gnc-webd did not start"; }
 
-curl -fsS "${URL%/}/report/Trial%20Balance" -o "$TMP/native.html" \
+REQUEST_NAME=$(printf '%s' "$REPORT" | sed 's/ /%20/g')
+REQUEST_QUERY=""
+if [ -n "$START" ] && [ -n "$END" ]; then
+    REQUEST_QUERY="?start=$START&end=$END"
+    # The transaction reports' default account selection is empty, so a
+    # period alone would still render the warning; ask for the same
+    # selection the oracle variant sets.
+    if needs_accounts "$REPORT"; then
+        REQUEST_QUERY="$REQUEST_QUERY&accounts=all"
+    fi
+fi
+curl -fsS "${URL%/}/report/$REQUEST_NAME$REQUEST_QUERY" -o "$TMP/native.html" \
     || { cat "$TMP/server.log" >&2; fail "the native report request failed"; }
 [ -s "$TMP/native.html" ] || fail "the native report is empty"
 
 # ----------------------------------------------------------------- compare
-python3 - "$TMP/scheme.html" "$TMP/native.html" <<'PY'
+python3 - "$TMP/scheme.html" "$TMP/native.html" "$EXTRACTOR" "$REPORT" <<'PY'
 import re
+import os
 import sys
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 
 
 class TableParser(HTMLParser):
-    """Pull (label, column 1, column 2) out of the report table.
+    """Pull rows of (text, class) cells out of a report table.
 
-    Both renderers use the Scheme cell classes -- text-cell for the account
-    name, number-cell / total-number-cell for amounts -- so one parser reads
-    either document.
+    Both renderers use the Scheme cell classes -- text-cell / anchor-cell for
+    the label, number-cell / total-number-cell for amounts -- so one parser
+    reads either document.
     """
 
     def __init__(self):
@@ -111,7 +249,7 @@ class TableParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "tr":
-            self.row = ([], [])
+            self.row = []
         elif tag in ("td", "th") and self.row is not None:
             self.cell = []
             self.cell_class = attrs.get("class", "")
@@ -119,14 +257,12 @@ class TableParser(HTMLParser):
     def handle_endtag(self, tag):
         if tag in ("td", "th") and self.row is not None and self.cell is not None:
             text = " ".join("".join(self.cell).split())
-            self.row[0].append(text)
-            self.row[1].append(self.cell_class)
+            self.row.append((text, self.cell_class))
             self.cell = None
             self.cell_class = ""
         elif tag == "tr" and self.row is not None:
-            cells, classes = self.row
-            if cells:
-                self.rows.append((cells, classes))
+            if self.row:
+                self.rows.append(self.row)
             self.row = None
 
     def handle_data(self, data):
@@ -137,23 +273,27 @@ class TableParser(HTMLParser):
 def parse(path):
     parser = TableParser()
     with open(path, encoding="utf-8", errors="replace") as handle:
-        parser.feed(handle.read())
+        raw = handle.read()
+    parser.feed(raw)
+    return raw, parser.rows
 
-    out = []
-    for cells, classes in parser.rows:
-        if "total-label-cell" in classes[0] or "total-number-cell" in classes:
-            numbers = [text for text, klass in zip(cells, classes)
-                       if "total-number-cell" in klass]
-            out.append(("__TOTAL__",
-                        numbers[0] if len(numbers) > 0 else "",
-                        numbers[1] if len(numbers) > 1 else ""))
-            continue
-        if "text-cell" not in classes[0]:
-            continue
-        debit = cells[1] if len(cells) > 1 else ""
-        credit = cells[2] if len(cells) > 2 else ""
-        out.append((cells[0], debit, credit))
-    return out
+
+NO_ACCOUNTS = "No accounts selected"
+
+
+def extract(extractor, path):
+    """Run a report's extractor, and notice its "no accounts selected" page.
+
+    The transaction report and the general ledger have no default account
+    selection; both engines then render a warning instead of a table.  That
+    warning is the report's correct default output, so compare its wording
+    rather than treating "no rows" as a match by accident.
+    """
+    raw, rows = parse(path)
+    extracted = extractor(rows)
+    if not extracted and NO_ACCOUNTS in raw:
+        return [("PLACEHOLDER", NO_ACCOUNTS)]
+    return extracted
 
 
 def amount(text):
@@ -172,18 +312,134 @@ def amount(text):
     return -value if negative else value
 
 
-def key(row):
-    return (row[0], amount(row[1]), amount(row[2]))
+NUMERIC = ("number-cell", "total-number-cell")
+LABEL = ("anchor-cell", "text-cell", "total-label-cell", "centered-label-cell")
 
 
-scheme = [key(row) for row in parse(sys.argv[1])]
-native = [key(row) for row in parse(sys.argv[2])]
+def trial_balance(rows):
+    """(account, debit, credit), plus the totals row."""
+    out = []
+    for cells in rows:
+        classes = [c for _, c in cells]
+        if not classes:
+            continue
+        if "total-number-cell" in classes:
+            numbers = [t for t, c in cells if c == "total-number-cell"]
+            out.append(("__TOTAL__",
+                        numbers[0] if len(numbers) > 0 else "",
+                        numbers[1] if len(numbers) > 1 else ""))
+            continue
+        if classes[0] not in LABEL:
+            continue
+        debit = cells[1][0] if len(cells) > 1 else ""
+        credit = cells[2][0] if len(cells) > 2 else ""
+        out.append((cells[0][0], debit, credit))
+    return [tuple([row[0]] + [amount(v) for v in row[1:]]) for row in out]
 
+
+def balance_sheet(rows):
+    """(label, [amounts]): section headings, account rows and totals.
+
+    The amount column moves with the account's depth in the Scheme layout,
+    so the extractor collects the row's amounts wherever they sit and drops
+    the blank cells.  A section heading has no amount at all; a zero amount
+    prints as "$0.00" and is a different thing.
+    """
+    out = []
+    for cells in rows:
+        if not cells or cells[0][1] not in LABEL:
+            continue
+        label = cells[0][0]
+        if not label:
+            continue
+        values = [amount(t) for t, c in cells[1:] if c in NUMERIC and t.strip()]
+        out.append((label, tuple(values)))
+    return out
+
+
+def transaction_report(rows):
+    """Rows of the split listing: group headings, split lines, totals.
+
+    The Scheme layout puts the group heading in the first cell and the split
+    date in the second; a total row has its label in the second cell.  The
+    number of cells differs between the two renderers (they use colspan for
+    the label), so only the cell sequence up to the amounts is compared, and
+    trailing blank cells are dropped.
+    """
+    out = []
+    for cells in rows:
+        classes = [c for _, c in cells]
+        if len(cells) >= 2 and classes[1] == "date-cell":
+            values = [t for t, c in cells[1:]]
+            key = tuple(values[:6])
+            amounts = tuple(amount(v) for v in values[6:])
+            out.append(("SPLIT",) + key + amounts)
+            continue
+        if "total-number-cell" in classes:
+            # "Total For X" and "Grand Total".  The Scheme subtotal rows have
+            # an empty indent cell before the label and the grand total does
+            # not; the amounts are whatever the total cells hold.
+            label = next(t for t, c in cells if c == "total-label-cell")
+            amounts = tuple(amount(t) for t, c in cells
+                            if c == "total-number-cell")
+            out.append(("TOTAL", label) + amounts)
+            continue
+        if classes and classes[0] == "total-label-cell":
+            out.append(("HEADING", cells[0][0]))
+            continue
+    return out
+
+
+def general_ledger(rows):
+    """The register-style listing: "Balance b/f" headings, split lines with a
+    running balance, and "Total For" lines."""
+    out = []
+    for cells in rows:
+        classes = [c for _, c in cells]
+        if len(cells) >= 4 and classes[0] == "total-label-cell" \
+                and cells[0][0].endswith("Balance b/f"):
+            amounts = tuple(amount(t) for t, c in cells[1:]
+                            if c == "number-cell")
+            out.append(("HEADING", cells[0][0]) + amounts)
+            continue
+        if len(cells) >= 2 and classes[1] == "total-label-cell":
+            amounts = tuple(amount(t) for t, c in cells[2:] if c in NUMERIC)
+            out.append(("TOTAL", cells[1][0]) + amounts)
+            continue
+        if len(cells) >= 6 and classes[1] == "date-cell":
+            out.append(("SPLIT", cells[1][0], cells[2][0],
+                        amount(cells[3][0]), amount(cells[4][0]),
+                        amount(cells[5][0])))
+    return out
+
+
+EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
+              "transaction-report": transaction_report,
+              "general-ledger": general_ledger}
+
+extractor = EXTRACTORS[sys.argv[3]]
+report = sys.argv[4]
+scheme = extract(extractor, sys.argv[1])
+native = extract(extractor, sys.argv[2])
+
+print(f"report: {report}")
 print(f"scheme rows: {len(scheme)}")
 print(f"native rows: {len(native)}")
 
+if os.environ.get("PARITY_DUMP"):
+    for name, extract in (("scheme", scheme), ("native", native)):
+        print(f"--- {name} extract")
+        for row in extract[:25]:
+            print("   ", row)
+        if len(extract) > 25:
+            print(f"    ... {len(extract)} rows")
+
+if not scheme and not native:
+    print("MATCH: both reports are empty")
+    sys.exit(0)
+
 if scheme == native:
-    print(f"MATCH: {len(scheme)} rows (account, debit, credit)")
+    print(f"MATCH: {len(scheme)} rows")
     sys.exit(0)
 
 print(f"DIFFER: scheme {len(scheme)} rows, native {len(native)} rows")

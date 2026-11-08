@@ -39,6 +39,12 @@ struct Query
     bool skip_voided = false;
     bool reconciled_only = false;
 
+    /** Leave closing entries out of interval balances, as the Scheme
+     *  reports' "pre-closing" balance mode does.  Closing entries are the
+     *  transactions whose description matches the closing pattern. */
+    bool skip_closing = false;
+    std::string closing_pattern = "Closing Entries";
+
     /** Convert each account's amounts into this commodity.  Null means the
      *  account's own commodity, i.e. no conversion. */
     gnc_commodity* currency = nullptr;
@@ -71,6 +77,8 @@ enum class RowType
     Account,
     Subtotal,
     Total,
+    /** A section heading ("Assets"): a label with no amount at all. */
+    Section,
 };
 
 struct Row
@@ -80,6 +88,8 @@ struct Row
     std::string guid;
     int depth = 0;
     gnc_numeric amount = gnc_numeric_zero ();
+    /** Print a blank amount cell instead of the (zero) amount. */
+    bool blank = false;
 };
 
 /** A rendered table.  `amount` is signed: the Debit column shows positive
@@ -122,19 +132,110 @@ Table account_table (Account* root, const Query& query,
  *  two column totals. */
 Table trial_balance (Account* root, time64 end_date);
 
+/** The Balance Sheet ("Balance Sheet", balance-sheet.scm) with the Scheme
+ *  report's defaults: single-column form, assets/liabilities/equity in that
+ *  order, each account's own balance as of `as_of`, liability and equity
+ *  amounts sign-reversed, section labels and section totals, and the income
+ *  and expense balances rolled up into retained earnings.  Accounts deeper
+ *  than the Scheme default display depth (3 levels) are shown flat, which is
+ *  the same thing the Scheme report does for the books we test. */
+Table balance_sheet (Account* root, time64 as_of);
+
+/** The Income Statement / Profit & Loss ("Income Statement" and
+ *  "Profit & Loss", both income-statement.scm) with the Scheme report's
+ *  defaults: income and expense accounts, their interval balances for
+ *  [start, end], sign-reversed income, section totals, and net income.
+ *  Closing entries are excluded, as the Scheme report's pre-closing mode
+ *  does. */
+Table income_statement (Account* root, time64 start, time64 end);
+
 /** The end date the Scheme report's date option defaults to. */
 time64 default_end_date ();
+
+/** The start date the Scheme report's period option defaults to. */
+time64 default_start_date ();
 
 /** Render a table as a standalone HTML document.  The markup is not the
  *  Scheme engine's, but it uses the same cell classes so a parity test can
  *  read both. */
 std::string render_html (const Table& table, const std::string& title);
 
+/* ----------------------------------------------------------- cell tables */
+
+/** Reports that list entries rather than account balances need several text
+ *  columns, so they carry their own cells instead of one amount per row. */
+struct Cell
+{
+    std::string text;
+    std::string css;
+};
+
+struct CellTable
+{
+    std::vector<std::string> headings;
+    std::vector<std::vector<Cell>> rows;
+};
+
+std::string render_cell_table (const CellTable& table, const std::string& title);
+
+/** The Transaction Report ("Transaction Report", transaction.scm) with the
+ *  Scheme report's defaults: every split of the selected accounts in the
+ *  period, grouped by account name in the Scheme column order (date, num,
+ *  description, memo/notes, transfer, debit, credit), a "Total For" line per
+ *  account and a grand total.
+ *
+ *  `accounts` is the report's account selection.  The Scheme report's
+ *  default selection is empty, and an empty selection is not "the whole
+ *  book": the Scheme report then shows its "No accounts selected" warning,
+ *  so render_report() renders that instead of calling this function.  The
+ *  selection is explicit here so stage 3's options can supply it. */
+CellTable transaction_report (Account* root,
+                              const std::vector<Account*>& accounts,
+                              std::optional<time64> start,
+                              std::optional<time64> end);
+
+/** The General Ledger ("General Ledger", general-ledger.scm), with the Scheme
+ *  report's defaults: groups keyed by account code in the Scheme's order
+ *  (which means accounts sharing a code share a group), each line showing the
+ *  split, the debit/credit pair and the account's balance after that split
+ *  ("Running Balance"), a "Balance b/f" heading per group and a "Total For"
+ *  line.  It takes the same explicit account selection as the transaction
+ *  report, and its default selection is empty too. */
+CellTable general_ledger (Account* root,
+                          const std::vector<Account*>& accounts,
+                          std::optional<time64> start,
+                          std::optional<time64> end);
+
+/** The Scheme engine's warning for a report whose account selection is
+ *  empty: "No accounts selected", and the explanation that the report needs
+ *  accounts chosen in its options.  This is the correct output for the
+ *  default options of the transaction report and the general ledger -- not
+ *  an error -- and stage 3 replaces it with real output once options can be
+ *  set. */
+std::string render_no_accounts (const std::string& title,
+                                bool with_title_heading);
+
 /* Report registry: names, and rendering by name.  Unknown names are left to
  * the Scheme engine (when the build has one). */
 std::vector<std::string> native_report_names ();
+
+/** Dates and account selection a caller may pin instead of the report's own
+ *  defaults.  Stage 3 (options over HTTP) builds on this; the parity harness
+ *  is its first user, because the Scheme reports can only be asked for a
+ *  period and a selection through their own options.  An empty `accounts`
+ *  means the report's default selection, which for the transaction report
+ *  and the general ledger is empty and therefore renders the warning. */
+struct ReportRequest
+{
+    std::optional<time64> start;
+    std::optional<time64> end;
+    std::vector<Account*> accounts;
+};
+
 bool render_report (const std::string& name, Account* root,
-                    std::string& html);
+                    const ReportRequest& request, std::string& html);
+
+bool render_report (const std::string& name, Account* root, std::string& html);
 
 } // namespace report
 } // namespace gnc
