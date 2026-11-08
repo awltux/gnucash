@@ -252,6 +252,12 @@ static_file (const char* name)
 gboolean
 on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
 {
+    /* Browsers open speculative connections and then say nothing on them.
+     * This loop is single-threaded, so an unbounded read on one of those
+     * blocks the document request behind it and the page never loads. A
+     * local request arrives immediately; anything slower is not a request. */
+    g_socket_set_timeout (g_socket_connection_get_socket (connection), 1);
+
     const std::string path = read_request_path (connection);
 
     if (!authorised (path))

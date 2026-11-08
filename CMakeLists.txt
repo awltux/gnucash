@@ -948,7 +948,8 @@ set(web_DIST
   web/CMakeLists.txt
   web/run-smoke-test.sh
   web/server/main.cpp
-  web/ui/index.html)
+  web/ui/index.html
+  web/test/ui-test.mjs)
 add_subdirectory (bindings)
 add_subdirectory (test-templates)
 add_subdirectory (util)
