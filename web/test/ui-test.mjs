@@ -90,6 +90,17 @@ check('report has its table', /Balance|Debit|Credit/i.test(reportText),
 const rowCount = await frame.locator('tr').count();
 check('report table has rows', rowCount > 3, `${rowCount} rows`);
 
+// Drill-down: the report's account links point at the register page now, so
+// clicking one should navigate the frame instead of going nowhere.
+const registerLink = frame.locator('a[href*="/register/acct-guid="]').first();
+check('report links to the register', (await registerLink.count()) > 0);
+await registerLink.click();
+await frame.locator('table').first().waitFor({ timeout: 15000 });
+const registerTitle = (await frame.locator('h1').first().innerText()).trim();
+check('register page opened', registerTitle.length > 0, registerTitle);
+const balanceText = (await frame.locator('p.total').first().innerText()).trim();
+check('register shows a balance', /-?[$€£]|[\d]/.test(balanceText), balanceText);
+
 if (screenshotPath) {
     await page.screenshot({ path: screenshotPath });
     console.log(`screenshot: ${screenshotPath}`);

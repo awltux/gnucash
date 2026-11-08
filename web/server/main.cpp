@@ -238,6 +238,106 @@ register_json (Account* account)
     return out;
 }
 
+std::string
+html_escape (const char* text)
+{
+    std::string out;
+    if (text == nullptr)
+        return out;
+    for (const char* p = text; *p; ++p)
+    {
+        switch (*p)
+        {
+        case '&': out += "&amp;"; break;
+        case '<': out += "&lt;"; break;
+        case '>': out += "&gt;"; break;
+        case '"': out += "&quot;"; break;
+        default: out += *p;
+        }
+    }
+    return out;
+}
+
+/* A report links to its accounts with gnc-register:acct-guid=... , which is a
+ * GnuCash URL type no browser can follow. Point those at this server instead,
+ * and report-to-report links at the report route. */
+std::string
+rewrite_links (const std::string& html, const std::string& token)
+{
+    std::string out = html;
+    const std::string register_prefix = "gnc-register:";
+    const std::string register_route = "/" + token + "/register/";
+    const std::string report_prefix = "gnc-report:";
+    const std::string report_route = "/" + token + "/report-id/";
+
+    for (size_t pos = out.find (register_prefix); pos != std::string::npos;
+         pos = out.find (register_prefix, pos))
+    {
+        out.replace (pos, register_prefix.size (), register_route);
+        pos += register_route.size ();
+    }
+    for (size_t pos = out.find (report_prefix); pos != std::string::npos;
+         pos = out.find (report_prefix, pos))
+    {
+        out.replace (pos, report_prefix.size (), report_route);
+        pos += report_route.size ();
+    }
+    return out;
+}
+
+/* A server-rendered register page: the frame the report navigates into. */
+std::string
+register_html (Account* account)
+{
+    GNCPrintAmountInfo info = gnc_account_print_info (account, TRUE);
+    std::string out = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>";
+    out += html_escape (xaccAccountGetName (account));
+    out += "</title><style>"
+           "body{font-family:system-ui,sans-serif;margin:1rem;color:#222}"
+           "h1{font-size:1.2rem;margin:0 0 .25rem}"
+           "p.total{color:#555;margin:0 0 1rem}"
+           "table{border-collapse:collapse;width:100%}"
+           "th,td{padding:.3rem .6rem;border-bottom:1px solid #e0e0e0;text-align:left}"
+           "th{font-weight:600;color:#444}"
+           "td.num{text-align:right;font-variant-numeric:tabular-nums}"
+           "tr.reconciled td.num{color:#080}"
+           "</style></head><body><h1>";
+    out += html_escape (xaccAccountGetName (account));
+    out += "</h1><p class='total'>Balance: ";
+    const gchar* balance = xaccPrintAmount (xaccAccountGetBalance (account), info);
+    out += html_escape (balance != nullptr ? balance : "");
+
+    out += "</p><table><thead><tr><th>Date</th><th>Description</th>"
+           "<th>Transfer</th><th class='num'>Amount</th></tr></thead><tbody>";
+
+    GList* splits = g_list_reverse (g_list_copy (xaccAccountGetSplitList (account)));
+    for (GList* node = splits; node != nullptr; node = node->next)
+    {
+        auto* split = static_cast<Split*>(node->data);
+        char date[16] = {0};
+        qof_print_date_buff (date, sizeof date,
+                             xaccTransGetDate (xaccSplitGetParent (split)));
+
+        out += "<tr";
+        out += xaccSplitGetReconcile (split) == YREC ? " class='reconciled'" : "";
+        out += "><td>";
+        out += date;
+        out += "</td><td>";
+        out += html_escape (xaccTransGetDescription (xaccSplitGetParent (split)));
+        out += "</td><td>";
+        out += html_escape (xaccAccountGetName (xaccSplitGetAccount (split)));
+        out += "</td><td class='num'>";
+        const gchar* amount = xaccPrintAmount (xaccSplitGetAmount (split), info);
+        out += html_escape (amount != nullptr ? amount : "");
+        out += "</td></tr>";
+    }
+    g_list_free (splits);
+
+
+    out += "</tbody></table></body></html>";
+    return out;
+}
+
 /* Reads until the end of the request headers. Returns the path, or an empty
  * string if the request is malformed. */
 std::string
@@ -333,6 +433,51 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         send_response (connection, "200 OK", "application/json",
                        account_json (g_server.root));
     }
+    else if (route.compare (0, 15, "report-id/") == 0)
+    {
+        /* Report-to-report links carry the engine's own id string. */
+        const std::string id_string = url_decode (route.substr (10));
+        char* html = nullptr;
+        char* errmsg = nullptr;
+        if (gnc_run_report_id_string_with_error_handling (id_string.c_str (),
+                                                         &html, &errmsg))
+        {
+            send_response (connection, "200 OK", "text/html; charset=utf-8",
+                           rewrite_links (html != nullptr ? html : "",
+                                          g_server.token));
+            g_free (html);
+        }
+        else
+        {
+            send_response (connection, "404 Not Found", "text/plain",
+                           errmsg != nullptr ? errmsg : "no such report\n");
+            g_free (errmsg);
+        }
+    }
+    else if (route.compare (0, 9, "register/") == 0)
+    {
+        /* The drill-down target: an account's register, rendered here so a
+         * link inside a report frame can simply navigate to it. */
+        std::string spec = url_decode (route.substr (9));
+        const std::string prefix = "acct-guid=";
+        if (spec.compare (0, prefix.size (), prefix) == 0)
+            spec = spec.substr (prefix.size ());
+
+        GncGUID guid;
+        Account* account = nullptr;
+        if (string_to_guid (spec.c_str (), &guid))
+            account = xaccAccountLookup (&guid, gnc_account_get_book (g_server.root));
+
+        if (account == nullptr)
+        {
+            send_response (connection, "404 Not Found", "text/plain",
+                           "no such account\n");
+            return TRUE;
+        }
+
+        send_response (connection, "200 OK", "text/html; charset=utf-8",
+                       register_html (account));
+    }
     else if (route.compare (0, 13, "api/register/") == 0)
     {
         /* Reports link to accounts by GUID; this is the endpoint those links
@@ -381,8 +526,10 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         char* errmsg = nullptr;
         if (gnc_run_report_with_error_handling (scm_to_int (id), &html, &errmsg))
         {
+            const std::string document = rewrite_links (
+                html != nullptr ? html : "", g_server.token);
             send_response (connection, "200 OK", "text/html; charset=utf-8",
-                           html != nullptr ? html : "");
+                           document);
             g_free (html);
         }
         else
