@@ -8,7 +8,8 @@ set(doc_noinst_DATA
         CMakeLists.txt gnucash.1.in
         gnucash-cli.1.in tip_of_the_day.list.c README.txt
         adr/0011-reports-in-the-server-process.md
-        adr/0012-single-threaded-local-server.md)
+        adr/0012-single-threaded-local-server.md
+        report-engine-migration.md)
 
 install(FILES ${doc_DATA} DESTINATION  ${CMAKE_INSTALL_DOCDIR})
 
