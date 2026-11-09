@@ -456,6 +456,15 @@ Query::sum (Account* account) const
 {
     gnc_numeric total = gnc_numeric_zero ();
 
+    /* The route's dates are independent, and an end date earlier than the
+     * report's default start (e.g. ?end=2009-12-31 when the accounting
+     * period starts today) is an inverted range.  The engine's split
+     * iterator is std::for_each(first, last), which is undefined behaviour
+     * when first > last -- it segfaulted gnc-webd -- so an inverted range is
+     * an empty range here. */
+    if (start.has_value () && end.has_value () && *start > *end)
+        return gnc_numeric_zero ();
+
     gnc_account_foreach_split_between_dates (
         account, start, end, false,
         [&] (Split* split)
@@ -3597,6 +3606,11 @@ report_options (const std::string& name)
             "and it defaults to today, as the Scheme report's does.",
             default_aging_date ()));
         options.push_back (currency_option ());
+        /* No "period" preset: unlike the statements, this report's end date
+         * is also the valuation date, so "all dates" cannot mean an unbounded
+         * end.  A preset accepted and then ignored is worse than a 400, and
+         * the route checks report_has_option() before resolving one. */
+        return options;
     }
     else
     {

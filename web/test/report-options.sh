@@ -127,14 +127,21 @@ for aging in "Receivable%20Aging" "Payable%20Aging"; do
     expect_body "$aging options" '"type":"date"'
     expect_not_body "$aging options has no account selection" '"name":"accounts"'
     expect_not_body "$aging options has no currency" '"name":"currency"'
+    expect_not_body "$aging options has no period preset" '"name":"period"'
 done
 
 expect_status 400 "accounts on an aging report" \
     "/report/Receivable%20Aging?accounts=all"
 expect_body "accounts on an aging report" "does not accept an 'accounts' option"
+for aging in "Receivable%20Aging" "Payable%20Aging"; do
+    expect_status 400 "period on an aging report" "/report/$aging?period=all"
+    expect_body "period on an aging report" "does not accept a 'period' option"
+done
 
-# The Investment Lots report takes a period and a currency, and covers every
-# stock account in the book, so it has no account selection either.
+# The Investment Lots report takes a start and end date and a currency, and
+# covers every stock account in the book, so it has no account selection.  It
+# has no period preset either: its end date is also the valuation date, so
+# "all dates" cannot mean an unbounded end.
 expect_status 200 "Investment Lots options" "/api/report/Investment%20Lots/options"
 expect_body "Investment Lots options" '"name":"start"'
 expect_body "Investment Lots options" '"label":"Start date"'
@@ -144,10 +151,15 @@ expect_body "Investment Lots options" '"type":"date"'
 expect_body "Investment Lots options" '"name":"currency"'
 expect_not_body "Investment Lots options has no account selection" \
     '"name":"accounts"'
+expect_not_body "Investment Lots options has no period preset" \
+    '"name":"period"'
 expect_status 400 "accounts on the lots report" \
     "/report/Investment%20Lots?accounts=all"
 expect_body "accounts on the lots report" \
     "does not accept an 'accounts' option"
+expect_status 400 "period on the lots report" \
+    "/report/Investment%20Lots?period=all"
+expect_body "period on the lots report" "does not accept a 'period' option"
 
 expect_status 404 "options for an unknown report" "/api/report/No%20Such%20Report/options"
 
@@ -168,6 +180,16 @@ expect_status 400 "bad month" "/report/Income%20Statement?start=2018-13-01"
 expect_body "bad month" "invalid start date"
 expect_status 400 "bad day" "/report/Income%20Statement?end=2018-02-30"
 expect_body "bad day" "invalid end date"
+# An inverted range must be empty, not a crash: the engine's split iterator
+# was undefined behaviour when first > last.  It is not a 400 because the
+# options form can send the descriptor's start default with an earlier end,
+# and the as-of reports accept a start they ignore.
+expect_status 200 "end before the default start" \
+    "/report/Income%20Statement?end=2009-12-31"
+expect_body "end before the default start" "Income Statement"
+expect_status 200 "explicit inverted range" \
+    "/report/Income%20Statement?start=2018-01-01&end=2009-12-31"
+expect_body "explicit inverted range" "Income Statement"
 expect_status 400 "accounts on an as-of report" "/report/Trial%20Balance?accounts=all"
 expect_body "accounts on an as-of report" "does not accept an 'accounts' option"
 expect_status 400 "malformed GUID" "/report/Transaction%20Report?accounts=deadbeef"
@@ -260,6 +282,103 @@ if [ "$CURRENCY_CODE" = "200" ]; then
 else
     bad "the report currency $DEFAULT_CURRENCY answered $CURRENCY_CODE"
 fi
+
+echo "== every advertised option is effective or rejected"
+# The descriptors are the contract.  For every native report and every option
+# its descriptor publishes, sending the option must either change the rendered
+# document or be refused with a 400 that names it.  The two documented
+# exceptions are the as-of start dates, which the descriptors explain.
+#
+# Currency is not probed for effect: sample1 has only USD, so there is no
+# second currency to convert into.  The default currency is accepted above and
+# an unknown currency is a 400 below; a second-currency fixture is not part of
+# this test, so currency effectiveness is the one gap this loop leaves.
+OPTDIR=$(mktemp -d)
+fetch "/api/reports?options=1" > /dev/null
+cp "$BODY" "$OPTDIR/reports.json"
+python3 - "$OPTDIR/reports.json" <<'PY' > "$OPTDIR/reports"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for item in json.load(handle):
+        print(item["report"])
+PY
+
+while IFS= read -r report; do
+    enc=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$report")
+    code=$(fetch "/api/report/$enc/options")
+    if [ "$code" != "200" ]; then
+        bad "$report options answered $code"
+        continue
+    fi
+    cp "$BODY" "$OPTDIR/options.json"
+    python3 - "$OPTDIR/options.json" <<'PY' > "$OPTDIR/options"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for option in json.load(handle)["options"]:
+        print(option["name"])
+PY
+
+    # A real baseline for the reports that need an account selection: their
+    # date options do nothing while the report is the empty-selection warning.
+    base=""
+    if grep -q '"name":"accounts"' "$OPTDIR/options.json"; then
+        base="accounts=all"
+    fi
+    fetch "/report/$enc" > /dev/null
+    cp "$BODY" "$OPTDIR/no-options.html"
+    fetch "/report/$enc${base:+?$base}" > /dev/null
+    cp "$BODY" "$OPTDIR/baseline.html"
+
+    while IFS= read -r opt; do
+        [ "$opt" = "currency" ] && continue
+        case "$opt" in
+            start) probe="start=2018-12-31" ;;
+            end) probe="end=2030-12-31" ;;
+            accounts) probe="accounts=all" ;;
+            period) probe="period=all" ;;
+            *) bad "$report advertises unknown option '$opt'"; continue ;;
+        esac
+
+        if [ "$opt" = "accounts" ]; then
+            code=$(fetch "/report/$enc?$probe")
+            before="$OPTDIR/no-options.html"
+        else
+            code=$(fetch "/report/$enc?${base:+$base&}$probe")
+            before="$OPTDIR/baseline.html"
+        fi
+
+        if [ "$code" = "400" ]; then
+            if grep -qF "does not accept a '$opt' option" "$BODY"; then
+                ok "$report rejects $opt (400 names the option)"
+            else
+                bad "$report rejected $opt without naming it: $(head -c 200 "$BODY")"
+            fi
+        elif [ "$code" != "200" ]; then
+            bad "$report $opt answered $code"
+        elif ! cmp -s "$before" "$BODY"; then
+            ok "$report $opt changes the report"
+        else
+            case "$report:$opt" in
+                "Trial Balance:start")
+                    if grep -qF 'accepted but has no effect' "$OPTDIR/options.json"; then
+                        ok "$report $opt is the documented as-of no-op"
+                    else
+                        bad "$report $opt is a no-op but the descriptor does not say so"
+                    fi ;;
+                "Balance Sheet:start")
+                    if grep -qF 'does not use a start date' "$OPTDIR/options.json"; then
+                        ok "$report $opt is the documented as-of no-op"
+                    else
+                        bad "$report $opt is a no-op but the descriptor does not say so"
+                    fi ;;
+                *)
+                    bad "$report advertises $opt but the report is unchanged" ;;
+            esac
+        fi
+    done < "$OPTDIR/options"
+done < "$OPTDIR/reports"
+rm -rf "$OPTDIR"
+
 if [ "$FAILS" -ne 0 ]; then
     echo "$FAILS check(s) failed"
     exit 1

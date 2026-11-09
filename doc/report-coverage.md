@@ -399,20 +399,30 @@ lower bounds on the user-visible options).
 
 The HTTP layer is strict: an option not in `report_options()` is a 400 that
 names it (`web/server/main.cpp`), so the large gaps above are *rejected*, not
-silently mis-rendered.  Two cases are different from a clean rejection:
+silently mis-rendered.  Three cases were different from a clean rejection; the
+last two were fixed in the audit that followed this analysis:
 
 1. **Trial Balance and Balance Sheet `start`.**  Both declare it, accept it,
    and ignore it.  The descriptor text explains why, so it is documented
    rather than hidden, but a caller can still send a start date and receive a
-   report that does not use it.
-2. **Investment Lots `period=all`.**  `report_options()` publishes the
-   `period` option with the `all` choice, and the route accepts it.  The lots
-   renderer never reads `request.all_dates`; it falls back to the start of the
-   current calendar year and today.  So `period=all` is accepted and has no
-   effect on this one report.  That is the failure mode the stage-3 commit
-   warned about ("silently ignoring an option would render a plausible report
-   that answers a different question"), and it is outside the five reports but
-   worth fixing or rejecting before stage 7.
+   report that does not use it.  This remains a documented no-op.
+2. **`period` on the reports that cannot honour it.**  Investment Lots
+   advertised `period=all` and ignored it, and the aging reports accepted
+   `period` even though they never advertised it, because the route resolved
+   `period` before checking the descriptors.  Fixed: the route now checks
+   `period` with `report_has_option()`, the lots descriptor no longer
+   publishes it (its end date is also the valuation date, so "all dates"
+   cannot mean an unbounded end), and aging and lots both answer 400.
+3. **Inverted date ranges.**  An end date before the report's default start
+   (`Income Statement?end=2009-12-31`) made the engine's split iterator run
+   `std::for_each(first, last)` with first > last and segfaulted `gnc-webd`.
+   `Query::sum()` now treats an inverted range as empty rather than a crash.
+
+`web/test/report-options.sh` now walks every native report and every option
+its descriptor advertises: each must change the rendered document or be
+refused with a 400 that names it, except the two documented as-of no-ops.
+Currency effectiveness is the one gap the test records: the fixture has only
+USD, so there is no second currency to convert into.
 
 ## 6. Surprises
 

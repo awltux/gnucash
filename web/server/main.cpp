@@ -702,10 +702,11 @@ read_request (GSocketConnection* connection)
  * unknown options, bad dates and unknown GUIDs are rejected with a message
  * naming the problem, never ignored.
  *
- * The one thing that is not a descriptor is "period": it is a convenience
- * that resolves to the same start/end pair the report's own date options
- * default to (this-year), the previous period (last-year), or no bounds at
- * all (all). */
+ * "period" is a convenience over the report's own date options: it resolves
+ * to the same start/end pair the report's date options default to
+ * (this-year), the previous period (last-year), or no bounds at all (all).
+ * It is still checked against the descriptors, because a report whose dates
+ * are not a free range (aging, lots) must reject it. */
 
 struct QueryParam
 {
@@ -941,6 +942,17 @@ build_report_request (const std::string& report, const std::string& query,
         }
         else if (param.name == "period")
         {
+            /* Like every other option, "period" is only accepted when the
+             * report publishes it.  Aging and Investment Lots have fixed
+             * date semantics (one anchor day, or an end that is also the
+             * valuation date), so a preset they cannot honour is a 400, not
+             * a silently ignored convenience. */
+            if (!gnc::report::report_has_option (report, "period"))
+            {
+                error = "report '" + report +
+                        "' does not accept a 'period' option";
+                return false;
+            }
             have_period = true;
             period = param.value;
         }
