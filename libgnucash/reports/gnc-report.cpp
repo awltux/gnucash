@@ -3417,6 +3417,189 @@ printed_short_date (time64 when)
     return std::string (date);
 }
 
+/* The Budget Balance Sheet's default account selection is the Scheme report's
+ * 13-type filter, not "every account": the Scheme list deliberately leaves
+ * out CHECKING, SAVINGS, MONEYMRKT, CREDITLINE and TRADING. */
+bool
+budget_balance_sheet_account_type (const Account* account)
+{
+    switch (xaccAccountGetType (account))
+    {
+    case ACCT_TYPE_BANK:
+    case ACCT_TYPE_CASH:
+    case ACCT_TYPE_CREDIT:
+    case ACCT_TYPE_ASSET:
+    case ACCT_TYPE_LIABILITY:
+    case ACCT_TYPE_STOCK:
+    case ACCT_TYPE_MUTUAL:
+    case ACCT_TYPE_CURRENCY:
+    case ACCT_TYPE_PAYABLE:
+    case ACCT_TYPE_RECEIVABLE:
+    case ACCT_TYPE_EQUITY:
+    case ACCT_TYPE_INCOME:
+    case ACCT_TYPE_EXPENSE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool
+budget_income_statement_account_type (const Account* account)
+{
+    return bucket_of (account) == Bucket::Income ||
+           bucket_of (account) == Bucket::Expense;
+}
+
+bool
+budget_any_account_type (const Account* account)
+{
+    (void) account;
+    return true;
+}
+
+/* The selection the report should use: the caller's already-expanded list, or
+ * the report's own default filter over the sorted account tree.  Duplicates
+ * are dropped in caller order so a GUID plus its own subtree is harmless. */
+std::vector<Account*>
+budget_selection (Account* root, const std::vector<Account*>& supplied,
+                  bool (*default_filter) (const Account*))
+{
+    std::vector<Account*> result;
+    std::set<Account*> seen;
+    if (!supplied.empty ())
+    {
+        for (Account* account : supplied)
+        {
+            if (account != nullptr && seen.insert (account).second)
+                result.push_back (account);
+        }
+        return result;
+    }
+
+    std::vector<Account*> all;
+    collect_accounts (root, all);
+    for (Account* account : all)
+    {
+        if (default_filter (account) && seen.insert (account).second)
+            result.push_back (account);
+    }
+    return result;
+}
+
+/* A report table's visible accounts, with the Scheme account table's logical
+ * depth rule: a selected account is displayed while its logical depth is
+ * below the limit, and its children inherit depth+1 only when it was shown. */
+void
+collect_budget_display_accounts (Account* parent, int logical_depth,
+                                 int max_depth,
+                                 const std::set<Account*>& selected,
+                                 std::vector<Account*>& out)
+{
+    GList* children = gnc_account_get_children_sorted (parent);
+    for (GList* node = children; node != nullptr; node = node->next)
+    {
+        auto* account = static_cast<Account*> (node->data);
+        const bool displayed =
+            selected.count (account) != 0 && logical_depth < max_depth;
+        if (displayed)
+            out.push_back (account);
+        collect_budget_display_accounts (account,
+                                         displayed ? logical_depth + 1
+                                                   : logical_depth,
+                                         max_depth, selected, out);
+    }
+    g_list_free (children);
+}
+
+/* Sum of an account's own budget values over the whole budget.  The Scheme
+ * statement reports use gnc:budget-account-get-net with #f/#f, which is this
+ * loop; it never rolls children into a parent. */
+gnc_numeric
+budget_account_total (const GncBudget* budget, Account* account)
+{
+    const guint periods = gnc_budget_get_num_periods (budget);
+    gnc_numeric total = gnc_numeric_zero ();
+    for (guint period = 0; period < periods; ++period)
+        total = numeric_add (total,
+                             gnc_budget_get_account_period_value (budget,
+                                                                  account,
+                                                                  period));
+    return total;
+}
+
+/* gnc:budget-account-get-initial-balance(): the account's balance immediately
+ * before the budget's first period starts.  The date is exclusive in the
+ * engine's as-of lookup, so a split on the first day is not "existing". */
+gnc_numeric
+budget_account_initial_balance (const GncBudget* budget, Account* account)
+{
+    return xaccAccountGetBalanceAsOfDate (
+        account, gnc_budget_get_period_start_date (budget, 0));
+}
+
+gnc_numeric
+budget_convert (gnc_numeric amount, gnc_commodity* from,
+                gnc_commodity* report_cur, GNCPriceDB* price_db, time64 date)
+{
+    if (from == nullptr || report_cur == nullptr ||
+        gnc_commodity_equiv (from, report_cur))
+        return amount;
+    return gnc_pricedb_convert_balance_nearest_before_price_t64 (
+        price_db, amount, from, report_cur, date);
+}
+
+/* gnc:account-get-comm-value-at-date(account, date, #f): the sum of the
+ * account's own split *values* before `date`, in the transaction currency,
+ * converted to the report currency.  The balance sheet uses this only for its
+ * unrealized-gain line. */
+gnc_numeric
+budget_account_value_before (Account* account, time64 date,
+                             gnc_commodity* report_cur, GNCPriceDB* price_db)
+{
+    gnc_numeric total = gnc_numeric_zero ();
+    for (GList* node = xaccAccountGetSplitList (account); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*> (node->data);
+        Transaction* transaction = xaccSplitGetParent (split);
+        if (transaction == nullptr || xaccTransGetDate (transaction) >= date)
+            continue;
+        const gnc_numeric value = xaccSplitGetValue (split);
+        total = numeric_add (
+            total,
+            budget_convert (value, xaccTransGetCurrency (transaction),
+                            report_cur, price_db, date));
+    }
+    return total;
+}
+
+bool
+budget_account_has_children (Account* account)
+{
+    GList* children = gnc_account_get_children (account);
+    const bool has_children = children != nullptr;
+    g_list_free (children);
+    return has_children;
+}
+
+/* The names gnc:account-get-type-string-plural() uses for the six buckets
+ * gnc:decompose-accountlist() produces, in its order. */
+const char*
+budget_bucket_name (Bucket bucket)
+{
+    switch (bucket)
+    {
+    case Bucket::Asset:     return "Assets";
+    case Bucket::Liability: return "Liabilities";
+    case Bucket::Equity:    return "Equities";
+    case Bucket::Income:    return "Income";
+    case Bucket::Expense:   return "Expenses";
+    case Bucket::Trading:   return "Trading Accounts";
+    default:                return "";
+    }
+}
+
 } // namespace
 
 CellTable
@@ -3466,6 +3649,411 @@ budget_report (Account* root, GncBudget* budget,
         gnc_pricedb_get_db (qof_instance_get_book (QOF_INSTANCE (root)));
     collect_budget_rows (root, 0, selected, budget, period_count, price_db,
                          table);
+    return table;
+}
+
+CellTable
+budget_income_statement (Account* root, GncBudget* budget,
+                         const std::vector<Account*>& accounts,
+                         gnc_commodity* requested_currency)
+{
+    CellTable table;
+    if (root == nullptr || budget == nullptr)
+        return table;
+
+    gnc_commodity* currency = report_currency (root, requested_currency);
+    GNCPriceDB* price_db =
+        gnc_pricedb_get_db (qof_instance_get_book (QOF_INSTANCE (root)));
+    const time64 date = gnc_budget_get_period_start_date (budget, 0);
+
+    const std::vector<Account*> selected =
+        budget_selection (root, accounts, budget_income_statement_account_type);
+    if (selected.empty ())
+        return table;
+
+    std::set<Account*> selected_set (selected.begin (), selected.end ());
+    std::vector<Account*> displayed;
+    collect_budget_display_accounts (root, 0, 3, selected_set, displayed);
+
+    auto converted_total = [&] (Account* account)
+    {
+        return budget_convert (budget_account_total (budget, account),
+                               xaccAccountGetCommodity (account), currency,
+                               price_db, date);
+    };
+    auto add_heading = [&table] (const char* label)
+    {
+        std::vector<Cell> row;
+        row.push_back ({label, "total-label-cell"});
+        table.rows.push_back (std::move (row));
+    };
+    auto add_total = [&table, currency] (const char* label, gnc_numeric amount)
+    {
+        std::vector<Cell> row;
+        row.push_back ({label, "total-label-cell"});
+        row.push_back ({format_amount (amount, currency), "total-number-cell"});
+        table.rows.push_back (std::move (row));
+    };
+
+    auto add_section = [&] (const char* heading, Bucket bucket)
+    {
+        add_heading (heading);
+        for (Account* account : displayed)
+        {
+            if (bucket_of (account) != bucket)
+                continue;
+            gnc_numeric amount = converted_total (account);
+            if (shows_reversed (account))
+                amount = gnc_numeric_neg (amount);
+            std::vector<Cell> row;
+            row.push_back ({account_name (account), "text-cell"});
+            row.push_back ({format_amount (amount, currency), "number-cell"});
+            table.rows.push_back (std::move (row));
+        }
+    };
+
+    add_section ("Revenues", Bucket::Income);
+    gnc_numeric revenue_total = gnc_numeric_zero ();
+    for (Account* account : selected)
+    {
+        if (bucket_of (account) != Bucket::Income)
+            continue;
+        gnc_numeric amount = converted_total (account);
+        if (shows_reversed (account))
+            amount = gnc_numeric_neg (amount);
+        revenue_total = numeric_add (revenue_total, amount);
+    }
+    add_total ("Total Revenue", revenue_total);
+
+    add_section ("Expenses", Bucket::Expense);
+    gnc_numeric expense_total = gnc_numeric_zero ();
+    for (Account* account : selected)
+    {
+        if (bucket_of (account) != Bucket::Expense)
+            continue;
+        expense_total = numeric_add (expense_total, converted_total (account));
+    }
+    add_total ("Total Expenses", expense_total);
+
+    /* The Scheme net line is the negation of the sum of both sections' raw
+     * (not sign-reversed) budget values.  A negative result is printed as the
+     * absolute "Net loss", exactly as report-line does. */
+    gnc_numeric net = gnc_numeric_zero ();
+    for (Account* account : selected)
+    {
+        const Bucket bucket = bucket_of (account);
+        if (bucket == Bucket::Income || bucket == Bucket::Expense)
+            net = numeric_add (net, converted_total (account));
+    }
+    net = gnc_numeric_neg (net);
+
+    const gchar* name = gnc_budget_get_name (budget);
+    const std::string budget_name =
+        name != nullptr && name[0] != '\0' ? std::string (name)
+                                           : std::string ("Budget");
+    std::string label = "Net income for Budget " + budget_name;
+    if (gnc_numeric_negative_p (net))
+    {
+        label = "Net loss for Budget " + budget_name;
+        net = gnc_numeric_neg (net);
+    }
+    std::vector<Cell> net_row;
+    net_row.push_back ({label, "text-cell"});
+    net_row.push_back ({format_amount (net, currency), "number-cell"});
+    table.rows.push_back (std::move (net_row));
+
+    return table;
+}
+
+CellTable
+budget_balance_sheet (Account* root, GncBudget* budget,
+                      const std::vector<Account*>& accounts,
+                      gnc_commodity* requested_currency)
+{
+    CellTable table;
+    if (root == nullptr || budget == nullptr)
+        return table;
+
+    gnc_commodity* currency = report_currency (root, requested_currency);
+    GNCPriceDB* price_db =
+        gnc_pricedb_get_db (qof_instance_get_book (QOF_INSTANCE (root)));
+    const time64 date = gnc_budget_get_period_start_date (budget, 0);
+
+    const std::vector<Account*> selected =
+        budget_selection (root, accounts, budget_balance_sheet_account_type);
+    if (selected.empty ())
+        return table;
+
+    std::set<Account*> selected_set (selected.begin (), selected.end ());
+    std::vector<Account*> displayed;
+    collect_budget_display_accounts (root, 0, 3, selected_set, displayed);
+
+    auto converted_initial = [&] (Account* account)
+    {
+        return budget_convert (budget_account_initial_balance (budget, account),
+                               xaccAccountGetCommodity (account), currency,
+                               price_db, date);
+    };
+    auto converted_budget = [&] (Account* account)
+    {
+        return budget_convert (budget_account_total (budget, account),
+                               xaccAccountGetCommodity (account), currency,
+                               price_db, date);
+    };
+    auto add_heading = [&table] (const char* label)
+    {
+        std::vector<Cell> row;
+        row.push_back ({label, "total-label-cell"});
+        table.rows.push_back (std::move (row));
+    };
+    auto add_total = [&table, currency] (const char* positive_label,
+                                         const char* negative_label,
+                                         gnc_numeric amount)
+    {
+        std::string label = positive_label;
+        if (negative_label != nullptr && gnc_numeric_negative_p (amount))
+        {
+            label = negative_label;
+            amount = gnc_numeric_neg (amount);
+        }
+        std::vector<Cell> row;
+        row.push_back ({label, "total-label-cell"});
+        row.push_back ({format_amount (amount, currency), "total-number-cell"});
+        table.rows.push_back (std::move (row));
+    };
+    auto add_account_rows = [&] (Bucket bucket)
+    {
+        for (Account* account : displayed)
+        {
+            if (bucket_of (account) != bucket)
+                continue;
+            gnc_numeric amount =
+                numeric_add (converted_initial (account),
+                             converted_budget (account));
+            if (shows_reversed (account))
+                amount = gnc_numeric_neg (amount);
+            std::vector<Cell> row;
+            row.push_back ({account_name (account), "text-cell"});
+            row.push_back ({format_amount (amount, currency), "number-cell"});
+            table.rows.push_back (std::move (row));
+        }
+    };
+    auto sum_initial = [&] (Bucket bucket)
+    {
+        gnc_numeric total = gnc_numeric_zero ();
+        for (Account* account : selected)
+        {
+            if (bucket_of (account) == bucket)
+                total = numeric_add (total, converted_initial (account));
+        }
+        return total;
+    };
+    auto sum_budget = [&] (Bucket bucket)
+    {
+        gnc_numeric total = gnc_numeric_zero ();
+        for (Account* account : selected)
+        {
+            if (bucket_of (account) == bucket)
+                total = numeric_add (total, converted_budget (account));
+        }
+        return total;
+    };
+
+    const gnc_numeric existing_assets = sum_initial (Bucket::Asset);
+    const gnc_numeric allocated_assets = sum_budget (Bucket::Asset);
+    const gnc_numeric existing_liabilities = sum_initial (Bucket::Liability);
+    const gnc_numeric new_liabilities = sum_budget (Bucket::Liability);
+    const gnc_numeric liability_balance =
+        numeric_add (existing_liabilities, new_liabilities);
+
+    /* Existing retained earnings are initial income minus initial expenses;
+     * new retained earnings are budget income minus budget expenses.  The
+     * Scheme collector- makes both of these the negation of the sum. */
+    const gnc_numeric existing_retained = gnc_numeric_neg (
+        numeric_add (sum_initial (Bucket::Income),
+                     sum_initial (Bucket::Expense)));
+    const gnc_numeric new_retained = gnc_numeric_neg (
+        numeric_add (sum_budget (Bucket::Income),
+                     sum_budget (Bucket::Expense)));
+    const gnc_numeric retained =
+        numeric_add (existing_retained, new_retained);
+
+    gnc_numeric asset_basis = gnc_numeric_zero ();
+    gnc_numeric liability_basis = gnc_numeric_zero ();
+    for (Account* account : selected)
+    {
+        const Bucket bucket = bucket_of (account);
+        if (bucket == Bucket::Asset)
+            asset_basis = numeric_add (
+                asset_basis,
+                budget_account_value_before (account, date, currency,
+                                             price_db));
+        else if (bucket == Bucket::Liability)
+            liability_basis = numeric_add (
+                liability_basis,
+                budget_account_value_before (account, date, currency,
+                                             price_db));
+    }
+    const gnc_numeric unrealized_gain = numeric_add (
+        numeric_add (existing_assets, gnc_numeric_neg (asset_basis)),
+        gnc_numeric_neg (numeric_add (
+            existing_liabilities, gnc_numeric_neg (liability_basis))));
+
+    const gnc_numeric existing_equity = numeric_add (
+        numeric_add (gnc_numeric_neg (sum_initial (Bucket::Equity)),
+                     existing_retained),
+        unrealized_gain);
+    const gnc_numeric new_equity =
+        numeric_add (sum_budget (Bucket::Equity), new_retained);
+    const gnc_numeric equity_balance =
+        numeric_add (existing_equity, new_equity);
+
+    const gnc_numeric unallocated_assets = numeric_add (
+        new_retained,
+        gnc_numeric_neg (numeric_add (allocated_assets, new_liabilities)));
+    const gnc_numeric asset_balance =
+        numeric_add (numeric_add (existing_assets, allocated_assets),
+                     unallocated_assets);
+    const gnc_numeric liability_plus_equity = numeric_add (
+        gnc_numeric_neg (liability_balance), equity_balance);
+
+    add_heading ("Assets");
+    add_account_rows (Bucket::Asset);
+    add_total ("Existing Assets", nullptr, existing_assets);
+    add_total ("Allocated Assets", nullptr, allocated_assets);
+    if (!gnc_numeric_zero_p (unallocated_assets))
+        add_total ("Unallocated Assets", nullptr, unallocated_assets);
+    add_total ("Total Assets", nullptr, asset_balance);
+
+    add_heading ("Liabilities");
+    add_account_rows (Bucket::Liability);
+    add_total ("Existing Liabilities", nullptr,
+               gnc_numeric_neg (existing_liabilities));
+    add_total ("New Liabilities", nullptr, gnc_numeric_neg (new_liabilities));
+    add_total ("Total Liabilities", nullptr,
+               gnc_numeric_neg (liability_balance));
+
+    add_heading ("Equity");
+    add_account_rows (Bucket::Equity);
+    if (!gnc_numeric_zero_p (retained))
+    {
+        add_total ("Existing Retained Earnings", "Existing Retained Losses",
+                   existing_retained);
+        add_total ("New Retained Earnings", "New Retained Losses",
+                   new_retained);
+    }
+    if (!gnc_numeric_zero_p (unrealized_gain))
+        add_total ("Unrealized Gains", "Unrealized Losses", unrealized_gain);
+    add_total ("Existing Equity", nullptr, existing_equity);
+    add_total ("New Equity", nullptr, new_equity);
+    add_total ("Total Equity", nullptr, equity_balance);
+    add_total ("Total Liabilities & Equity", nullptr, liability_plus_equity);
+
+    return table;
+}
+
+CellTable
+budget_flow (Account* root, GncBudget* budget,
+             const std::vector<Account*>& accounts,
+             gnc_commodity* requested_currency)
+{
+    CellTable table;
+    if (root == nullptr || budget == nullptr)
+        return table;
+
+    gnc_commodity* currency = report_currency (root, requested_currency);
+    GNCPriceDB* price_db =
+        gnc_pricedb_get_db (qof_instance_get_book (QOF_INSTANCE (root)));
+    const guint period = 0;
+    const time64 date = gnc_budget_get_period_end_date (budget, period);
+
+    const std::vector<Account*> selected =
+        budget_selection (root, accounts, budget_any_account_type);
+    if (selected.empty ())
+        return table;
+
+    struct TypeTotal
+    {
+        Bucket bucket;
+        gnc_numeric budget;
+        gnc_numeric actual;
+    };
+    std::vector<TypeTotal> type_totals;
+
+    const Bucket buckets[] = {Bucket::Asset, Bucket::Liability,
+                              Bucket::Equity, Bucket::Income,
+                              Bucket::Expense, Bucket::Trading};
+    for (const Bucket bucket : buckets)
+    {
+        gnc_numeric budget_total = gnc_numeric_zero ();
+        gnc_numeric actual_total = gnc_numeric_zero ();
+        for (Account* account : selected)
+        {
+            if (bucket_of (account) != bucket ||
+                budget_account_has_children (account))
+                continue;
+
+            gnc_commodity* commodity = xaccAccountGetCommodity (account);
+            const gnc_numeric budget_value =
+                gnc_budget_get_account_period_value (budget, account, period);
+            const gnc_numeric actual_value =
+                gnc_budget_get_account_period_actual_value (budget, account,
+                                                            period);
+            budget_total = numeric_add (
+                budget_total,
+                budget_convert (budget_value, commodity, currency, price_db,
+                                date));
+            actual_total = numeric_add (
+                actual_total,
+                budget_convert (actual_value, commodity, currency, price_db,
+                                date));
+
+            gchar* full_name = gnc_account_get_full_name (account);
+            const std::string label =
+                full_name != nullptr ? std::string (full_name)
+                                     : account_name (account);
+            std::vector<Cell> row;
+            row.push_back ({label, "text-cell"});
+            row.push_back ({format_amount (budget_value, commodity),
+                            "number-cell"});
+            row.push_back ({format_amount (actual_value, commodity),
+                            "number-cell"});
+            table.rows.push_back (std::move (row));
+            g_free (full_name);
+        }
+
+        std::vector<Cell> total_row;
+        total_row.push_back ({"Total:", "text-cell"});
+        total_row.push_back ({format_amount (budget_total, currency),
+                              "total-number-cell"});
+        total_row.push_back ({format_amount (actual_total, currency),
+                              "total-number-cell"});
+        table.rows.push_back (std::move (total_row));
+        type_totals.push_back ({bucket, budget_total, actual_total});
+    }
+
+    gnc_numeric budget_grand_total = gnc_numeric_zero ();
+    gnc_numeric actual_grand_total = gnc_numeric_zero ();
+    for (auto entry = type_totals.rbegin (); entry != type_totals.rend ();
+         ++entry)
+    {
+        std::vector<Cell> row;
+        row.push_back ({budget_bucket_name (entry->bucket), "text-cell"});
+        row.push_back ({format_amount (entry->budget, currency), "number-cell"});
+        row.push_back ({format_amount (entry->actual, currency), "number-cell"});
+        table.rows.push_back (std::move (row));
+        budget_grand_total = numeric_add (budget_grand_total, entry->budget);
+        actual_grand_total = numeric_add (actual_grand_total, entry->actual);
+    }
+
+    std::vector<Cell> grand_total;
+    grand_total.push_back ({"Total:", "text-cell"});
+    grand_total.push_back ({format_amount (budget_grand_total, currency),
+                            "total-number-cell"});
+    grand_total.push_back ({format_amount (actual_grand_total, currency),
+                            "total-number-cell"});
+    table.rows.push_back (std::move (grand_total));
+
     return table;
 }
 
@@ -3811,7 +4399,8 @@ native_report_names ()
     return {"Trial Balance", "Balance Sheet", "Income Statement",
             "Profit & Loss", "Transaction Report", "General Ledger",
             "Receivable Aging", "Payable Aging", "Investment Lots",
-            "Budget Report"};
+            "Budget Report", "Budget Income Statement",
+            "Budget Profit & Loss", "Budget Balance Sheet", "Budget Flow"};
 }
 
 /* --------------------------------------------------------------- options */
@@ -3913,6 +4502,17 @@ accounts_option ()
         "each GUID selects that account's subtree.  \"all\" selects every "
         "account in the book.  Without the option the report's own default "
         "selection applies, which for this report is empty.";
+    return option;
+}
+
+OptionDescriptor
+budget_accounts_option (const char* description)
+{
+    OptionDescriptor option;
+    option.name = "accounts";
+    option.type = OptionType::AccountList;
+    option.label = "Accounts";
+    option.description = description;
     return option;
 }
 
@@ -4064,6 +4664,52 @@ report_options (const std::string& name)
         options.push_back (accounts);
         return options;
     }
+    else if (name == "Budget Income Statement" ||
+             name == "Budget Profit & Loss")
+    {
+        /* The statement has no date option in the Scheme report: it is always
+         * the whole budget, and its period range is a pair of period numbers
+         * the route cannot express.  The account list and the report currency
+         * are real options; the depth, zero-balance, parent-subtotal and
+         * two-column switches stay at their Scheme defaults. */
+        options.push_back (budget_accounts_option (
+            "Accounts to report on, as a comma-separated list of account "
+            "GUIDs; each GUID selects that account's subtree.  \"all\" selects "
+            "every account in the book.  Without the option the Scheme "
+            "report's default applies: every INCOME and EXPENSE account, three "
+            "display levels deep.  Income amounts are sign-reversed, expenses "
+            "are not."));
+        options.push_back (currency_option ());
+        return options;
+    }
+    else if (name == "Budget Balance Sheet")
+    {
+        /* Single-column form at the Scheme defaults.  The account list and
+         * the report currency are honoured; the budget selection, display
+         * switches and multi-column form are not expressible. */
+        options.push_back (budget_accounts_option (
+            "Accounts to report on, as a comma-separated list of account "
+            "GUIDs; each GUID selects that account's subtree.  \"all\" selects "
+            "every account in the book.  Without the option the Scheme "
+            "report's default type filter applies, three display levels deep.  "
+            "Asset rows are positive; liability and equity rows are "
+            "credit-normal and sign-reversed."));
+        options.push_back (currency_option ());
+        return options;
+    }
+    else if (name == "Budget Flow")
+    {
+        /* The Scheme period option is a period *number*, so this report
+         * renders period 1 (its default) and exposes no date option. */
+        options.push_back (budget_accounts_option (
+            "Accounts to report on, as a comma-separated list of account "
+            "GUIDs; each GUID selects that account's subtree.  \"all\" selects "
+            "every account in the book, which is the Scheme report's default.  "
+            "Only leaf accounts are shown, in the Scheme's account-type "
+            "sections."));
+        options.push_back (currency_option ());
+        return options;
+    }
     else
     {
         return {};
@@ -4133,6 +4779,95 @@ render_report (const std::string& name, Account* root,
             title += std::string (": ") + budget_name;
         html = render_cell_table (
             budget_report (root, budget, request.accounts), title);
+        return true;
+    }
+
+    if (name == "Budget Income Statement" || name == "Budget Profit & Loss")
+    {
+        QofBook* book = gnc_account_get_book (root);
+        GncBudget* budget =
+            book != nullptr ? gnc_budget_get_default (book) : nullptr;
+        if (request.accounts.empty () &&
+            budget_selection (root, request.accounts,
+                              budget_income_statement_account_type).empty ())
+        {
+            html = render_no_accounts (name, false);
+            return true;
+        }
+        if (budget == nullptr)
+        {
+            html = render_no_budget (name);
+            return true;
+        }
+        const gchar* budget_name = gnc_budget_get_name (budget);
+        std::string title = name + " for Budget ";
+        title += budget_name != nullptr && budget_name[0] != '\0'
+                     ? budget_name
+                     : "Budget";
+        html = render_cell_table (
+            budget_income_statement (root, budget, request.accounts,
+                                     request.currency),
+            title);
+        return true;
+    }
+
+    if (name == "Budget Balance Sheet")
+    {
+        QofBook* book = gnc_account_get_book (root);
+        GncBudget* budget =
+            book != nullptr ? gnc_budget_get_default (book) : nullptr;
+        if (request.accounts.empty () &&
+            budget_selection (root, request.accounts,
+                              budget_balance_sheet_account_type).empty ())
+        {
+            html = render_no_accounts (name, false);
+            return true;
+        }
+        if (budget == nullptr)
+        {
+            html = render_no_budget (name);
+            return true;
+        }
+        const gchar* budget_name = gnc_budget_get_name (budget);
+        std::string title = "Budget Balance Sheet ";
+        title += budget_name != nullptr && budget_name[0] != '\0'
+                     ? budget_name
+                     : "Budget";
+        html = render_cell_table (
+            budget_balance_sheet (root, budget, request.accounts,
+                                  request.currency),
+            title);
+        return true;
+    }
+
+    if (name == "Budget Flow")
+    {
+        QofBook* book = gnc_account_get_book (root);
+        GncBudget* budget =
+            book != nullptr ? gnc_budget_get_default (book) : nullptr;
+        if (request.accounts.empty () &&
+            budget_selection (root, request.accounts,
+                              budget_any_account_type).empty ())
+        {
+            html = render_no_accounts (name, false);
+            return true;
+        }
+        if (budget == nullptr)
+        {
+            html = render_no_budget (name);
+            return true;
+        }
+        const gchar* budget_name = gnc_budget_get_name (budget);
+        std::string title = "Budget Flow: ";
+        title += budget_name != nullptr && budget_name[0] != '\0'
+                     ? budget_name
+                     : "Budget";
+        title += " - ";
+        title += printed_short_date (
+            gnc_budget_get_period_start_date (budget, 0));
+        html = render_cell_table (budget_flow (root, budget, request.accounts,
+                                               request.currency),
+                                  title);
         return true;
     }
 

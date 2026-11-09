@@ -497,6 +497,90 @@ LotReport investment_lots (Account* root, const LotOptions& options,
 CellTable budget_report (Account* root, GncBudget* budget,
                          const std::vector<Account*>& accounts);
 
+/** The Budget Income Statement and, through the same renderer, the Budget
+ *  Profit & Loss ("Budget Income Statement" / "Budget Profit & Loss",
+ *  budget-income-statement.scm).  Both Scheme names register the same
+ *  renderer, so there is one implementation here and the caller supplies the
+ *  title.
+ *
+ *  This is the *budgeted* statement, not budget-versus-actual: each row is the
+ *  sum of the account's own budget values over every budget period (the
+ *  Scheme report's default range).  The default scope is every INCOME and
+ *  EXPENSE account below `root`, displayed three levels deep, with the
+ *  Scheme's parent-balance default (the parent's own budget value, not its
+ *  children's) and no subtotal rows.  Income accounts are sign-reversed;
+ *  expenses are not.  The table is "Revenues" (with Total Revenue),
+ *  "Expenses" (with Total Expenses) and the Scheme net line, which is the
+ *  negated sum of *both* sections' raw budget values.  That is why a
+ *  positive-budget book can print a "Net loss": it is the Scheme report's
+ *  arithmetic, and the oracle is the report.
+ *
+ *  The Scheme report's period columns do not exist here: its default (and the
+ *  only range this option surface can express) is the whole budget, so each
+ *  account row has one amount.  Deliberately not reproduced, because the
+ *  native option surface has no descriptor for them: choosing a budget other
+ *  than the book's default, the numeric start/end period-range options, the
+ *  display-depth and flatten switches, the show-foreign/omit-zero/parent-
+ *  subtotal/rule/link/two-column/order switches, and the price-source choice.
+ *  The defaults of all of those are what is rendered, with one limit: every
+ *  amount is converted into the report currency rather than laid out in the
+ *  Scheme default's per-commodity columns, and accounts below the three-level
+ *  display limit are omitted from the rows (their amounts still count in the
+ *  section totals).  An empty `accounts` means the default INCOME/EXPENSE
+ *  scope; a non-empty list is the caller's selection (the route has expanded
+ *  each GUID to its subtree). */
+CellTable budget_income_statement (Account* root, GncBudget* budget,
+                                   const std::vector<Account*>& accounts,
+                                   gnc_commodity* currency = nullptr);
+
+/** The Budget Balance Sheet ("Budget Balance Sheet",
+ *  budget-balance-sheet.scm) with the Scheme defaults: the single-column
+ *  report form, every account in the Scheme's default type filter, three
+ *  display levels, and the whole budget.  Account rows show the account's
+ *  balance immediately before the budget starts plus its budget values over
+ *  every period; liabilities and equity are credit-normal, so their rows are
+ *  sign-reversed.  The assets section prints Existing/Allocated/Unallocated
+ *  Assets and Total Assets; liabilities print Existing/New/Total Liabilities;
+ *  equity prints the equity accounts, Existing/New Retained Earnings (or
+ *  Losses), Unrealized Gains (or Losses) when nonzero, Existing/New/Total
+ *  Equity, and Total Liabilities & Equity.
+ *
+ *  A parent account's row is its own balance, not the subtree total, which is
+ *  the Scheme parent-balance default.  The initial balance is as of the
+ *  budget's first period start and therefore excludes transactions on that
+ *  day, as gnc:account-get-comm-balance-at-date() does with the start date.
+ *
+ *  Deliberately not reproduced: choosing another budget, the account-level
+ *  and flatten options, the display toggles (zero accounts/balances, section
+ *  labels and totals, new/existing totals, rules, links), the multi-column
+ *  report form, and the price-source choice.  Their defaults are rendered,
+ *  except that amounts are converted into the report currency rather than
+ *  laid out in per-commodity columns, and an account below the three-level
+ *  display limit is omitted from the rows while still counting in the totals.
+ *  `accounts` is the default type-filtered set when empty, otherwise the
+ *  caller's already-expanded selection. */
+CellTable budget_balance_sheet (Account* root, GncBudget* budget,
+                                const std::vector<Account*>& accounts,
+                                gnc_commodity* currency = nullptr);
+
+/** The Budget Flow ("Budget Flow", budget-flow.scm) with the Scheme defaults:
+ *  the first budget period, every account below `root`, grouped by the
+ *  Scheme's account-type buckets (Assets, Liabilities, Equities, Income,
+ *  Expenses, Trading Accounts), and only leaf accounts displayed.  Each leaf
+ *  row prints its budget and actual amount for the period in the account's
+ *  own commodity, then a Total row per type; the type totals are printed in
+ *  the Scheme's reverse order and a grand total closes the table.
+ *
+ *  Budget Flow has no date option at all, and its Scheme "Period" option is a
+ *  period *number*.  The native option surface has no period-index type, so
+ *  this report always renders period 1 -- the Scheme option's default -- and
+ *  does not pretend to map a date onto it.  Also not reproduced: choosing a
+ *  budget other than the book's default and the price-source choice.  The
+ *  account selection and report currency are honoured. */
+CellTable budget_flow (Account* root, GncBudget* budget,
+                       const std::vector<Account*>& accounts,
+                       gnc_commodity* currency = nullptr);
+
 /** Render the Budget Report's "no budget" explanation, the Scheme engine's
  *  gnc:html-make-generic-budget-warning(). */
 std::string render_no_budget (const std::string& title);

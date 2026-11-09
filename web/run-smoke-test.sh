@@ -84,12 +84,14 @@ reports=$(cat "$REPORTS_FILE")
 echo "$reports" | grep -q '"Trial Balance"' || fail "report list has no Trial Balance"
 for native_report in "Balance Sheet" "Income Statement" "Profit & Loss" \
                      "Receivable Aging" "Payable Aging" "Investment Lots" \
-                     "Budget Report"; do
+                     "Budget Report" "Budget Income Statement" \
+                     "Budget Profit & Loss" "Budget Balance Sheet" \
+                     "Budget Flow"; do
     echo "$reports" | grep -q "\"$native_report\"" \
         || fail "report list has no $native_report"
 done
 # The built-in designer specs are reports in every build: without Guile they
-# are what the list offers beyond the native ten.
+# are what the list offers beyond the native fourteen.
 for builtin_report in "Income vs Expenses by Month" "Expenses by Account" \
                       "Income by Account" "Net Worth by Month"; do
     echo "$reports" | grep -q "\"$builtin_report\"" \
@@ -113,10 +115,14 @@ echo "report bytes: ${#report}"
 # the report's correct output is the Scheme engine's "No budgets exist"
 # warning; the budget-vs-actual numbers are covered by report-parity.sh on the
 # book web/test/make-budget-book.py generates.
-budget_report=$(curl -fsS "${URL}report/Budget%20Report") \
-    || { cat "$LOG" >&2; fail "GET Budget Report failed"; }
-echo "$budget_report" | grep -q "No budgets exist" \
-    || fail "the budget report does not explain that the book has no budget"
+for budget_name in "Budget%20Report" "Budget%20Income%20Statement" \
+                   "Budget%20Profit%20%26%20Loss" "Budget%20Balance%20Sheet" \
+                   "Budget%20Flow"; do
+    budget_report=$(curl -fsS "${URL}report/$budget_name") \
+        || { cat "$LOG" >&2; fail "GET $budget_name failed"; }
+    echo "$budget_report" | grep -q "No budgets exist" \
+        || fail "the budget report $budget_name does not explain that the book has no budget"
+done
 
 # The balance sheet and the P&L are native too: same engine, different
 # grouping.  Check the numbers that make them recognisable rather than just

@@ -10,7 +10,9 @@
 #
 # [report] defaults to "Trial Balance"; "Balance Sheet", "Income Statement",
 # "Profit & Loss", "Transaction Report", "General Ledger", "Receivable Aging",
-# "Payable Aging", "Investment Lots" and "Budget Report" are supported.
+# "Payable Aging", "Investment Lots", "Budget Report",
+# "Budget Income Statement", "Budget Profit & Loss", "Budget Balance Sheet"
+# and "Budget Flow" are supported.
 # Each report has its own extractor (see extractor_for below), because the
 # reports do not agree on what a row is: the Trial Balance is (account, debit,
 # credit), the balance sheet and P&L are (label, amount) with section headings
@@ -64,16 +66,27 @@
 # covers every stock and mutual fund account, which is the Scheme report's
 # default selection.
 #
-# The Budget Report needs a book with a budget; no fixture book has budget
-# values, so generate one and run the report with its own defaults (the whole
-# budget and the default account selection):
+# The budget reports need a book with a budget; no fixture book has budget
+# values, so generate one and run the reports with their own defaults (the
+# whole budget and the default account selection):
 #
 #   python3 web/test/make-budget-book.py /tmp/budget-book.gnucash
 #   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
 #       /tmp/budget-book.gnucash "Budget Report"
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/budget-book.gnucash "Budget Income Statement"
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/budget-book.gnucash "Budget Profit & Loss"
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/budget-book.gnucash "Budget Balance Sheet"
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/budget-book.gnucash "Budget Flow"
 #
-# Its period range is a range of budget periods, not calendar dates, so this
-# harness refuses start/end for it.
+# Their period ranges are ranges of budget periods, not calendar dates, so
+# this harness refuses start/end for them.  A scoped run passes an account
+# GUID, e.g. "Expenses", in the [accounts] position.  The Budget Chart is not
+# in the native layer: it draws one chart per account and has no table to
+# extract, which the single-chart Table model cannot represent.
 set -u
 
 GUILE_BUILD=${1:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end] [accounts]}
@@ -105,6 +118,8 @@ extractor_for() {
         "Receivable Aging"|"Payable Aging") echo aging ;;
         "Investment Lots") echo investment-lots ;;
         "Budget Report") echo budget-report ;;
+        "Budget Income Statement"|"Budget Profit & Loss"|\
+        "Budget Balance Sheet"|"Budget Flow") echo budget-statement ;;
         *) return 1 ;;
     esac
 }
@@ -121,6 +136,10 @@ report_guid() {
         "Payable Aging")    echo "e57770f2dbca46619d6dac4ac5469b50" ;;
         "Investment Lots")  echo "ab2acc24afd14630a551f98f1a35fa81" ;;
         "Budget Report")    echo "810ed4b25ef0486ea43bbd3dddb32b11" ;;
+        "Budget Income Statement") echo "583c313fcc484efc974c4c844404f454" ;;
+        "Budget Profit & Loss")    echo "e5fa5ce805e840ecbeca4dba3fa4ead9" ;;
+        "Budget Balance Sheet")    echo "ecc35ea9dbfa4e20ba389fc85d59cb69" ;;
+        "Budget Flow")             echo "e6e34fa3b6e748debde3cb3bc76d3e53" ;;
         *) return 1 ;;
     esac
 }
@@ -147,9 +166,10 @@ scheme_start_option() {
         "Receivable Aging"|"Payable Aging") echo "" ;;
         # The lots report calls its dates "Start date"/"End date".
         "Investment Lots") echo "Start date" ;;
-        # The budget report's period range is a range of budget periods, not
-        # calendar dates; it has no date option at all.
-        "Budget Report") echo "" ;;
+        # The budget reports' periods are budget periods, not calendar dates;
+        # Budget Report has no date option at all.
+        "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
+        "Budget Balance Sheet"|"Budget Flow") echo "" ;;
         *) echo "Start Date" ;;
     esac
 }
@@ -160,35 +180,43 @@ scheme_end_option() {
         "Balance Sheet") echo "Balance Sheet Date" ;;
         "Receivable Aging"|"Payable Aging") echo "To" ;;
         "Investment Lots") echo "End date" ;;
-        "Budget Report") echo "" ;;
+        "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
+        "Budget Balance Sheet"|"Budget Flow") echo "" ;;
         *) echo "End Date" ;;
     esac
 }
 
 # The native route's own option surface.  The transaction engine reports and
-# the budget report have an account selection.
+# the budget reports have an account selection.
 native_takes_accounts() {
     case "$1" in
-        "Transaction Report"|"General Ledger"|"Budget Report") return 0 ;;
+        "Transaction Report"|"General Ledger"|"Budget Report"|\
+        "Budget Income Statement"|"Budget Profit & Loss"|\
+        "Budget Balance Sheet"|"Budget Flow") return 0 ;;
         *) return 1 ;;
     esac
 }
 
 # The Scheme option name under the "Accounts" page.  The transaction reports
-# call it "Accounts"; the budget report's option is "Account".
+# and the budget balance sheet / budget statements call it "Accounts"; the
+# Budget Report and Budget Flow call it "Account".
 scheme_account_option() {
     case "$1" in
-        "Budget Report") echo "Account" ;;
+        "Budget Report"|"Budget Flow") echo "Account" ;;
         *) echo "Accounts" ;;
     esac
 }
 
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Budget Report)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow)"
 
-if [ "$REPORT" = "Budget Report" ] && { [ -n "$START" ] || [ -n "$END" ]; }; then
-    fail "the Budget Report's range is a range of budget periods, not dates"
-fi
+case "$REPORT" in
+    "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
+    "Budget Balance Sheet"|"Budget Flow")
+        if [ -n "$START" ] || [ -n "$END" ]; then
+            fail "the $REPORT period range is a range of budget periods, not dates"
+        fi ;;
+esac
 
 [ -x "$CLI" ] || fail "no gnucash-cli at $CLI (need a WITH_GNUCASH Guile build, or set GNC_CLI)"
 [ -x "$WEBDBIN" ] || fail "gnc-webd was not built at $WEBDBIN"
@@ -674,6 +702,28 @@ def lot_value(text, cell_class):
     return stripped
 
 
+def budget_statement(rows):
+    """A budget statement/flow row: (label, all amounts in the row).
+
+    The balance-sheet extractor cannot be reused because it matches the cell
+    class exactly and the Scheme renderer appends "neg" to negative amounts
+    ("number-cell neg"), which would silently drop exactly the sign-reversed
+    income and liability rows this comparison is about.  Section headings
+    legitimately have no amount, so they stay in the comparison as an empty
+    tuple; rule rows have no label cell and are skipped.
+    """
+    out = []
+    for cells in rows:
+        if not cells or cells[0][1] not in LABEL:
+            continue
+        label = " ".join(cells[0][0].replace("\u00a0", " ").split())
+        if not label:
+            continue
+        values = [amount(t) for t, c in cells[1:] if is_number(c) and t.strip()]
+        out.append((label, tuple(values)))
+    return out
+
+
 def budget_report(rows):
     """The budget-vs-actual table: (account, budget, actual, ...) per period.
 
@@ -705,7 +755,8 @@ EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "transaction-report": transaction_report,
               "general-ledger": general_ledger, "aging": aging,
               "investment-lots": investment_lots,
-              "budget-report": budget_report}
+              "budget-report": budget_report,
+              "budget-statement": budget_statement}
 
 extractor = EXTRACTORS[sys.argv[3]]
 report = sys.argv[4]

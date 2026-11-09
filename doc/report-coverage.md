@@ -6,19 +6,31 @@ Measured at: `a639555722`
 Scope: registry enumeration and classification only. No code, tests or report
 behaviour were changed.
 
-> **Status update (after `114073782b`).**  `Budget Report`
-> (`reports/standard/budget.scm`) is now native: a budget-vs-actual table over
-> the book's default budget, with the Scheme defaults (every ASSET, LIABILITY,
-> INCOME and EXPENSE account, two display levels, all budget periods) and the
-> account-selection option.  That makes the native layer **10 of the 66 names**
-> (9 implementations), or 11/66 by the "by name" count that also credits
-> `Account Summary` to the spec layer.  It covers one of the six budget-class
-> names; the budget-class numbers below (other = 30, budgets = 6) are the
-> measurement at `a639555722` and are intentionally left as measured.  The
-> remaining five budget reports still need their own renderers (the budget
-> model itself is reachable through `gnc_budget_*`).  Parity with the Scheme
-> report is `web/test/report-parity.sh` on the book
-> `web/test/make-budget-book.py` generates.
+> **Status update (the budget layouts).**  Five of the six budget-class names
+> are now native: `Budget Report` (`reports/standard/budget.scm`),
+> `Budget Income Statement` and `Budget Profit & Loss` (one renderer,
+> `budget-income-statement.scm`), `Budget Balance Sheet`
+> (`budget-balance-sheet.scm`) and `Budget Flow` (`budget-flow.scm`).  They
+> render the Scheme reports' defaults over the book's default budget: the
+> budget-vs-actual period table, the budgeted revenue/expense statement, the
+> single-column existing/allocated/unallocated balance sheet and the
+> per-account-type flow.  The account selection is an option on all five; the
+> statement, balance sheet and flow also honour the report currency.  Their
+> date and period-range options are budget-period selectors, not calendar
+> dates, so they stay at the Scheme defaults and are documented as gaps in
+> `libgnucash/reports/gnc-report.hpp`.
+>
+> That makes the native layer **14 of the 66 names** (12 implementations;
+> Income Statement / Profit & Loss and Budget Income Statement / Budget
+> Profit & Loss each share a renderer), or 15/66 by the "by name" count that
+> also credits `Account Summary` to the spec layer.  `Budget Chart` remains
+> Scheme only: it emits one chart per account with a period-index range, which
+> the single-chart native `Table` model and the date-based route cannot
+> express without changing the report.  The budget-class numbers below
+> (other = 30, budgets = 6) are the measurement at `a639555722` and are
+> intentionally left as measured.  Parity for all five native budget names,
+> default and scoped, is `web/test/report-parity.sh` on the book
+> `web/test/make-budget-book.py` generates, in both builds.
 
 ## Summary
 

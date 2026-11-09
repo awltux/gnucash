@@ -251,7 +251,7 @@ reports_unavailable (GSocketConnection* connection)
 #endif
 
 /* The built-in designer specs are reports in every build: without Guile they
- * are what the report list offers beyond the native ten, and with Guile
+ * are what the report list offers beyond the native fourteen, and with Guile
  * they sit beside the Scheme templates.  The plain /api/reports list stays
  * an array of names. */
 std::string

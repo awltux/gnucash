@@ -180,6 +180,34 @@ expect_status 400 "currency on the budget report" \
 expect_body "currency on the budget report" \
     "does not accept a 'currency' option"
 
+# The statement, balance-sheet and flow layouts read the same budget object.
+# They honour the account selection and the report currency (the statements
+# convert into a report currency), but their Scheme date/period options are
+# budget-period selectors, not dates, so the route must reject them.
+for entry in \
+    "Budget%20Income%20Statement|Budget Income Statement" \
+    "Budget%20Profit%20%26%20Loss|Budget Profit & Loss" \
+    "Budget%20Balance%20Sheet|Budget Balance Sheet" \
+    "Budget%20Flow|Budget Flow"
+do
+    enc=${entry%%|*}
+    name=${entry#*|}
+    expect_status 200 "$name options" "/api/report/$enc/options"
+    expect_body "$name options" "\"report\":\"$name\""
+    expect_body "$name options" '"name":"accounts"'
+    expect_body "$name options" '"type":"account-list"'
+    expect_body "$name options" '"name":"currency"'
+    expect_not_body "$name options has no date" '"name":"start"'
+    expect_not_body "$name options has no end date" '"name":"end"'
+    expect_not_body "$name options has no period preset" '"name":"period"'
+    expect_status 400 "start on the $name" "/report/$enc?start=2026-01-01"
+    expect_body "start on the $name" "does not accept a 'start' option"
+    expect_status 400 "end on the $name" "/report/$enc?end=2026-12-31"
+    expect_body "end on the $name" "does not accept a 'end' option"
+    expect_status 400 "period on the $name" "/report/$enc?period=all"
+    expect_body "period on the $name" "does not accept a 'period' option"
+done
+
 expect_status 404 "options for an unknown report" "/api/report/No%20Such%20Report/options"
 
 echo "== the report list"
@@ -349,16 +377,19 @@ PY
     cp "$BODY" "$OPTDIR/baseline.html"
 
     # A report whose data is simply absent from this book cannot demonstrate
-    # that its options are effective.  The budget report is the one such
-    # case: sample1 has no budget at all, so both the default and
-    # accounts=all render the Scheme engine's "No budgets exist" warning.
-    # The budget data path, including the account selection, is covered by
-    # report-parity.sh on the book make-budget-book.py generates.
-    if [ "$report" = "Budget Report" ] && \
-        grep -qF "No budgets exist" "$OPTDIR/no-options.html"; then
-        ok "$report has no budget in this book; the generated-book parity test covers it"
-        continue
-    fi
+    # that its options are effective.  The budget reports are that case:
+    # sample1 has no budget at all, so both the default and accounts=all
+    # render the Scheme engine's "No budgets exist" warning.  The budget data
+    # path, including the account selection, is covered by report-parity.sh on
+    # the book make-budget-book.py generates.
+    case "$report" in
+        "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
+        "Budget Balance Sheet"|"Budget Flow")
+            if grep -qF "No budgets exist" "$OPTDIR/no-options.html"; then
+                ok "$report has no budget in this book; the generated-book parity test covers it"
+                continue
+            fi ;;
+    esac
 
     while IFS= read -r opt; do
         [ "$opt" = "currency" ] && continue

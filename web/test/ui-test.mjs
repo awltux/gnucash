@@ -92,7 +92,7 @@ const firstRow = (await page.locator('#tree li').first().innerText()).replace(/\
 check('balances are formatted', /\$[\d,]+\.\d\d/.test(firstRow), firstRow);
 
 // A Guile build lists the Scheme report templates in addition to the native
-// ones; the no-Guile build lists the native ten plus the built-in specs.
+// ones; the no-Guile build lists the native fourteen plus the built-in specs.
 // The built-ins are named in /api/reports too, so exclude them before asking
 // whether any Scheme-only report is present, and assert the strong count only
 // where the full Scheme list exists.
