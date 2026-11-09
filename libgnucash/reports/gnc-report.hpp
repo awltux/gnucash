@@ -305,6 +305,77 @@ CellTable general_ledger (Account* root,
 std::string render_no_accounts (const std::string& title,
                                 bool with_title_heading);
 
+/* ---------------------------------------------------------- aging reports */
+
+/** The headings of the aging reports' six amount columns, in display order.
+ *  They are the Scheme report's own bucket names, and the sixth one ("91+
+ *  days") is open-ended. */
+std::vector<std::string> aging_bucket_headings ();
+
+/** Which invoice date decides an invoice's bucket: the due date (the Scheme
+ *  report's default) or the post date.  The Scheme option is called "Due or
+ *  Post Date"; the native route exposes the report's date but not this
+ *  choice yet, so it stays at the default. */
+enum class AgingDate
+{
+    Due,
+    Posted,
+};
+
+struct AgingOptions
+{
+    /** The report date ("To") as a time64, resolved to the end of its day.
+     *  It anchors the buckets: the four 30-day buckets run back from it, the
+     *  "Current" bucket is everything not due yet, and "Pre-Payment" holds
+     *  payments that are not applied to any invoice. */
+    time64 as_of = 0;
+    AgingDate date_driver = AgingDate::Due;
+    /** Show owners whose six buckets are all zero, as the Scheme report's
+     *  "Show zero balance items" option does. */
+    bool show_zeros = false;
+    /** Include inactive owners, as the Scheme report's "Show all owners
+     *  including inactive" option does.  The default hides them. */
+    bool show_inactive = false;
+};
+
+/** A rendered aging report: the owner rows and one Total row per A/Receivable
+ *  (or A/Payable) account, in the Scheme report's column layout.
+ *
+ *  The Scheme report prints an explanation instead of a table when there is
+ *  nothing to age, so `warning` carries that text and `table` stays empty.
+ *  `title` is the document heading, "Receivable Aging - mm/dd/yy".
+ *
+ *  Not reproduced: the Scheme report's optional owner address columns (which
+ *  are off by default), its sort-by/sort-order choices (the default is by
+ *  owner name), and its list of transactions it could not process (splits in
+ *  an A/Payable or A/Receivable account whose transaction is neither an
+ *  invoice nor a payment); those splits are skipped here as they are there,
+ *  so the amounts agree. */
+struct AgingReport
+{
+    CellTable table;
+    std::string warning;
+    std::string title;
+};
+
+/** The Receivable Aging ("Receivable Aging", new-aging.scm) over every
+ *  A/Receivable account below `root`: one row per customer, the six buckets
+ *  and the row total, and a Total row per account. */
+AgingReport receivable_aging (Account* root, const AgingOptions& options);
+
+/** The Payable Aging, the same report over the A/Payable accounts.  Its
+ *  amounts are the negation of the payable balances, so a bill owed is a
+ *  positive number, exactly as the Scheme report shows it. */
+AgingReport payable_aging (Account* root, const AgingOptions& options);
+
+/** The end of today, which is the Scheme aging reports' default report date
+ *  (their "To" option defaults to the relative date 'today'). */
+time64 default_aging_date ();
+
+/** Render an aging report as a standalone HTML document, including its
+ *  explanation-instead-of-a-table case. */
+std::string render_aging (const AgingReport& report);
+
 /* Report registry: names, and rendering by name.  Unknown names are left to
  * the Scheme engine (when the build has one). */
 std::vector<std::string> native_report_names ();

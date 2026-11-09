@@ -9,11 +9,13 @@
 # gnc-webd.  Both run against the same book.
 #
 # [report] defaults to "Trial Balance"; "Balance Sheet", "Income Statement",
-# "Profit & Loss", "Transaction Report" and "General Ledger" are supported.
+# "Profit & Loss", "Transaction Report", "General Ledger", "Receivable Aging"
+# and "Payable Aging" are supported.
 # Each report has its own extractor (see extractor_for below), because the
 # reports do not agree on what a row is: the Trial Balance is (account, debit,
 # credit), the balance sheet and P&L are (label, amount) with section headings
-# and totals.
+# and totals, and the aging reports are (owner, six buckets, total) with a
+# Total row per account.
 #
 # [start] and [end] are optional YYYY-MM-DD dates.  [accounts] is optional:
 # "all", or a comma-separated list of account GUIDs.  Each GUID means that
@@ -38,6 +40,17 @@
 # and the table markup itself do not count as a diff.
 #
 # Exit status: 0 when every row and total matches, 1 otherwise.
+#
+# The aging reports need a book with invoices and payments in it; the fixture
+# book has a single vendor bill, so generate one with the companion script and
+# pass it as [book]:
+#
+#   python3 web/test/make-aging-book.py /tmp/aging-book.gnucash
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/aging-book.gnucash "Receivable Aging" "" 2026-06-30
+#
+# (add --two-receivable to the generator to put one customer's invoices in a
+# second A/Receivable account, which exercises the per-account headings).
 set -u
 
 GUILE_BUILD=${1:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end] [accounts]}
@@ -66,6 +79,7 @@ extractor_for() {
         "Income Statement"|"Profit & Loss") echo balance-sheet ;;
         "Transaction Report") echo transaction-report ;;
         "General Ledger")   echo general-ledger ;;
+        "Receivable Aging"|"Payable Aging") echo aging ;;
         *) return 1 ;;
     esac
 }
@@ -78,6 +92,8 @@ report_guid() {
         "Profit & Loss")    echo "8758ba23984c40dea5527f5f0ca2779e" ;;
         "Transaction Report") echo "2fe3b9833af044abb929a88d5a59620f" ;;
         "General Ledger")   echo "2e22929e5c5b4b769f615a815ef0c20f" ;;
+        "Receivable Aging") echo "9cf76bed17f14401b8e3e22d0079cb98" ;;
+        "Payable Aging")    echo "e57770f2dbca46619d6dac4ac5469b50" ;;
         *) return 1 ;;
     esac
 }
@@ -100,6 +116,8 @@ scheme_start_option() {
         "Trial Balance") echo "Start of Adjusting/Closing" ;;
         # The balance sheet has a single date option and no start.
         "Balance Sheet") echo "" ;;
+        # The aging reports have a single "To" date as well.
+        "Receivable Aging"|"Payable Aging") echo "" ;;
         *) echo "Start Date" ;;
     esac
 }
@@ -108,6 +126,7 @@ scheme_end_option() {
     case "$1" in
         "Trial Balance") echo "Date of Report" ;;
         "Balance Sheet") echo "Balance Sheet Date" ;;
+        "Receivable Aging"|"Payable Aging") echo "To" ;;
         *) echo "End Date" ;;
     esac
 }
@@ -119,7 +138,7 @@ native_takes_accounts() {
 }
 
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging)"
 
 [ -x "$CLI" ] || fail "no gnucash-cli at $CLI (need a WITH_GNUCASH Guile build, or set GNC_CLI)"
 [ -x "$WEBDBIN" ] || fail "gnc-webd was not built at $WEBDBIN"
@@ -410,6 +429,21 @@ NUMERIC = ("number-cell", "total-number-cell")
 LABEL = ("anchor-cell", "text-cell", "total-label-cell", "centered-label-cell")
 
 
+def is_number(cell_class):
+    """Whether a cell class list marks an amount.
+
+    The renderer appends "neg" to a negative amount's class ("number-cell
+    neg"), so the class has to be read as a list of tokens rather than
+    compared with a single string.
+    """
+    tokens = cell_class.split()
+    return "number-cell" in tokens or "total-number-cell" in tokens
+
+
+def is_total(cell_class):
+    return "total-number-cell" in cell_class.split()
+
+
 def trial_balance(rows):
     """(account, debit, credit), plus the totals row."""
     out = []
@@ -507,9 +541,37 @@ def general_ledger(rows):
     return out
 
 
+def aging(rows):
+    """The aging reports: one row per owner, one Total row per account.
+
+    The owner label cell carries no class in either renderer (it is a plain
+    cell holding an anchor in the Scheme document), so the label is the first
+    non-numeric cell that has text.  The six buckets and the row total are
+    number cells; the account's Total row prints seven total-number-cells.
+    With more than one account of the type, the Scheme report puts the
+    account name on a row of its own, which is compared as a heading so the
+    account grouping is part of the parity claim too.
+    """
+    out = []
+    for cells in rows:
+        if not cells:
+            continue
+        numbers = tuple(amount(t) for t, c in cells if is_number(c))
+        labels = [t for t, c in cells if not is_number(c) and t.strip()]
+        if len(cells) == 1:
+            out.append(("HEADING", cells[0][0]))
+        elif not numbers:
+            continue
+        elif any(is_total(c) for _, c in cells):
+            out.append(("TOTAL", labels[0] if labels else "", numbers))
+        else:
+            out.append(("ROW", labels[0] if labels else "", numbers))
+    return out
+
+
 EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "transaction-report": transaction_report,
-              "general-ledger": general_ledger}
+              "general-ledger": general_ledger, "aging": aging}
 
 extractor = EXTRACTORS[sys.argv[3]]
 report = sys.argv[4]

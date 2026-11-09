@@ -80,7 +80,8 @@ reports_code=$(curl -sS -o "$REPORTS_FILE" -w '%{http_code}' "${URL}api/reports"
 [ "$reports_code" = "200" ] || fail "GET api/reports answered $reports_code"
 reports=$(cat "$REPORTS_FILE")
 echo "$reports" | grep -q '"Trial Balance"' || fail "report list has no Trial Balance"
-for native_report in "Balance Sheet" "Income Statement" "Profit & Loss"; do
+for native_report in "Balance Sheet" "Income Statement" "Profit & Loss" \
+                     "Receivable Aging" "Payable Aging"; do
     echo "$reports" | grep -q "\"$native_report\"" \
         || fail "report list has no $native_report"
 done
@@ -129,6 +130,22 @@ echo "$income_statement" | grep -q "Total Revenue" || fail "income statement has
 echo "$income_statement" | grep -q "Total Expenses" || fail "income statement has no expense total"
 echo "$income_statement" | grep -q "Net income for Period\|Net loss for Period" \
     || fail "income statement has no net line"
+
+# The aging reports read the business data: the fixture book has one posted
+# vendor bill, so the Payable Aging prints its vendor and the Receivable Aging
+# has nothing to age and prints the engine's explanation instead of a table.
+payable_aging=$(curl -fsS "${URL}report/Payable%20Aging") \
+    || { cat "$LOG" >&2; fail "GET Payable Aging failed"; }
+echo "$payable_aging" | grep -q "Pre-Payment" \
+    || fail "payable aging has no bucket headings"
+echo "$payable_aging" | grep -q "Yoyodyne, Inc." \
+    || fail "payable aging lost the book's vendor"
+echo "$payable_aging" | grep -q "number-cell" \
+    || fail "payable aging has no amount cells"
+receivable_aging=$(curl -fsS "${URL}report/Receivable%20Aging") \
+    || { cat "$LOG" >&2; fail "GET Receivable Aging failed"; }
+echo "$receivable_aging" | grep -q "no suitable transactions" \
+    || fail "receivable aging does not explain the empty fixture book"
 
 if [ "$HAS_GUILE" = 1 ]; then
     # The Scheme engine is still the fallback for reports not ported yet.

@@ -119,6 +119,20 @@ expect_body "Transaction Report options" '"default":[]'
 expect_status 200 "General Ledger options" "/api/report/General%20Ledger/options"
 expect_body "General Ledger options" '"name":"accounts"'
 
+# The aging reports take one date and no account selection: they always age
+# every A/Receivable (or A/Payable) account in the book.
+for aging in "Receivable%20Aging" "Payable%20Aging"; do
+    expect_status 200 "$aging options" "/api/report/$aging/options"
+    expect_body "$aging options" '"label":"To"'
+    expect_body "$aging options" '"type":"date"'
+    expect_not_body "$aging options has no account selection" '"name":"accounts"'
+    expect_not_body "$aging options has no currency" '"name":"currency"'
+done
+
+expect_status 400 "accounts on an aging report" \
+    "/report/Receivable%20Aging?accounts=all"
+expect_body "accounts on an aging report" "does not accept an 'accounts' option"
+
 expect_status 404 "options for an unknown report" "/api/report/No%20Such%20Report/options"
 
 echo "== the report list"

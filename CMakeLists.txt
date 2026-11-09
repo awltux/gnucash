@@ -978,6 +978,7 @@ set(web_DIST
   web/server/report-spec.cpp
   web/server/report-spec.hpp
   web/ui/index.html
+  web/test/make-aging-book.py
   web/test/report-parity.sh
   web/test/report-options.sh
   web/test/ui-test.mjs)

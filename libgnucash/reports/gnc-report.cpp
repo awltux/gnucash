@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -32,8 +33,12 @@ extern "C"
 #include <gnc-accounting-period.h>
 #include <gnc-commodity.h>
 #include <gnc-date.h>
+#include <gnc-lot.h>
 #include <gnc-numeric.h>
+#include <gnc-unicode.h>
 #include <gnc-ui-util.h>
+#include <gncInvoice.h>
+#include <gncOwner.h>
 #include <guid.h>
 }
 
@@ -1514,6 +1519,538 @@ income_statement (Account* root, std::optional<time64> start,
     return table;
 }
 
+/* ---------------------------------------------------------- aging reports */
+
+namespace
+{
+
+/* The Scheme report's num-buckets.  Five buckets are filled by invoices and
+ * the sixth is the "Pre-Payment" bucket, which only unapplied payments
+ * reach. */
+constexpr int aging_bucket_count = 6;
+/* The bucket the overpayment of a payment transaction goes into. */
+constexpr int aging_prepayment_bucket = aging_bucket_count - 1;
+
+/* gnc:make-extended-interval-list() steps 30 days back from the report date
+ * three times and then walks forward again with gnc:make-date-list(), so the
+ * boundaries are the end of the day 90, 60 and 30 days before the report
+ * date, and the end of the report day itself.  An invoice falls in bucket k
+ * when its driving date is earlier than boundary k, which is why a due date
+ * of exactly "report date - 90 days" counts as 91+ (its midnight is earlier
+ * than that boundary's end of day).  The last bucket, "Current", is
+ * everything not earlier than the report day; the Scheme list ends with
+ * +inf.0 to close it. */
+std::vector<time64>
+aging_boundaries (time64 as_of)
+{
+    std::vector<time64> boundaries;
+    GDate date = time64_to_gdate (as_of);
+    g_date_subtract_days (&date, 90);
+    for (int index = 0; index < 4; ++index)
+    {
+        boundaries.push_back (gnc_time64_get_day_end_gdate (&date));
+        g_date_add_days (&date, 30);
+    }
+    return boundaries;
+}
+
+int
+aging_bucket_for (const std::vector<time64>& boundaries, time64 when)
+{
+    for (size_t index = 0; index < boundaries.size (); ++index)
+    {
+        if (when < boundaries[index])
+            return static_cast<int> (index);
+    }
+    /* Not earlier than the report day: the "Current" bucket. */
+    return static_cast<int> (boundaries.size ());
+}
+
+/* gnc:payment-txn->payment-info()'s sign-equal?: both zero, or the same
+ * sign. */
+bool
+sign_equal (gnc_numeric left, gnc_numeric right)
+{
+    if (gnc_numeric_zero_p (left) || gnc_numeric_zero_p (right))
+        return gnc_numeric_zero_p (left) && gnc_numeric_zero_p (right);
+    return gnc_numeric_positive_p (left) == gnc_numeric_positive_p (right);
+}
+
+/* The owner of a split, resolved the way gnc:make-split->owner does: the
+ * lot's own owner when the lot carries one (that is how payment and
+ * pre-payment lots are marked), otherwise the owner of the invoice posted in
+ * that lot.  An undefined owner means the split cannot be attributed. */
+GncOwner
+split_owner (Split* split)
+{
+    GncOwner owner;
+    owner.type = GNC_OWNER_NONE;
+    owner.owner.undefined = nullptr;
+    owner.qof_temp = nullptr;
+
+    GNCLot* lot = xaccSplitGetLot (split);
+    if (lot == nullptr)
+        return owner;
+    if (!gncOwnerGetOwnerFromLot (lot, &owner))
+    {
+        GncInvoice* invoice = gncInvoiceGetInvoiceFromLot (lot);
+        if (invoice != nullptr)
+            gncOwnerCopy (gncOwnerGetEndOwner (gncInvoiceGetOwner (invoice)),
+                          &owner);
+    }
+    return owner;
+}
+
+/* The part of a payment that is not applied to an invoice, as
+ * gnc:payment-txn->payment-info() computes it.  A split in the A/Payable or
+ * A/Receivable account that sits in an invoice lot pays that invoice: the
+ * invoice's own balance already accounts for it, so the two cancel out of
+ * this sum.  Splits outside those accounts, and the part of a pre-payment lot
+ * that this split does not consume, are what is left over. */
+gnc_numeric
+payment_overpayment (Transaction* txn)
+{
+    Split* apar_split = xaccTransGetFirstAPARAcctSplit (txn, TRUE);
+    Account* apar_account =
+        apar_split != nullptr ? xaccSplitGetAccount (apar_split) : nullptr;
+    if (apar_account == nullptr)
+        return gnc_numeric_zero ();
+
+    gnc_numeric overpayment = gnc_numeric_zero ();
+    for (GList* node = xaccTransGetSplitList (txn); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*> (node->data);
+        Account* account = xaccSplitGetAccount (split);
+        if (account == nullptr)
+            continue;
+
+        const gnc_numeric amount = xaccSplitConvertAmount (split, apar_account);
+        GNCLot* lot = xaccSplitGetLot (split);
+        if (!xaccAccountIsAPARType (xaccAccountGetType (account)) ||
+            lot == nullptr || gncInvoiceGetInvoiceFromLot (lot) != nullptr)
+        {
+            overpayment = numeric_add (overpayment, amount);
+            continue;
+        }
+
+        /* An unapplied payment lot: what is left of the lot once this split
+         * is set aside is the part of the payment still free. */
+        gnc_numeric balance = gnc_lot_get_balance (lot);
+        if (sign_equal (balance, amount))
+            balance = gnc_numeric_zero ();
+        gnc_numeric partial = gnc_numeric_neg (balance);
+        for (GList* lot_node = gnc_lot_get_split_list (lot);
+             lot_node != nullptr; lot_node = lot_node->next)
+        {
+            auto* lot_split = static_cast<Split*> (lot_node->data);
+            if (lot_split != split)
+                partial = numeric_add (
+                    partial, xaccSplitConvertAmount (lot_split, apar_account));
+        }
+        overpayment = numeric_add (overpayment, partial);
+    }
+    return overpayment;
+}
+
+/* One owner's aging vector, in the Scheme report's bucket order:
+ * 0 = 91+, 1 = 61-90, 2 = 31-60, 3 = 0-30, 4 = Current, 5 = Pre-Payment. */
+std::vector<gnc_numeric>
+owner_aging (const std::vector<Split*>& splits, const AgingOptions& options,
+             const std::vector<time64>& boundaries, bool receivable)
+{
+    std::vector<gnc_numeric> buckets (aging_bucket_count, gnc_numeric_zero ());
+    std::vector<Split*> remaining = splits;
+    size_t index = 0;
+    while (index < remaining.size ())
+    {
+        Split* split = remaining[index];
+        Transaction* txn = xaccSplitGetParent (split);
+        const char type = xaccTransGetTxnType (txn);
+
+        if (type == TXN_TYPE_INVOICE)
+        {
+            GncInvoice* invoice = gncInvoiceGetInvoiceFromTxn (txn);
+            if (invoice != nullptr)
+            {
+                GNCLot* lot = gncInvoiceGetPostedLot (invoice);
+                Account* posted = gncInvoiceGetPostedAcc (invoice);
+                gnc_numeric balance = gnc_numeric_zero ();
+                if (lot != nullptr && posted != nullptr)
+                {
+                    /* The invoice's remaining balance: every split of its
+                     * lot posted on or before the report date, which leaves
+                     * out payments made later. */
+                    for (GList* node = gnc_lot_get_split_list (lot);
+                         node != nullptr; node = node->next)
+                    {
+                        auto* lot_split = static_cast<Split*> (node->data);
+                        if (xaccTransGetDate (xaccSplitGetParent (lot_split)) <=
+                            options.as_of)
+                            balance = numeric_add (
+                                balance,
+                                xaccSplitConvertAmount (lot_split, posted));
+                    }
+                }
+                if (!receivable)
+                    balance = gnc_numeric_neg (balance);
+                const time64 when =
+                    options.date_driver == AgingDate::Posted
+                        ? gncInvoiceGetDatePosted (invoice)
+                        : gncInvoiceGetDateDue (invoice);
+                const int bucket = aging_bucket_for (boundaries, when);
+                buckets[bucket] = numeric_add (buckets[bucket], balance);
+            }
+            ++index;
+        }
+        else if (type == TXN_TYPE_PAYMENT)
+        {
+            gnc_numeric overpayment = payment_overpayment (txn);
+            if (receivable)
+                overpayment = gnc_numeric_neg (overpayment);
+            buckets[aging_prepayment_bucket] = numeric_add (
+                buckets[aging_prepayment_bucket], overpayment);
+            /* The payment has been accounted for in full, so its transaction
+             * leaves the list, exactly as the Scheme walk drops it. */
+            std::vector<Split*> rest;
+            rest.reserve (remaining.size ());
+            for (size_t other = index + 1; other < remaining.size (); ++other)
+                if (xaccSplitGetParent (remaining[other]) != txn)
+                    rest.push_back (remaining[other]);
+            remaining = std::move (rest);
+            index = 0;
+        }
+        else
+        {
+            /* The Scheme report reports these as an invalid transaction type
+             * below the table; they never contribute an amount. */
+            ++index;
+        }
+    }
+    return buckets;
+}
+
+bool
+aging_account_type (Account* account, bool receivable)
+{
+    return xaccAccountGetType (account) ==
+           (receivable ? ACCT_TYPE_RECEIVABLE : ACCT_TYPE_PAYABLE);
+}
+
+/* The Scheme report's default sort key is the owner name, compared with
+ * gnc:string-locale<?, i.e. the engine's Unicode collation. */
+int
+owner_name_compare (const char* left, const char* right)
+{
+    return gnc_unicode_compare_accented_case_sensitive (
+        left != nullptr ? left : "", right != nullptr ? right : "");
+}
+
+struct AgingOwnerRow
+{
+    GncOwner owner;
+    std::vector<gnc_numeric> buckets;
+    gnc_numeric total;
+};
+
+struct AgingAccountRows
+{
+    Account* account;
+    std::vector<AgingOwnerRow> owners;
+    /* The six bucket totals and the account total. */
+    std::vector<gnc_numeric> totals;
+};
+
+/* The splits of one account the Scheme report's query selects: not voided,
+ * posted on or before the report date, one per transaction (the query asks
+ * for unique transactions), oldest posted date first. */
+std::vector<Split*>
+collect_aging_splits (Account* account, const AgingOptions& options)
+{
+    std::vector<Split*> splits;
+    std::set<Transaction*> seen;
+    for (GList* node = xaccAccountGetSplitList (account); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*> (node->data);
+        Transaction* txn = xaccSplitGetParent (split);
+        if (xaccSplitGetReconcile (split) == VREC)
+            continue;
+        if (xaccTransGetDate (txn) > options.as_of)
+            continue;
+        if (!seen.insert (txn).second)
+            continue;
+        splits.push_back (split);
+    }
+    std::stable_sort (splits.begin (), splits.end (),
+                      [] (Split* left, Split* right)
+                      {
+                          return xaccTransGetDate (xaccSplitGetParent (left)) <
+                                 xaccTransGetDate (xaccSplitGetParent (right));
+                      });
+    return splits;
+}
+
+std::vector<AgingAccountRows>
+collect_aging (Account* root, const AgingOptions& options, bool receivable,
+               bool& have_accounts)
+{
+    std::vector<AgingAccountRows> accounts;
+    have_accounts = false;
+    if (root == nullptr)
+        return accounts;
+
+    const std::vector<time64> boundaries = aging_boundaries (options.as_of);
+
+    std::vector<Account*> candidates;
+    collect_accounts (root, candidates);
+
+    for (Account* account : candidates)
+    {
+        if (!aging_account_type (account, receivable))
+            continue;
+        have_accounts = true;
+
+        std::vector<Split*> splits = collect_aging_splits (account, options);
+        if (splits.empty ())
+            continue;
+
+        std::map<Split*, GncOwner> owners_by_split;
+        auto owner_of = [&owners_by_split] (Split* split) -> const GncOwner&
+        {
+            auto found = owners_by_split.find (split);
+            if (found == owners_by_split.end ())
+                found = owners_by_split
+                            .emplace (split, split_owner (split))
+                            .first;
+            return found->second;
+        };
+
+        AgingAccountRows rows;
+        rows.account = account;
+        rows.totals.assign (aging_bucket_count + 1, gnc_numeric_zero ());
+
+        std::vector<Split*> remaining = splits;
+        size_t index = 0;
+        while (index < remaining.size ())
+        {
+            Split* split = remaining[index];
+            Transaction* txn = xaccSplitGetParent (split);
+            const char type = xaccTransGetTxnType (txn);
+            if (type != TXN_TYPE_INVOICE && type != TXN_TYPE_PAYMENT)
+            {
+                ++index;
+                continue;
+            }
+
+            const GncOwner& owner = owner_of (split);
+            if (!gncOwnerIsValid (&owner) ||
+                (!options.show_inactive && !gncOwnerGetActive (&owner)))
+            {
+                ++index;
+                continue;
+            }
+
+            /* Every other split of this account that belongs to the same
+             * owner is part of this owner's aging, wherever it sits in the
+             * date order. */
+            std::vector<Split*> mine;
+            std::vector<Split*> others;
+            mine.reserve (remaining.size ());
+            others.reserve (remaining.size ());
+            for (size_t other = index; other < remaining.size (); ++other)
+            {
+                Split* candidate = remaining[other];
+                if (gncOwnerEqual (&owner, &owner_of (candidate)))
+                    mine.push_back (candidate);
+                else
+                    others.push_back (candidate);
+            }
+
+            std::vector<gnc_numeric> buckets =
+                owner_aging (mine, options, boundaries, receivable);
+            gnc_numeric total = gnc_numeric_zero ();
+            bool any = false;
+            for (const gnc_numeric& amount : buckets)
+            {
+                total = numeric_add (total, amount);
+                any = any || !gnc_numeric_zero_p (amount);
+            }
+            if (any || options.show_zeros)
+            {
+                AgingOwnerRow row;
+                row.owner = owner;
+                row.buckets = std::move (buckets);
+                row.total = total;
+                for (int bucket = 0; bucket < aging_bucket_count; ++bucket)
+                    rows.totals[bucket] = numeric_add (rows.totals[bucket],
+                                                       row.buckets[bucket]);
+                rows.totals[aging_bucket_count] = numeric_add (
+                    rows.totals[aging_bucket_count], total);
+                rows.owners.push_back (std::move (row));
+            }
+
+            remaining = std::move (others);
+            index = 0;
+        }
+
+        if (rows.owners.empty ())
+            continue;
+
+        std::stable_sort (rows.owners.begin (), rows.owners.end (),
+                          [] (const AgingOwnerRow& left,
+                              const AgingOwnerRow& right)
+                          {
+                              return owner_name_compare (
+                                         gncOwnerGetName (&left.owner),
+                                         gncOwnerGetName (&right.owner)) < 0;
+                          });
+        accounts.push_back (std::move (rows));
+    }
+    return accounts;
+}
+
+AgingReport
+aging_report (Account* root, const AgingOptions& options, bool receivable)
+{
+    AgingReport report;
+    char date[32] = {0};
+    qof_print_date_buff (date, sizeof date, options.as_of);
+    report.title = std::string (receivable ? "Receivable Aging"
+                                           : "Payable Aging") +
+                   " - " + date;
+
+    bool have_accounts = false;
+    std::vector<AgingAccountRows> accounts =
+        collect_aging (root, options, receivable, have_accounts);
+    if (accounts.empty ())
+    {
+        /* The Scheme report's two explanations for an empty aging: no
+         * A/Payable or A/Receivable account at all, or such accounts with
+         * nothing in them to age. */
+        report.warning = have_accounts
+            ? "A/Payable or A/Receivable accounts exist but have no suitable "
+              "transactions."
+            : "No valid A/Payable or A/Receivable account found. Please "
+              "ensure valid AP/AR account exists.";
+        return report;
+    }
+
+    CellTable& table = report.table;
+    table.headings.push_back ("Company");
+    for (const std::string& heading : aging_bucket_headings ())
+        table.headings.push_back (heading);
+    table.headings.push_back ("Total");
+
+    /* With more than one account of the type the Scheme report puts the
+     * account's name on a heading row of its own and prefixes every owner
+     * row with an empty cell, so the owner rows of one account stay together
+     * under it. */
+    const bool multiple = accounts.size () > 1;
+
+    /* The aging vector is built oldest bucket first (91+ ... Pre-Payment),
+     * but the table prints it the other way round. */
+    auto display_order = [] (const std::vector<gnc_numeric>& buckets)
+    {
+        std::vector<gnc_numeric> ordered;
+        ordered.reserve (buckets.size ());
+        for (int bucket = aging_bucket_count - 1; bucket >= 0; --bucket)
+            ordered.push_back (buckets[bucket]);
+        return ordered;
+    };
+    /* Negative amounts carry the Scheme renderer's "neg" class, which the
+     * stylesheet colours red. */
+    auto amount_css = [] (gnc_numeric amount, const char* base)
+    {
+        return gnc_numeric_negative_p (amount) ? std::string (base) + " neg"
+                                               : std::string (base);
+    };
+
+    for (const AgingAccountRows& account : accounts)
+    {
+        gnc_commodity* currency = xaccAccountGetCommodity (account.account);
+
+        if (multiple)
+            table.rows.push_back ({{account_name (account.account), "text-cell"}});
+
+        for (const AgingOwnerRow& owner : account.owners)
+        {
+            std::vector<Cell> row;
+            if (multiple)
+                row.push_back ({});
+            const char* name = gncOwnerGetName (&owner.owner);
+            row.push_back ({name != nullptr ? name : "", ""});
+            for (const gnc_numeric& amount : display_order (owner.buckets))
+                row.push_back ({format_amount (amount, currency),
+                                amount_css (amount, "number-cell")});
+            row.push_back ({format_amount (owner.total, currency),
+                            amount_css (owner.total, "number-cell")});
+            table.rows.push_back (std::move (row));
+        }
+
+        std::vector<Cell> total;
+        if (multiple)
+            total.push_back ({});
+        total.push_back ({"Total", "total-label-cell"});
+        /* The account total row prints the six bucket totals and the account
+         * total, in the same order as the columns above. */
+        for (const gnc_numeric& amount : display_order (account.totals))
+            total.push_back ({format_amount (amount, currency),
+                              amount_css (amount, "total-number-cell")});
+        const gnc_numeric account_total = account.totals[aging_bucket_count];
+        total.push_back ({format_amount (account_total, currency),
+                          amount_css (account_total, "total-number-cell")});
+        table.rows.push_back (std::move (total));
+    }
+    return report;
+}
+
+} // namespace
+
+std::vector<std::string>
+aging_bucket_headings ()
+{
+    return {"Pre-Payment", "Current", "0-30 days", "31-60 days",
+            "61-90 days", "91+ days"};
+}
+
+time64
+default_aging_date ()
+{
+    /* The Scheme aging reports default their "To" option to the relative date
+     * 'today', which gnc:time64-end-day-time() resolves to the end of it. */
+    return gnc_time64_get_today_end ();
+}
+
+AgingReport
+receivable_aging (Account* root, const AgingOptions& options)
+{
+    return aging_report (root, options, true);
+}
+
+AgingReport
+payable_aging (Account* root, const AgingOptions& options)
+{
+    return aging_report (root, options, false);
+}
+
+std::string
+render_aging (const AgingReport& report)
+{
+    if (report.warning.empty ())
+        return render_cell_table (report.table, report.title);
+
+    /* The Scheme report prints its explanation as document text, under the
+     * same title, when there is nothing to age. */
+    std::ostringstream out;
+    out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
+        << html_escape (report.title) << "</title><style>"
+        << report_stylesheet () << "</style></head><body><h3>"
+        << html_escape (report.title) << "</h3>\n<p class='text-cell'>"
+        << html_escape (report.warning) << "</p>\n</body></html>\n";
+    return out.str ();
+}
+
 namespace
 {
 
@@ -1802,7 +2339,8 @@ std::vector<std::string>
 native_report_names ()
 {
     return {"Trial Balance", "Balance Sheet", "Income Statement",
-            "Profit & Loss", "Transaction Report", "General Ledger"};
+            "Profit & Loss", "Transaction Report", "General Ledger",
+            "Receivable Aging", "Payable Aging"};
 }
 
 /* --------------------------------------------------------------- options */
@@ -1995,6 +2533,21 @@ report_options (const std::string& name)
             default_end_date ()));
         options.push_back (accounts_option ());
     }
+    else if (name == "Receivable Aging" || name == "Payable Aging")
+    {
+        /* The aging reports take one date: the Scheme report's "To" option,
+         * which defaults to today rather than to the accounting period.  It
+         * is the anchor the buckets are measured from, so it is the whole
+         * option surface; the report always ages every A/Receivable (or
+         * A/Payable) account in the book. */
+        options.push_back (date_option (
+            "end", "To",
+            "The date the aging is calculated at.  The buckets run back from "
+            "the end of this day: Current (not yet due), 0-30, 31-60, 61-90 "
+            "and 91+ days.  It defaults to today.",
+            default_aging_date ()));
+        return options;
+    }
     else
     {
         return {};
@@ -2021,6 +2574,24 @@ render_report (const std::string& name, Account* root,
 {
     if (root == nullptr)
         return false;
+
+    /* The aging reports are anchored at one date (the Scheme "To" option),
+     * whose default is today -- not the accounting period the balance
+     * reports default their end date to.  Period=all means "no date bound"
+     * everywhere else; an aging report has to pick a day, so it stays
+     * today. */
+    if (name == "Receivable Aging" || name == "Payable Aging")
+    {
+        AgingOptions options;
+        options.as_of = request.all_dates
+                            ? default_aging_date ()
+                            : request.end.value_or (default_aging_date ());
+        AgingReport report = name == "Receivable Aging"
+                                 ? receivable_aging (root, options)
+                                 : payable_aging (root, options);
+        html = render_aging (report);
+        return true;
+    }
 
     /* The reports' own defaults are a real period (the accounting period),
      * not the whole book; period=all is the one way to ask for no bounds at

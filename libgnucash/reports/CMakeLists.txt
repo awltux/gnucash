@@ -21,6 +21,7 @@ target_link_libraries (gnc-reports
   PUBLIC
     gnc-engine
     gnc-app-utils
+    gnc-core-utils
 )
 
 target_include_directories (gnc-reports
