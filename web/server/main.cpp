@@ -253,9 +253,11 @@ reports_unavailable (GSocketConnection* connection)
 #endif
 
 /* The built-in designer specs are reports in every build: without Guile they
- * are what the report list offers beyond the native fourteen, and with Guile
- * they sit beside the Scheme templates.  The plain /api/reports list stays
- * an array of names. */
+ * are what the report list offers beyond the native thirty-one, and with Guile
+ * they sit beside the Scheme templates.  A built-in whose name is already a
+ * Scheme report replaces it in the list: the name means one report, and the
+ * built-in is the native implementation of it.  The plain /api/reports list
+ * stays an array of names. */
 std::string
 with_builtin_report_names (std::string body)
 {
@@ -264,12 +266,15 @@ with_builtin_report_names (std::string body)
     bool first = body == "[";
     for (const std::string& name : web::builtin_spec_names ())
     {
+        const std::string quoted = "\"" + json_escape (name.c_str ()) + "\"";
+        /* A Scheme template with the same name is already in the list; the
+         * built-in takes its place so the user sees the name once. */
+        if (body.find (quoted) != std::string::npos)
+            continue;
         if (!first)
             body += ",";
         first = false;
-        body += "\"";
-        body += json_escape (name.c_str ());
-        body += "\"";
+        body += quoted;
     }
     body += "]";
     return body;
@@ -425,6 +430,11 @@ spec_options_json ()
             "{\"name\":\"debit\",\"label\":\"Debit\"},"
             "{\"name\":\"credit\",\"label\":\"Credit\"},"
             "{\"name\":\"balance\",\"label\":\"Balance\"}],"
+            "\"chart_series_note\":\"One or two series, or all three on a "
+            "period report: debit, credit and balance are that period's two "
+            "sides and its net (income, expense and net profit; assets, "
+            "liabilities and net worth). Balance cannot be combined with just "
+            "one side.\","
             "\"account_types\":[";
 
     first = true;

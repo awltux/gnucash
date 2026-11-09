@@ -13,6 +13,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <glib.h>
@@ -338,10 +339,11 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         if (!series->is_array ())
             return fail (error, "'chart_series' must be an array of amount "
                                  "column names");
-        if (series->array.size () > 2)
+        if (series->array.size () > 3)
             return fail (error, "'chart_series' has " +
                                  std::to_string (series->array.size ()) +
-                                 " entries; a chart draws one or two series");
+                                 " entries; a chart draws one, two or three "
+                                 "series");
         std::set<std::string> seen_series;
         for (const json::Value& entry : series->array)
         {
@@ -410,13 +412,35 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
 
     if (spec.chart_series.size () > 1)
     {
-        /* Balance is the net of the two sides; plotting it beside one of
-         * them would draw a total and its own part as independent series. */
+        bool debit = false;
+        bool credit = false;
+        bool balance = false;
         for (const std::string& name : spec.chart_series)
         {
-            if (name == "balance")
+            debit = debit || name == "debit";
+            credit = credit || name == "credit";
+            balance = balance || name == "balance";
+        }
+        if (balance)
+        {
+            /* Balance is the net of the two sides.  Plotting it beside just
+             * one of them would draw a total and its own part as independent
+             * series.  The complete trio is different: on a period report the
+             * balance is that period's net, so income/expense/net-profit (or
+             * assets/liabilities/net-worth) is one chart, not a total beside
+             * its parts.  A flat or account-tree row's balance is the account
+             * balance, not a period net, so the trio means nothing there. */
+            const bool trio = debit && credit && balance &&
+                              spec.chart_series.size () == 3;
+            if (!trio)
                 return fail (error, "a chart cannot mix the 'balance' series "
-                                     "with 'debit' or 'credit'");
+                                     "with 'debit' or 'credit' unless it draws "
+                                     "all three");
+            if (spec.grouping != "period")
+                return fail (error, "the three-series chart (debit, credit "
+                                     "and balance) needs grouping 'period'; "
+                                     "on a flat or account-tree report the "
+                                     "balance is not a period net");
         }
     }
 
@@ -689,6 +713,40 @@ builtin_specs ()
         net_worth.chart = "line";
         net_worth.chart_series = {"balance"};
         all.push_back (std::move (net_worth));
+
+        /* The two Scheme net-worth charts draw three series: the asset side,
+         * the liability side and their net.  A period report keeps the two
+         * sides separately (see spec_period_rows), so a cumulative period
+         * chart can draw all three: the same figures the Scheme report plots
+         * at its month steps.  The series are the balance signs, not the
+         * account types; on a book whose asset balances are all non-negative
+         * and liability balances non-positive (the normal case) the two
+         * agree, and the description says so. */
+        for (const auto& [id, name, chart] :
+             std::vector<std::tuple<const char*, const char*, const char*>>{
+                 {"builtin-net-worth-barchart", "Net Worth Barchart", "bar"},
+                 {"builtin-net-worth-linechart", "Net Worth Linechart",
+                  "line"}})
+        {
+            ReportSpec spec = builtin_base (
+                id, name,
+                "Built-in, scoped to asset and liability accounts: one point "
+                "per month over the range the book's transactions cover. "
+                "Debit is the positive-balance side, Credit the negative "
+                "side, Balance net worth.");
+            spec.columns = {"account-name", "debit", "credit", "balance"};
+            spec.grouping = "period";
+            spec.period_unit = "month";
+            spec.period_mode = "cumulative";
+            spec.query.date_preset = "all";
+            spec.account_types = {"BANK",  "CASH",   "ASSET",
+                                  "STOCK", "MUTUAL", "CURRENCY",
+                                  "CREDIT", "LIABILITY", "RECEIVABLE",
+                                  "PAYABLE"};
+            spec.chart = chart;
+            spec.chart_series = {"debit", "credit", "balance"};
+            all.push_back (std::move (spec));
+        }
 
         return all;
     }();

@@ -123,17 +123,19 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 print(len(data.get("builtin", [])))
 PY
 )
-if [ "$BUILTIN_COUNT" -eq 4 ]; then
-    ok "4 built-in specs"
+if [ "$BUILTIN_COUNT" -eq 6 ]; then
+    ok "6 built-in specs"
 else
-    bad "expected 4 built-in specs, got $BUILTIN_COUNT"
+    bad "expected 6 built-in specs, got $BUILTIN_COUNT"
 fi
 
 for pair in \
     "builtin-income-expenses-month|Income vs Expenses by Month" \
     "builtin-expenses-by-account|Expenses by Account" \
     "builtin-income-by-account|Income by Account" \
-    "builtin-net-worth-month|Net Worth by Month"
+    "builtin-net-worth-month|Net Worth by Month" \
+    "builtin-net-worth-barchart|Net Worth Barchart" \
+    "builtin-net-worth-linechart|Net Worth Linechart"
 do
     id=${pair%%|*}
     name=${pair#*|}
@@ -156,7 +158,8 @@ done
 echo "== the report list names them"
 expect_status 200 "report list" "/api/reports"
 for name in "Income vs Expenses by Month" "Expenses by Account" \
-            "Income by Account" "Net Worth by Month"; do
+            "Income by Account" "Net Worth by Month" \
+            "Net Worth Barchart" "Net Worth Linechart"; do
     if grep -qF "\"$name\"" "$TMP/body"; then
         ok "report list has $name"
     else
@@ -178,7 +181,9 @@ for pair in \
     "builtin-income-expenses-month|Income vs Expenses by Month" \
     "builtin-expenses-by-account|Expenses by Account" \
     "builtin-income-by-account|Income by Account" \
-    "builtin-net-worth-month|Net Worth by Month"
+    "builtin-net-worth-month|Net Worth by Month" \
+    "builtin-net-worth-barchart|Net Worth Barchart" \
+    "builtin-net-worth-linechart|Net Worth Linechart"
 do
     id=${pair%%|*}
     name=${pair#*|}
@@ -227,6 +232,100 @@ if [ "$SUMMARY" = "bar|Office Supplies|Debit:585" ]; then
     ok "account grouping charts the account rows"
 else
     bad "unexpected expenses-by-account chart: $SUMMARY"
+fi
+
+# The two net-worth built-ins port the Scheme reports' three series: the
+# asset side, the liability side and the net.  Their labels are the built-in
+# period rows, not the Scheme report's step dates.
+for pair in "builtin-net-worth-barchart|bar" "builtin-net-worth-linechart|line"; do
+    id=${pair%%|*}
+    kind=${pair#*|}
+    fetch "/report/spec/$id" > /dev/null
+    cp "$TMP/body" "$TMP/$id.html"
+    SUMMARY=$(chart_summary "$TMP/$id.html")
+    if [ "$SUMMARY" = "$kind|February 2018|Debit:10000;Credit:585;Balance:9415" ]; then
+        ok "$id charts the asset, liability and net series"
+    else
+        bad "unexpected $id chart: $SUMMARY"
+    fi
+done
+
+# The chart's three figures are the table's own Debit/Credit/Balance cells.
+if grep -qF "<td class='number-cell'>\$10,000.00</td>" \
+        "$TMP/builtin-net-worth-barchart.html" &&
+   grep -qF "<td class='number-cell'>\$585.00</td>" \
+        "$TMP/builtin-net-worth-barchart.html" &&
+   grep -qF "<td class='number-cell'>\$9,415.00</td>" \
+        "$TMP/builtin-net-worth-barchart.html"; then
+    ok "the net-worth chart's figures are the table's rows"
+else
+    bad "the net-worth table does not show the chart's figures"
+fi
+
+echo "== a period chart can draw the third series"
+cat > "$TMP/three.json" <<'JSON'
+{"name":"Three series","columns":["account-name","debit","credit","balance"],
+ "grouping":"period","period_unit":"month","date_preset":"",
+ "start":"2018-01-01","end":"2018-02-28",
+ "account_types":["INCOME","EXPENSE"],"chart":"bar",
+ "chart_series":["credit","debit","balance"]}
+JSON
+code=$(post_spec "$TMP/three.json")
+if [ "$code" = "200" ]; then
+    cp "$TMP/body" "$TMP/three.html"
+    THREE=$(chart_summary "$TMP/three.html")
+    if [ "$THREE" = "bar|January 2018|February 2018|Credit:0,0;Debit:0,585;Balance:0,585" ]; then
+        ok "the period chart draws credit, debit and the net balance"
+    else
+        bad "unexpected three-series chart: $THREE"
+    fi
+else
+    bad "three-series preview answered $code: $(head -c 200 "$TMP/body")"
+fi
+
+# A narrower scope changes the series: assets only drop the liability side.
+cat > "$TMP/nw-assets.json" <<'JSON'
+{"name":"Assets only","columns":["account-name","debit","credit","balance"],
+ "grouping":"period","period_unit":"month","period_mode":"cumulative",
+ "date_preset":"all",
+ "account_types":["BANK","CASH","ASSET","STOCK","MUTUAL","CURRENCY",
+                  "RECEIVABLE"],
+ "chart":"bar","chart_series":["debit","credit","balance"]}
+JSON
+code=$(post_spec "$TMP/nw-assets.json")
+if [ "$code" = "200" ]; then
+    cp "$TMP/body" "$TMP/nw-assets.html"
+    ASSETS=$(chart_summary "$TMP/nw-assets.html")
+    if [ "$ASSETS" = "bar|February 2018|Debit:10000;Credit:0;Balance:10000" ]; then
+        ok "a narrower account scope changes the three series"
+    else
+        bad "unexpected assets-only chart: $ASSETS"
+    fi
+else
+    bad "assets-only preview answered $code: $(head -c 200 "$TMP/body")"
+fi
+
+# And a wider period changes the labels and the series length.
+cat > "$TMP/nw-wide.json" <<'JSON'
+{"name":"Net worth over 2018","columns":["account-name","debit","credit","balance"],
+ "grouping":"period","period_unit":"month","period_mode":"cumulative",
+ "date_preset":"","start":"2017-12-01","end":"2018-12-31",
+ "account_types":["BANK","CASH","ASSET","STOCK","MUTUAL","CURRENCY",
+                  "CREDIT","LIABILITY","RECEIVABLE","PAYABLE"],
+ "chart":"bar","chart_series":["debit","credit","balance"]}
+JSON
+code=$(post_spec "$TMP/nw-wide.json")
+if [ "$code" = "200" ]; then
+    cp "$TMP/body" "$TMP/nw-wide.html"
+    WIDE=$(chart_summary "$TMP/nw-wide.html")
+    case "$WIDE" in
+        bar\|December\ 2017\|*December\ 2018\|Debit:0,0,10000,*)
+            ok "an explicit period changes the net-worth chart's labels" ;;
+        *)
+            bad "unexpected wider net-worth chart: $WIDE" ;;
+    esac
+else
+    bad "wider net-worth preview answered $code: $(head -c 200 "$TMP/body")"
 fi
 
 # A period chart with date_preset "all" takes its range from the book.  An
@@ -281,8 +380,12 @@ reject "series not in the columns" "is not one of the report's columns" \
        '{"name":"rejected","columns":["account-name","balance"],"date_preset":"all","chart":"bar","chart_series":["debit"]}'
 reject "net and part mixed" "cannot mix the 'balance' series" \
        '{"name":"rejected","columns":["account-name","balance","debit"],"date_preset":"all","chart":"bar","chart_series":["balance","debit"]}'
-reject "too many series" "a chart draws one or two series" \
-       '{"name":"rejected","columns":["account-name","debit","credit"],"date_preset":"all","chart":"bar","chart_series":["debit","credit","debit"]}'
+reject "too many series" "a chart draws one, two or three series" \
+       '{"name":"rejected","columns":["account-name","debit","credit"],"date_preset":"all","chart":"bar","chart_series":["debit","credit","balance","debit"]}'
+reject "three series on a flat list" "needs grouping 'period'" \
+       '{"name":"rejected","columns":["account-name","debit","credit","balance"],"date_preset":"all","chart":"bar","chart_series":["debit","credit","balance"]}'
+reject "balance with only one side" "unless it draws all three" \
+       '{"name":"rejected","columns":["account-name","debit","balance"],"grouping":"period","date_preset":"all","chart":"bar","chart_series":["debit","balance"]}'
 reject "series without a chart" "needs a chart type in 'chart'" \
        "{$BASE,\"chart_series\":[\"balance\"]}"
 reject "period without dates" "needs both a start and an end date, or date_preset 'all'" \

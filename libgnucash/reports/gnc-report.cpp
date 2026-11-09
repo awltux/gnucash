@@ -889,6 +889,9 @@ chart_columns_for (const TableSpec& spec)
         credit = credit || column == Column::Credit;
         balance = balance || column == Column::Balance;
     }
+    if (debit && credit && balance &&
+        spec.grouping == GroupingMode::Period)
+        return {Column::Debit, Column::Credit, Column::Balance};
     if (debit && credit)
         return {Column::Debit, Column::Credit};
     if (balance)

@@ -2,20 +2,20 @@
 
 Status: measurement for `doc/report-engine-migration.md`
 Branch: `webui/engine-server`
-Measured at: `4826c2e262` plus the owner-report work (working tree clean at
-`4826c2e262` before this edit)
-Scope: registry enumeration, classification, coverage and cost. No code, tests
-or report behaviour were changed; the only edited file is this one.
+Measured at: `0da4be5ca1` (the classification is re-derived; the designer-spec
+section and its counts were corrected when the two net-worth chart names were
+added as built-in specs and the other three spec claims were withdrawn)
+Scope: registry enumeration, classification, coverage and cost. No report
+behaviour was changed; the edited files are this one and `web/`.
 
 > **What changed since the first measurement.**  The first version of this
 > document was measured at `a639555722`, when nine Scheme report names rendered
 > natively, and its verdict was "the majority is not covered".  At
-> `4826c2e262` plus the owner-report work the native layer names **24** of the
-> **66** source names (24 of the 65 a US build loads; 23 in a German build),
-> and the document has been re-derived rather than patched.  The registry
-> itself has not changed: no file under `gnucash/report/reports/` changed
-> between `a639555722` and this measurement.  All the movement is in the native
-> layer.
+> `4826c2e262` plus the owner-report work the native layer named 24 of the
+> **66** source names; the current measurement (this revision) names **31**.
+> The registry itself has not changed: no file under
+> `gnucash/report/reports/` changed between `a639555722` and this measurement.
+> All the movement is in the native layer.
 
 ## Summary
 
@@ -25,22 +25,25 @@ or report behaviour were changed; the only edited file is this one.
   `55 + 5 + 4 + 2 = 66`.  A build loads **65** because the locale loader picks
   one of the two `taxtxf` reports.  The count is unchanged from the earlier
   measurement; the plan's "63 report definitions" is still stale.
-- **Native: 24 names in 17 implementations.**  The six original core reports,
-  aging and lots, the five budget layouts, the four native documents, the US
-  tax schedule with TXF export, and the five owner reports (four registrations
-  of one owner-history renderer plus Customer Summary).
-- **Spec: 5 names** are expressible in the designer as it stands today
-  (Account Summary, Income/Expense Chart, Income & Expense Linechart, Net Worth
-  Barchart, Net Worth Linechart).  The **4 built-in specs** are extra reports,
-  not registry names; they are listed separately below and do not change the
-  24/66 numerator.
-- **Logic: 16 names**, about seven engines.  **Template: 2 names** (the two
-  remaining invoice layouts).  **Closed: 19 names**, deliberately out of scope
+- **Native: 31 names.**  The six original core reports, the three entry
+  listings, aging and lots, the five budget layouts, the four native documents,
+  the US tax schedule with TXF export, the four valuation/portfolio reports,
+  and the five owner reports (four registrations of one owner-history renderer
+  plus Customer Summary).
+- **Spec: 2 names** are expressible in the designer as it stands today
+  (Net Worth Barchart and Net Worth Linechart, as built-in specs).  The other
+  three names the earlier measurement called spec-expressible — Account
+  Summary, Income/Expense Chart and Income & Expense Linechart — are closed
+  with the reasons in section 3.5.  The **6 built-in specs** are extra
+  reports, not registry names; they are listed separately below and do not
+  change the 31/66 numerator.
+- **Logic: 9 names**, about six engines.  **Template: 2 names** (the two
+  remaining invoice layouts).  **Closed: 22 names**, deliberately out of scope
   with the reason recorded.
-- **By name: 24/66 = 36.4% native.**  Native plus spec-expressible is
-  **29/66 = 43.9%**.  Native plus spec plus closed is **48/66 = 72.7%**
-  done-or-decided; the genuinely unported remainder is **18/66 = 27.3%**
-  (16 logic + 2 template).
+- **By name: 31/66 = 47.0% native.**  Native plus spec is
+  **33/66 = 50.0%**.  Native plus spec plus closed is **55/66 = 83.3%**
+  done-or-decided; the genuinely unported remainder is **11/66 = 16.7%**
+  (9 logic + 2 template).
 - **Accounting core: 6/6 = 100%** on the six names the earlier document called
   the accounting core (Trial Balance, Balance Sheet, Income Statement,
   Profit & Loss, Transaction Report, General Ledger); 6/7 = 86% if the General
@@ -98,7 +101,7 @@ each register one name, either as a literal (`(N_ "Trial Balance")`) or through
 a file-local `reportname` variable.  A parser that reads every
 `(gnc:define-report ...)` block, resolves the `'name` expression (literal,
 `N_`/`G_`, or file-local define) and expands those three loops returns
-`66` names, none duplicated, and all 24 native names are members of that set.
+`66` names, none duplicated, and all 31 native names are members of that set.
 The exact output is in section 8.
 
 Two names need care, as before:
@@ -124,23 +127,26 @@ Three different numbers are easy to confuse.  They answer different questions:
 | List | Guile build | Guile-free build | What it is |
 |---|---:|---:|---|
 | Scheme registry | 66 (65 loaded) | 0 | Names registered by `gnucash/report/reports/**` |
-| `GET /api/reports` | 69 | 28 | The report list the server actually offers |
-| Native names | 24 | 24 | Names `render_report()` handles without Guile |
+| `GET /api/reports` | 69 | 37 | The report list the server actually offers |
+| Native names | 31 | 31 | Names `render_report()` handles without Guile |
 
 In a Guile build, `/api/reports` enumerates the Scheme templates that build
-actually loaded (`65`, one locale `taxtxf`) and then appends the four built-in
-designer specs (`+4 = 69`).  In a Guile-free build it enumerates
-`native_report_names()` (`24`) and appends the same four (`+4 = 28`).  The four
+actually loaded (`65`, one locale `taxtxf`) and then appends the six built-in
+designer specs, except that the two net-worth names are already in the loaded
+list and the built-in replaces them (`+4 = 69`).  In a Guile-free build it
+enumerates `native_report_names()` (`31`) and appends the same six
+(`+6 = 37`).  The six
 built-ins are not Scheme names and are not counted in the 66.  A Guile-free
-build therefore offers **28 report-list entries**, but the by-name coverage of
-the Scheme registry is **24/66**, not 28/66.  The task's "designer with four
-built-in chart specs" is the `+4`, not four more registry names.
+build therefore offers **37 report-list entries**, but the by-name coverage of
+the Scheme registry is **31/66**, not 37/66.  The "designer with four built-in
+chart specs" was the old `+4`; the two net-worth charts now make it `+6`, and
+none of them is an extra registry name.
 
 The 65-name build is not identical across locales: a US build loads `Tax
 Schedule Report/TXF Export` (native), a German build loads `Tax Report / TXF
 Export` (closed).  Both builds have 65 Scheme names; the intersection of the
-native names with the loaded Scheme names is 24 in the US build and 23 in the
-German one.  The Guile-free list is locale-independent: it is always the 24
+native names with the loaded Scheme names is 31 in the US build and 30 in the
+German one.  The Guile-free list is locale-independent: it is always the 31
 native names, including the US schedule, so a German-locale Guile-free build
 still does not offer the German report.
 
@@ -186,7 +192,7 @@ The practical consequence for "Guile-free" is that a **saved Scheme report
 with a non-default option set cannot always be replayed**.  The name renders;
 the depth, zero/parent, price-source, rules, foreign-currency or trep-column
 options may be refused.  That is a real limitation of the web tier and is not
-hidden by the 24/66 number.
+hidden by the 31/66 number.
 
 ## 3. Classification
 
@@ -208,7 +214,7 @@ The classes are the task's:
   **not** a synonym for unported: a closed name is not on the backlog, while a
   logic or template name is.
 
-### 3.1 Native (19 names in this table, 5 more in 3.1a; 17 implementations)
+### 3.1 Native (19 names in this table, 5 in 3.1a, 4 in 3.1b, 3 entry listings in section 11; 20 implementations)
 
 All source paths in this section are relative to `gnucash/report/reports/`.
 
@@ -305,27 +311,59 @@ Viewer and IFRS and (label, text columns, amounts) for the two portfolio
 listings, so the note/narrative columns and the blank cells are part of the
 claim.
 
-### 3.2 Spec (5 names expressible today)
+The three entry listings — General Journal, Transaction Breakdown Report and
+Reconciliation Report — are native too; section 11 documents them, and they
+are the three names that take the native total from 28 to 31.
+
+### 3.2 Spec (2 names expressible today)
 
 The spec vocabulary is `columns` (`account-name`, `debit`, `credit`, `balance`,
 `subtotal`), `grouping` (`none`, `account-tree`, `period`), `period_unit`
 (`year`, `month`), `period_mode` (`activity`, `cumulative`), `account_types`,
 `start`/`end`/`date_preset`, `currency`, `accounts`, `chart` (`bar`, `line`) and
-`chart_series` (one or two of `debit`, `credit`, `balance`).  A chart has the
-table's rows as labels and at most two amount-column series.  It cannot add an
-account dimension as a series, cannot stack more than two, and has no pie,
-scatter or multi-column layout.
+`chart_series` (one, two, or on a `period` report all three of `debit`, `credit`
+and `balance`).  A chart has the table's rows as labels.  On a period report the
+three amount columns are that period's two sides and its net, so the complete
+trio is one plot rather than a total beside its own part; on a flat or
+account-tree report `balance` is an account balance, not a period net, and the
+trio stays a 400.  The chart cannot add an account dimension as a series,
+cannot stack more than three series, and has no pie, scatter or multi-column
+layout.
 
 | # | Report | Source | Spec recipe | What is lost |
 |---:|---|---|---|---|
-| 20 | Account Summary | `standard/account-summary.scm` | `grouping: "account-tree"`, columns `account-name` + `balance`; account types/accounts and currency as needed. | The default Account Code column, type/description/notes columns, depth limit, bottom behaviour, zero-balance and parent-balance/subtotal modes, rules and hyperlinks.  The row amounts and the tree are reproducible; the default page is not byte-identical. |
-| 21 | Income/Expense Chart | `standard/net-charts.scm` | `grouping: "period"`, `period_unit: "month"`, columns `debit` + `credit`, account types `INCOME` + `EXPENSE`, `chart: "bar"`, series `debit` + `credit`, dates or `date_preset: "all"`. | The default's third Net Profit series (the spec chart is at most two series), step sizes other than month/year, the table toggle, price source and plot geometry. |
-| 22 | Income & Expense Linechart | `standard/net-charts.scm` | Same as 21 with `chart: "line"`. | Same as 21. |
-| 23 | Net Worth Barchart | `standard/net-charts.scm` | `grouping: "period"`, `period_unit: "month"`, column `balance`, `period_mode: "cumulative"`, account types `BANK, CASH, ASSET, STOCK, MUTUAL, CURRENCY, CREDIT, LIABILITY, RECEIVABLE, PAYABLE`, `chart: "bar"`, series `balance`, `date_preset: "all"`. | The default's separate Assets and Liabilities series (three series in the Scheme chart), step sizes other than month/year, the table toggle and price source.  The net-worth line itself is reproducible. |
+| 23 | Net Worth Barchart | `standard/net-charts.scm` | `grouping: "period"`, `period_unit: "month"`, columns `debit` + `credit` + `balance`, `period_mode: "cumulative"`, account types `BANK, CASH, ASSET, STOCK, MUTUAL, CURRENCY, CREDIT, LIABILITY, RECEIVABLE, PAYABLE`, `chart: "bar"`, series `debit`, `credit` + `balance`, `date_preset: "all"`. | The Scheme report's default step dates run from the from-date; the built-in uses calendar month ends over the book's transaction range.  `debit`/`credit` are the balance signs, not the account types: an overdrawn asset lands on the credit side where the Scheme report keeps it under Assets as a negative value.  Step sizes other than month/year, the table toggle, price source and plot geometry. |
 | 24 | Net Worth Linechart | `standard/net-charts.scm` | Same as 23 with `chart: "line"`. | Same as 23. |
 
-The four built-in specs are the evidence that the vocabulary works, but they
-are **new reports, not ports**, and their names are not in the 66:
+The two are shipped as the built-ins `builtin-net-worth-barchart` and
+`builtin-net-worth-linechart`, under the Scheme names.  On `sample1.gnucash`
+over `2017-12-31..2018-12-31` the native chart's three 13-point series are
+`Debit [0,0,10000,...]`, `Credit [0,0,585,...]`, `Balance [0,0,9415,...]`;
+the Scheme chart's `Assets`, `Liabilities` and `Net Worth` are the same three
+lists (see `report-parity.sh`, which compares the chart data directly).  The
+series labels are the amount-column names ("Debit", "Credit", "Balance"), not
+the Scheme wording, and the built-in covers the book's data range rather than
+the Scheme report's current-fiscal-year default.
+
+The other three names this section used to claim are **closed** (section 3.5),
+not approximated:
+
+- **Account Summary** — the Scheme default sign-reverses credit-normal
+  accounts (A/P `+585`, Equity `+10,000`), shows own-balance parent rows with no
+  subtotal rows, offers an Account Code column and reports as of today.  The
+  spec's `balance` is the raw signed amount, `account-tree` prints subtree
+  rollups plus a subtotal row per parent, there is no code column, and the date
+  presets only reach `all`/`this-year`.
+- **Income/Expense Chart** and **Income & Expense Linechart** — the Scheme
+  third series is Net Profit = income − expense.  The spec's `balance` is
+  debit − credit = expense − income, so the third series would be plotted with
+  the opposite sign, and there is no negated-balance series.  The first two
+  series (Income = credit, Expense = debit) do match; the report as a whole
+  does not.
+
+The six built-in specs are the evidence that the vocabulary works, but they
+are **new reports, not ports**, and their names are not in the 66 except the
+two net-worth names:
 
 | Built-in id | Report | Scope and chart |
 |---|---|---|
@@ -333,41 +371,36 @@ are **new reports, not ports**, and their names are not in the 66:
 | `builtin-expenses-by-account` | Expenses by Account | `EXPENSE`, all dates, one bar per expense account with activity. |
 | `builtin-income-by-account` | Income by Account | `INCOME`, all dates, one bar per income account with activity. |
 | `builtin-net-worth-month` | Net Worth by Month | asset and liability types, cumulative balance at each month's end, one line series. |
+| `builtin-net-worth-barchart` | Net Worth Barchart | asset and liability types, cumulative balance at each month's end, three series: assets, liabilities and net worth. |
+| `builtin-net-worth-linechart` | Net Worth Linechart | the same three series as a line. |
 
 `Expenses by Account` and `Income by Account` are bar views of the same data
 as the pie reports, not the pie reports themselves; that is why the pie names
-are closed rather than called spec (section 3.5).  The two net-chart pairs are
-the only Scheme chart names whose data is a 1-2-series bar/line over period
-rows the spec can compute without another engine; Average Balance, Cash Flow
-Barchart and Budget Chart all need a computation the spec does not have.
+are closed rather than called spec (section 3.5).  The two net-worth charts
+are the only Scheme chart names whose plotted data the spec can compute
+without another engine; Average Balance, Cash Flow Barchart and Budget Chart
+all need a computation the spec does not have.
 
-### 3.3 Logic (16 names, about seven engines)
+### 3.3 Logic (9 names, about six engines)
 
 | # | Report | Source | Cluster | Why it needs custom native code |
 |---:|---|---|---|---|
-| 25 | Advanced Portfolio | `standard/advanced-portfolio.scm` | portfolios/lots | Per-account lot valuation: share counts, price sources, cost basis, realised and unrealised gains in several currencies. |
 | 26 | Balance Sheet (Multicolumn) | `standard/balsheet-pnl.scm` | cross-tab | Account-tree rows × period columns; the spec has one grouping axis, not a row-and-column cross-tab. |
 | 27 | Cash Flow | `standard/cash-flow.scm` | cash flow | Classifies counterpart splits into "money in"/"money out" (`cash-flow-calc.scm`); not a debit/credit balance table. |
 | 28 | Cash Flow Barchart | `standard/cashflow-barchart.scm` | cash flow | Reuses the same money-in/out classification; the chart type is supported, the data engine is not. |
 | 32 | Equity Statement | `standard/equity-statement.scm` | cross-tab | Start/change/end columns, unrealised gains, closing-entry handling — derived balances, not a query sum. |
-| 33 | General Journal | `standard/general-journal.scm` | entry listings | Transaction listing (date, num, description, transfer, debit, credit) delegated to the register renderer; the native layer has no register renderer. |
-| 34 | IFRS weighted-average cost basis report | `standard/ifrs-cost-basis.scm` | portfolios/lots | Lot-by-lot weighted-average cost accumulation with commission capitalisation and gains. |
 | 35 | Income and GST Statement | `standard/income-gst-statement.scm` | tax/GST | Builds trep columns per tax code from the tax table; multi-pass tax aggregation. |
 | 36 | Income Statement (Multicolumn) | `standard/balsheet-pnl.scm` | cross-tab | Same account-tree × period cross-tab as the multicolumn balance sheet. |
-| 37 | Investment Portfolio | `standard/portfolio.scm` | portfolios/lots | Per-account share/price/value valuation at a date. |
-| 39 | Lot Viewer | `standard/lot-viewer.scm` | portfolios/lots | Browses `gncLot` objects and their split/lot links; a UI over the lot model, not a table of balances. |
-| 40 | Reconciliation Report | `standard/reconcile-report.scm` | entry listings | Trep renderer with a reconcile-date predicate instead of the posted-date range. |
-| 41 | Transaction Breakdown Report | `standard/txn-columns.scm` | entry listings | One generated column per split/account per transaction; custom cell layout. |
 | 43 | Average Balance | `example/average-balance.scm` | analytics | Time-series average over a step size, with a chart; not a period sum and not a cumulative balance. |
 | 44 | Balance Forecast | `standard/balance-forecast.scm` | scheduled transactions | Projects balances from scheduled transactions and historical averages, then charts them. |
 | 45 | Future Scheduled Transactions Summary | `standard/account-summary.scm` | scheduled transactions | Instantiates scheduled transactions into the future; no splits exist yet. |
 
-The clusters matter more than the count: five portfolio names share one
-lot/price valuation engine, three cross-tab names share a period-column engine,
-three listings share custom renderers, and the two cash-flow names share the
-money-in/out classification.  This is not 16 independent reports.  The five
-owner reports, which this table used to hold, now share `gnc-owner.cpp` and are
-listed in 3.1a.
+The clusters matter more than the count: three cross-tab names share a
+period-column engine, and the two cash-flow names share the money-in/out
+classification.  This is not nine independent reports.  The general journal,
+transaction breakdown and reconciliation listing, the five portfolio names and
+the five owner reports are no longer in this table: they are native now
+(sections 3.1, 3.1a and 3.1b).
 
 ### 3.4 Template (2 names)
 
@@ -388,6 +421,9 @@ backlog.  It is a different number from "unported".
 
 | # | Report | Source | Reason recorded |
 |---:|---|---|---|
+| 20 | Account Summary | `standard/account-summary.scm` | The spec's `balance` is the raw signed amount, while the Scheme table sign-reverses credit-normal accounts (A/P `+585`, Equity `+10,000`); `account-tree` adds subtree rollups and a `Total X` row per parent; there is no Account Code column; the date presets only reach `all`/`this-year` instead of "today".  A built-in under the same name would show different amounts, so it is closed rather than approximated. |
+| 21 | Income/Expense Chart | `standard/net-charts.scm` | The Scheme third series is Net Profit = income − expense.  The spec's `balance` is debit − credit = expense − income, the opposite sign, and there is no negated-balance series.  Income (credit) and Expense (debit) match, but the report as a whole does not. |
+| 22 | Income & Expense Linechart | `standard/net-charts.scm` | Same Net Profit sign reason as 21. |
 | 48 | Balance Sheet (eguile) | `standard/balsheet-eg.scm` | An eguile page that duplicates the native Balance Sheet.  The eguile template engine was not added; the native Balance Sheet is the report. |
 | 49 | Budget Chart | `standard/budget-barchart.scm` | One chart per leaf account, each with its own title and a period range chosen by period index.  The native `Chart` is one chart per table with shared labels; a native version would change the report or become a different chart. |
 | 50 | Assets | `standard/account-piecharts.scm` | Pie chart.  The native chart model is bar/line only; a bar view is a different report. |
@@ -408,30 +444,32 @@ backlog.  It is a different number from "unported".
 | 65 | Securities | `standard/account-piecharts.scm` | Pie chart of security account balances; same reason as Assets. |
 | 66 | Tax Report / TXF Export | `locale-specific/de_DE/taxtxf.scm` | German USt report and **ELSTER XML** export.  Its code table exists only as Scheme data (`libgnucash/tax/de_DE/txf.scm`) and the native layer has no ELSTER XML writer.  The US TXF work does not generalize: the export format and the code table are different. |
 
-The 19 closed names are 13 chart-model limitations (49-59, 61, 65), two demos
-(63-64), and four other decisions (48 Balance Sheet (eguile), 60 Multicolumn
-View, 62 Register, 66 Tax Report / TXF Export).  Reopening any of them is a new
-subsystem or a changed report, not a report port.
+The 22 closed names are 15 chart-model limitations (21-22, 49-59, 61, 65),
+two demos (63-64), and five other decisions (20 Account Summary, 48 Balance
+Sheet (eguile), 60 Multicolumn View, 62 Register, 66 Tax Report / TXF Export).
+Reopening any of them is a new subsystem or a changed report, not a report
+port.
 
 ### 3.6 Counts
 
 | Class | Names | Share of 66 | Notes |
 |---|---:|---:|---|
-| native | 28 | 42.4% | 21 implementations; seven names share a renderer. |
-| spec | 5 | 7.6% | 4 built-in specs cover four of them; Account Summary has no built-in. |
-| logic | 12 | 18.2% | About six engines; see section 3.3. |
+| native | 31 | 47.0% | 20 implementations; several names share a renderer. |
+| spec | 2 | 3.0% | The two net-worth charts, shipped as built-in specs. |
+| logic | 9 | 13.6% | About six engines; see section 3.3. |
 | template | 2 | 3.0% | Easy and Fancy Invoice layouts. |
-| closed | 19 | 28.8% | 13 chart-model (including Budget Chart), 2 demos, 4 other decisions. |
+| closed | 22 | 33.3% | 15 chart-model (the two income/expense names plus the 13 earlier), 2 demos, 5 other decisions (including Account Summary). |
 | **total** | **66** | **100%** | 65 loaded per build because of the locale `taxtxf`. |
 
-Native + spec = **33/66 = 50.0%**.  Native + spec + closed = **52/66 =
-78.8%** done-or-decided.  The unported remainder is logic + template =
-**14/66 = 21.2%**.
+Native + spec = **33/66 = 50.0%**.  Native + spec + closed = **55/66 =
+83.3%** done-or-decided.  The unported remainder is logic + template =
+**11/66 = 16.7%**.
 
-Separate from the 66: **4 built-in designer specs** (Income vs Expenses by
-Month, Expenses by Account, Income by Account, Net Worth by Month).  They are
-new reports, not Scheme names, so they are not in the table or the percentages.
-They are the `+4` in the `/api/reports` counts in section 1.1.
+Separate from the 66: **6 built-in designer specs** (Income vs Expenses by
+Month, Expenses by Account, Income by Account, Net Worth by Month, Net Worth
+Barchart, Net Worth Linechart).  The last two carry the Scheme names; the
+first four are new reports.  None is in the 66 table or its percentages; they
+are the `+6` in the `/api/reports` counts in section 1.1.
 
 ## 4. Coverage
 
@@ -439,28 +477,31 @@ They are the `+4` in the `/api/reports` counts in section 1.1.
 
 The headline is deliberately simple:
 
-- **28 of 66 source names render natively: 28/66 = 42.4%.**  That is the
+- **31 of 66 source names render natively: 31/66 = 47.0%.**  That is the
   number to use for "how much of the Scheme registry does the native layer
   replace".  Because the locale loader swaps the two tax reports, the per-build
-  number is **28/65 = 43.1% in a US build** and **27/65 = 41.5% in a German
+  number is **31/65 = 47.7% in a US build** and **30/65 = 46.2% in a German
   build**: the German `Tax Report / TXF Export` replaces the US schedule, and
-  the German report is closed.  The 28/66 source count includes both tax names,
+  the German report is closed.  The 31/66 source count includes both tax names,
   only one of which a build loads.
-- **33 of 66 can be produced without new native code: 33/66 = 50.0%.**  Five
-  more are spec-expressible.  Four of those five correspond to patterns the
-  built-in specs already exercise, but the built-ins are separate names, not
-  registrations of the Scheme names; Account Summary has no built-in.
-  A user who wants the Scheme name itself still needs it registered.
-- **19 of 66 are closed: 19/66 = 28.8%.**  If closed decisions count as
-  "covered", 52/66 = 78.8% is done-or-decided.
-- **14 of 66 are unported: 14/66 = 21.2%.**  This is the only number that is a
+- **33 of 66 can be produced without new native code: 33/66 = 50.0%.**  Two
+  more are spec-expressible, and they are the two net-worth charts (Net Worth
+  Barchart and Net Worth Linechart), shipped as built-in specs under the Scheme
+  names.  The three names the earlier measurement counted as spec-expressible
+  (Account Summary, Income/Expense Chart, Income & Expense Linechart) are
+  closed with the reasons in section 3.5, not approximated.
+- **22 of 66 are closed: 22/66 = 33.3%.**  If closed decisions count as
+  "covered", 55/66 = 83.3% is done-or-decided.
+- **11 of 66 are unported: 11/66 = 16.7%.**  This is the only number that is a
   backlog.
 
-A Guile-free build's `/api/reports` has 28 entries (24 native + 4 built-in
-specs).  That is a different numerator from "24/66 Scheme names": the four
-built-ins are extra reports, not four more Scheme names.  A Guile build's
-`/api/reports` has 69 entries (65 loaded Scheme names + 4 built-in specs).  Do
-not quote 28, 69 or 66 as if they were the same count.
+A Guile-free build's `/api/reports` has 37 entries (31 native + 6 built-in
+specs).  That is a different numerator from "31/66 Scheme names": the six
+built-ins are extra reports, not six more Scheme names (two of them do carry
+Scheme names, but they are still not registry entries in the 66).  A Guile
+build's `/api/reports` has 69 entries (65 loaded Scheme names + 4 built-in
+specs; the other two built-ins replace their Scheme names in the list).  Do
+not quote 37, 69 or 66 as if they were the same count.
 
 ### 4.2 By report class
 
@@ -469,15 +510,15 @@ not quote 28, 69 or 66 as if they were the same count.
 | Core statements (single-column) | 4 | 4 | 0 | 0 | 0 | 0 | **Full** (4/4). |
 | Multicolumn statements | 2 | 0 | 0 | 2 | 0 | 0 | **None** (0/2). |
 | Equity statement | 1 | 0 | 0 | 1 | 0 | 0 | **None** (0/1). |
-| Entry listings | 5 | 2 | 0 | 3 | 0 | 0 | **Partial** (2/5 = 40%). |
+| Entry listings | 5 | 5 | 0 | 0 | 0 | 0 | **Full** (5/5). |
 | Aging | 2 | 2 | 0 | 0 | 0 | 0 | **Full** (2/2). |
 | Budgets | 6 | 5 | 0 | 0 | 0 | 1 | **Full/decided** (5/6 native; Budget Chart closed). |
 | Documents and eguile pages | 7 | 4 | 0 | 0 | 2 | 1 | **Partial** (4/7 native; 2 template remain; eguile duplicate closed). |
 | Tax | 2 | 1 | 0 | 0 | 0 | 1 | **Full/decided** (US native, German closed). |
 | Owner reports | 5 | 5 | 0 | 0 | 0 | 0 | **Full** (5/5). |
-| Investments and lots | 5 | 1 | 0 | 4 | 0 | 0 | **Partial** (1/5 = 20%). |
-| Charts | 16 | 0 | 4 | 0 | 0 | 12 | **Spec/decided** (4 spec, 12 closed). |
-| Account summary | 1 | 0 | 1 | 0 | 0 | 0 | **Spec** (designer only). |
+| Investments and lots | 5 | 5 | 0 | 0 | 0 | 0 | **Full** (5/5). |
+| Charts | 16 | 0 | 2 | 0 | 0 | 14 | **Spec/decided** (2 spec: the net-worth pair; 14 closed). |
+| Account summary | 1 | 0 | 0 | 0 | 0 | 1 | **Closed** (not expressible; see 3.5). |
 | Cash flow | 2 | 0 | 0 | 2 | 0 | 0 | **None** (0/2). |
 | GST | 1 | 0 | 0 | 1 | 0 | 0 | **None** (0/1). |
 | Average balance | 1 | 0 | 0 | 1 | 0 | 0 | **None** (0/1). |
@@ -485,18 +526,19 @@ not quote 28, 69 or 66 as if they were the same count.
 | Register | 1 | 0 | 0 | 0 | 0 | 1 | **Decided** (web route). |
 | Multicolumn View container | 1 | 0 | 0 | 0 | 0 | 1 | **Decided** (loss: composite dashboards). |
 | Demos | 2 | 0 | 0 | 0 | 0 | 2 | **Decided** (no accounting content). |
-| **Total** | **66** | **24** | **5** | **16** | **2** | **19** | |
+| **Total** | **66** | **31** | **2** | **9** | **2** | **22** | |
 
 "Full" means every name in the class renders natively.  "Full/decided" means
 the unported name is closed, so there is no backlog in that class.
-"Spec/decided" means the chart class has four spec-expressible names and the
-rest are closed.  "Partial" means a real backlog remains.  "None" means every
-name in the class is unported logic or template.
+"Spec/decided" means the chart class has two spec-expressible names (the
+net-worth pair) and the rest are closed.  "Partial" means a real backlog
+remains.  "None" means every name in the class is unported logic or template.
 
-The pattern is clear: **the core statements, aging, budgets, the tax schedule
-and the owner reports are fully covered; the primary listings are partly
-covered; the classes that need a cross-tab, a lot/price valuation, or a
-scheduled-transaction engine are not.**  Charts are mostly closed rather than
+The pattern is clear: **the core statements, the entry listings, aging,
+budgets, the tax schedule, the owner reports and the investments/portfolio
+cluster are fully covered; the classes that need a cross-tab, a cash-flow
+classification, a GST/tax-code engine or a scheduled-transaction engine are
+not.**  Charts are mostly closed rather than
 ported, and the two remaining document layouts are the smallest outstanding
 class.
 
@@ -562,8 +604,9 @@ over a book maintained in the desktop application:
   Summary, if they invoice customers or track a job;
 - Investment Lots, Investment Portfolio and Advanced Portfolio for a
   brokerage account, and Lot Viewer for one account's lots;
-- the four built-in chart specs (income vs expenses by month, expenses by
-  account, income by account, net worth by month);
+- the six built-in chart specs (income vs expenses by month, expenses by
+  account, income by account, net worth by month, net worth barchart, net
+  worth linechart);
 - Printable Invoice, Receipt, Tax Invoice and Australian Tax Invoice, if they
   issue documents.
 
@@ -621,20 +664,20 @@ report equity/cash flow, bill with a custom layout, or file non-US tax.
 ### 5.3 How far is the gap?
 
 The unported logic/template gap is **weeks, not months**.  The last six report
-stages added 18 names (from the six core reports to 24) in about nine hours of
-commit-to-commit time (section 6); the 14 remaining names are the same count,
+stages added 25 names (from the six core reports to 31) in about nine hours of
+commit-to-commit time (section 6); the 11 remaining names are the same count,
 and several of them share engines.  At the observed pace, with a 2-3x
 allowance for the harder engines (scheduled transactions), the unported
 work is **order 2-4 weeks**, not the "months in total" of the earlier
 document.
 
-**Full parity is months**, but not because of the 14 unported report names.
-It is months because the 19 closed names include new subsystems: pie, scatter,
-stacked multi-series and per-account period-index charts for 13 names
+**Full parity is months**, but not because of the 11 unported report names.
+It is months because the 22 closed names include new subsystems: pie, scatter,
+stacked multi-series and per-account period-index charts for 15 names
 (including Budget Chart); an ELSTER XML writer and German tax table for one; an
 eguile template engine or a duplicate balance sheet for one; and the
-Register/Multicolumn View/demo decisions for the remaining four.  Those are not
-report ports.  If the product requirement is "every Scheme
+Register/Multicolumn View/demo/Account Summary decisions for the remaining
+five.  Those are not report ports.  If the product requirement is "every Scheme
 report and every Scheme option", the honest estimate is months.  If the
 requirement is "the reports a personal-finance user or a narrow US small
 business needs", the native layer is already there.
@@ -710,7 +753,7 @@ At the observed 650-1,350 hand-written source lines per commit-hour, the
 (14-22 h).  Doubling the wider range for the engines with no close precedent
 gives 18-50 h, which is 1-3 working weeks at 4-6 focused hours a day.  With the
 unknowns in the harder engines, the honest range is **2-4 weeks**, not months.
-The 19 closed names are not in this table; reopening them is the months-scale
+The 22 closed names are not in this table; reopening them is the months-scale
 work described in 5.3.
 
 ### 6.4 What the cost table is not
@@ -718,7 +761,7 @@ work described in 5.3.
 - It is not a schedule.  Commit wall clock is not effort; a commit can sit
   behind a review, a build or an unrelated fix.
 - It is not option parity.  The native reports deliberately expose a subset;
-  matching the Scheme option pages for the 24 native names is additional work
+  matching the Scheme option pages for the 31 native names is additional work
   not counted here.
 - It is not a usage forecast.  No telemetry exists; the order of work should be
   set by which reports a real user needs, not by the line count.
@@ -744,14 +787,17 @@ work described in 5.3.
   them are `gnc-tax-codes.cpp`, generated from the Scheme table by
   `gen-tax-codes.py`.  The hand-written source is 1,185 lines.  Generated
   tables are the reason a tax report can be a stage rather than a project.
-- **The chart model covers exactly four Scheme chart names, in a 1-2-series
-  configuration.**  The four built-ins are new reports, not ports.  Twelve
-  chart-family names (plus Budget Chart) are closed because the model has no
-  pie, scatter or stacked multi-series.  A "we have charts" claim is true for
-  net worth and income/expense lines, not for the chart class.
-- **"Closed" is 29% of the registry.**  That is a large number to leave out of
-  a coverage claim.  If closed decisions count, 73% is done-or-decided; if they
-  do not, 27% is backlog and 36% is native.  The same registry supports three
+- **The chart model covers two Scheme chart names, in a three-series
+  configuration.**  `builtin-net-worth-barchart` and
+  `builtin-net-worth-linechart` are ports of the Scheme names; the other four
+  built-ins are new reports.  The Income/Expense pair is closed on the Net
+  Profit sign, and fifteen chart-family names (including Budget Chart) are
+  closed because the model has no pie, scatter or stacked multi-series.  A
+  "we have charts" claim is true for net worth and income/expense lines, not
+  for the chart class.
+- **"Closed" is 33% of the registry.**  That is a large number to leave out of
+  a coverage claim.  If closed decisions count, 83% is done-or-decided; if they
+  do not, 17% is backlog and 47% is native.  The same registry supports three
   very different headlines, and the document must say which one it is using.
 - **The previous document contradicted itself.**  Its top summary still said
   9/66 and "the majority is not covered", while its last update claimed 19/66
@@ -763,9 +809,9 @@ work described in 5.3.
   checks the read-only API).  A Guile-free report tier still needs a writer for
   the book, normally the desktop application.  The verdict in section 5 is
   about reports and documents, not about replacing data entry.
-- **`/api/reports` is 69 in a Guile build and 28 in a Guile-free build.**
+- **`/api/reports` is 69 in a Guile build and 37 in a Guile-free build.**
   Neither is 66.  The 66 is the source registry; a build loads 65 of those, and
-  the 4 built-ins are extra; the 28 native names are a subset of the 66.
+  the 6 built-ins are extra; the 31 native names are a subset of the 66.
   Quoting any of these as "the number of reports" without the list is a
   category error.
 
@@ -858,8 +904,8 @@ change is needed; this file is the only edited file.
 
 ## 10. What this document does not claim
 
-- It does not claim that 24/66 is a majority; it is not.  It does not present
-  48/66 as "coverage" without saying that 19 of those are closed decisions.
+- It does not claim that 31/66 is a majority; it is not.  It does not present
+  55/66 as "coverage" without saying that 22 of those are closed decisions.
 - It does not claim that native reports are option-complete.  They are not;
   section 2 lists the gap and the 400 behaviour.
 - It does not claim that closed names are easy or impossible.  It records the
@@ -938,16 +984,15 @@ Employee Report, Job Report and Customer Summary joined
 
 ## 12. Update: the entry-listing reports
 
-Measured at `b4aa63f713` plus this cluster.  The summary at the top of the
-document was written at the earlier measurement and still says 24; section 3.1b
-and section 4.1 already count the four valuation names that landed at
-`b4aa63f713`, so the native total before this cluster was **28**.  This cluster
-adds General Journal, Transaction Breakdown Report and Reconciliation Report:
-**31 of 66 = 47.0% native** (31 of the 65 a US build loads, 30 in a German
-build; 31/65 = 47.7% and 30/65 = 46.2%).  Native plus spec is 36/66 = 54.5%;
-native plus spec plus the 19 closed decisions is 55/66 = 83.3%; the unported
-remainder is 11/66 = 16.7% (9 logic + 2 template).  A Guile-free build's
-`/api/reports` has 35 entries (31 native + 4 built-in specs).
+Measured at `b4aa63f713` plus this cluster.  The summary at the top now says
+31; section 3.1b and section 4.1 count the four valuation names that landed at
+`b4aa63f713`, and this cluster adds General Journal, Transaction Breakdown
+Report and Reconciliation Report: **31 of 66 = 47.0% native** (31 of the 65 a
+US build loads, 30 in a German build; 31/65 = 47.7% and 30/65 = 46.2%).
+Native plus spec is 33/66 = 50.0%; native plus spec plus the 22 closed
+decisions is 55/66 = 83.3%; the unported remainder is 11/66 = 16.7% (9 logic +
+2 template).  A Guile-free build's `/api/reports` has 37 entries (31 native +
+6 built-in specs).
 
 - **General Journal is not the Transaction Report.**  `general-journal.scm`
   delegates to the register renderer configured in journal mode over a query

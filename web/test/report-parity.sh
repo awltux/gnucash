@@ -16,8 +16,14 @@
 # "Budget Income Statement", "Budget Profit & Loss", "Budget Balance Sheet",
 # "Budget Flow", "Printable Invoice", "Receipt", "Tax Invoice",
 # "Australian Tax Invoice", "Tax Schedule Report/TXF Export", "Customer
-# Report", "Vendor Report", "Employee Report", "Job Report" and "Customer
-# Summary" are supported.
+# Report", "Vendor Report", "Employee Report", "Job Report", "Customer
+# Summary", "Net Worth Barchart" and "Net Worth Linechart" are supported.
+# The two net-worth names are built-in designer specs, not native reports:
+# the harness renders a preview of the built-in with the dates the oracle is
+# asked for, and the `chart` extractor compares the embedded chart data
+# (chart type, label count, and every series' values in order) rather than a
+# table.  The Scheme chart's date labels and series labels differ from the
+# native ones by design, so they are not part of the comparison.
 # Each report has its own extractor (see extractor_for below), because the
 # reports do not agree on what a row is: the Trial Balance is (account, debit,
 # credit), the balance sheet and P&L are (label, amount) with section headings
@@ -240,6 +246,7 @@ extractor_for() {
         "Customer Report"|"Vendor Report"|"Employee Report"|\
         "Job Report") echo owner-report ;;
         "Customer Summary") echo customer-summary ;;
+        "Net Worth Barchart"|"Net Worth Linechart") echo chart ;;
         *) return 1 ;;
     esac
 }
@@ -278,6 +285,20 @@ report_guid() {
         "Employee Report") echo "08ae9c2e884b4f9787144f47eacd7f44" ;;
         "Job Report") echo "5518ac227e474f47a34439f2d4d049de" ;;
         "Customer Summary") echo "4166a20981985fd2b07ff8cb3b7d384e" ;;
+        "Net Worth Barchart") echo "cbba1696c8c24744848062c7f1cf4a72" ;;
+        "Net Worth Linechart") echo "d8b63264186b11e19038001558291366" ;;
+        *) return 1 ;;
+    esac
+}
+
+# The two Scheme chart names are served natively as built-in designer specs,
+# not as native reports: /report/spec/<id> renders them, and a preview spec
+# with explicit dates renders the same chart over the dates the oracle is
+# asked for.  A name with no entry here uses the ordinary /report/<name>.
+native_spec_id() {
+    case "$1" in
+        "Net Worth Barchart") echo builtin-net-worth-barchart ;;
+        "Net Worth Linechart") echo builtin-net-worth-linechart ;;
         *) return 1 ;;
     esac
 }
@@ -384,7 +405,7 @@ scheme_account_single() {
 
 
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, General Journal, Transaction Breakdown Report, Reconciliation Report, Receivable Aging, Payable Aging, Investment Lots, Investment Portfolio, Advanced Portfolio, Lot Viewer, IFRS weighted-average cost basis report, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export, Customer Report, Vendor Report, Employee Report, Job Report, Customer Summary)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, General Journal, Transaction Breakdown Report, Reconciliation Report, Receivable Aging, Payable Aging, Investment Lots, Investment Portfolio, Advanced Portfolio, Lot Viewer, IFRS weighted-average cost basis report, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export, Customer Report, Vendor Report, Employee Report, Job Report, Customer Summary, Net Worth Barchart, Net Worth Linechart)"
 
 case "$REPORT" in
     "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
@@ -835,14 +856,46 @@ if [ -n "$EXTRA_OPTIONS" ]; then
     add_param "$EXTRA_OPTIONS"
 fi
 [ -n "$REQUEST_QUERY" ] && REQUEST_QUERY="?$REQUEST_QUERY"
-curl -fsS "${URL%/}/report/$REQUEST_NAME$REQUEST_QUERY" -o "$TMP/native.html" \
-    || { cat "$TMP/server.log" >&2; fail "the native report request failed"; }
+SPEC_ID=$(native_spec_id "$REPORT" || true)
+if [ -n "$SPEC_ID" ]; then
+    # The report is a built-in designer spec, so /report/<name> does not
+    # exist.  With dates, render a preview of the same spec over the dates the
+    # oracle was asked for; without them, render the built-in itself (the
+    # spec's own date_preset decides the range).
+    if [ -n "$START" ] || [ -n "$END" ]; then
+        curl -fsS "${URL%/}/api/specs/$SPEC_ID" -o "$TMP/spec.json" \
+            || { cat "$TMP/server.log" >&2; fail "cannot read the built-in spec"; }
+        python3 - "$TMP/spec.json" "$START" "$END" "$TMP/preview.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    spec = json.load(handle)
+spec["date_preset"] = ""
+spec["start"] = sys.argv[2]
+spec["end"] = sys.argv[3]
+with open(sys.argv[4], "w", encoding="utf-8") as handle:
+    json.dump(spec, handle)
+PY
+        curl -fsS -X POST -H 'Content-Type: application/json' \
+            --data-binary @"$TMP/preview.json" \
+            "${URL%/}/api/spec/preview" -o "$TMP/native.html" \
+            || { cat "$TMP/server.log" >&2; fail "the native spec preview failed"; }
+    else
+        curl -fsS "${URL%/}/report/spec/$SPEC_ID" -o "$TMP/native.html" \
+            || { cat "$TMP/server.log" >&2; fail "the native built-in request failed"; }
+    fi
+else
+    curl -fsS "${URL%/}/report/$REQUEST_NAME$REQUEST_QUERY" -o "$TMP/native.html" \
+        || { cat "$TMP/server.log" >&2; fail "the native report request failed"; }
+fi
 [ -s "$TMP/native.html" ] || fail "the native report is empty"
 
 # ----------------------------------------------------------------- compare
 python3 - "$TMP/scheme.html" "$TMP/native.html" "$EXTRACTOR" "$REPORT" <<'PY'
 import re
 import os
+import json
 import sys
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
@@ -1664,6 +1717,45 @@ def reconciliation(rows):
     return out
 
 
+def chart_extract(path, scheme):
+    """The chart both engines embed, as type, period count, series and values.
+
+    The Scheme document writes its Chart.js options as a JavaScript object
+    literal; the native document writes the same data as JSON in
+    `<script id='report-chart-data'>`.  Labels differ by design (the Scheme
+    uses "MM/DD/YY" step dates and its own series wording, the native uses
+    "Month YYYY" and the amount-column names), so the comparison is the
+    plotted data: the chart type, the number of labels, and every series'
+    values in order.  The caller asks both engines for the same period, which
+    is what makes the series line up index by index.
+    """
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        raw = handle.read()
+    if scheme:
+        match = re.search(r"var chartjsoptions = (\{.*?\});\s*\n", raw, re.S)
+        if match is None:
+            return []
+        data = json.loads(match.group(1))
+        labels = data["data"]["labels"]
+        series = [(item.get("label"), item.get("data"))
+                  for item in data["data"]["datasets"]]
+    else:
+        match = re.search(
+            r"<script type='application/json' id='report-chart-data'>"
+            r"(.*?)</script>", raw, re.S)
+        if match is None:
+            return []
+        data = json.loads(match.group(1))
+        labels = data.get("labels", [])
+        series = [(item.get("label"), item.get("values"))
+                  for item in data.get("series", [])]
+    out = [("TYPE", data.get("type")), ("LABELS", len(labels)),
+           ("SERIES", len(series))]
+    for label, values in series:
+        out.append(("VALUES", tuple(values)))
+    return out
+
+
 EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "transaction-report": transaction_report,
               "general-ledger": general_ledger,
@@ -1679,7 +1771,7 @@ EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "owner-report": owner_report,
               "customer-summary": customer_summary}
 
-extractor = EXTRACTORS[sys.argv[3]]
+extractor = EXTRACTORS.get(sys.argv[3])
 report = sys.argv[4]
 # The document extractors scope the parse to the entries of their document:
 # the printable invoice's div, the receipt's products div, and the tax
@@ -1691,8 +1783,12 @@ scope = SCOPES.get(sys.argv[3])
 # The tax schedule's totals are built in nested tables, so that parser must
 # stay at the outer table's rows and treat the nested markup as cell text.
 top_level = sys.argv[3] == "tax-schedule"
-scheme = extract(extractor, sys.argv[1], scope, top_level)
-native = extract(extractor, sys.argv[2], scope, top_level)
+if sys.argv[3] == "chart":
+    scheme = chart_extract(sys.argv[1], True)
+    native = chart_extract(sys.argv[2], False)
+else:
+    scheme = extract(extractor, sys.argv[1], scope, top_level)
+    native = extract(extractor, sys.argv[2], scope, top_level)
 
 print(f"report: {report}")
 print(f"scheme rows: {len(scheme)}")

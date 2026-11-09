@@ -85,14 +85,22 @@ that.
 The combinations that cannot mean anything are 400s before rendering, each
 naming the field: a chart with no amount column, a series that is not in
 `columns`, `account-name` or `subtotal` as a series, a repeated series, more
-than two series, `balance` mixed with `debit`/`credit` (a net and its own
-part), `chart_series` without `chart`, and `period_mode: "cumulative"`
-without period grouping. An unknown chart type, account type, grouping or
-period unit is rejected the same way.
+than three series, `balance` mixed with only one of `debit`/`credit` (a net
+and its own part), the three-series chart on a flat or account-tree report (a
+row's balance is not a period net), `chart_series` without `chart`, and
+`period_mode: "cumulative"` without period grouping. An unknown chart type,
+account type, grouping or period unit is rejected the same way.
+
+On a `period` report the three amount columns are one period's two sides and
+its net, so `debit`, `credit` and `balance` may be drawn together.  That is
+the Income / Expense / Net Profit shape, and on a cumulative asset-and-
+liability scope it is the Assets / Liabilities / Net Worth shape.  The series
+still carry the amount-column names ("Debit", "Credit", "Balance"), not the
+Scheme report's labels.
 
 ## Built-in specs
 
-`gnc-webd` defines four report specs in code, so a fresh build — with or
+`gnc-webd` defines six report specs in code, so a fresh build — with or
 without Guile — offers reports beyond the native reports:
 
 | id | report | scope and chart |
@@ -101,6 +109,8 @@ without Guile — offers reports beyond the native reports:
 | `builtin-expenses-by-account` | Expenses by Account | `EXPENSE`, all dates, one bar per expense account with activity |
 | `builtin-income-by-account` | Income by Account | `INCOME`, all dates, one bar per income account with activity |
 | `builtin-net-worth-month` | Net Worth by Month | asset and liability account types, cumulative balance at each month's end (so the line is net worth, not the month's change) |
+| `builtin-net-worth-barchart` | Net Worth Barchart | asset and liability account types, cumulative balance at each month's end; three series, `debit` (the positive-balance side), `credit` (the negative-balance side) and `balance` (net worth) |
+| `builtin-net-worth-linechart` | Net Worth Linechart | the same three series as a line |
 
 They are served by `GET /api/specs` under `builtin` (with `"builtin": true`),
 are named in `GET /api/reports` beside the native and Scheme reports, and
@@ -109,6 +119,35 @@ render at `/report/spec/<id>`. They are not written to the saved store, and
 which accounts they are scoped to, because a period report over an unscoped
 double-entry book nets to zero every period: the scoping is what makes the
 numbers mean something, and an unscoped net-worth report would not exist.
+
+## The Scheme chart names
+
+Of the four Scheme names built from `standard/net-charts.scm`, two are
+shipped as the built-ins above and two are closed:
+
+| Scheme name | Decision |
+|---|---|
+| Net Worth Barchart | Shipped.  Assets / Liabilities / Net Worth are the cumulative period's debit / credit / balance.  On `sample1.gnucash` the three series match the Scheme chart's 13 month-end values exactly (see `doc/report-coverage.md`). |
+| Net Worth Linechart | Shipped, the same data as a line. |
+| Income/Expense Chart | Closed.  The Scheme report's third series is Net Profit = income − expense.  The spec's `balance` is debit − credit = expense − income, so the third series would be plotted with the opposite sign; the spec has no negated-balance series. |
+| Income & Expense Linechart | Closed for the same reason. |
+
+The two shipped reports draw the amount columns' names ("Debit", "Credit",
+"Balance"), not the Scheme labels ("Assets", "Liabilities", "Net Worth"), and
+they cover the book's transaction range rather than the Scheme report's
+current-fiscal-year default.  Their `debit`/`credit` are the balance signs,
+not the account types; an overdrawn asset (a negative asset balance) lands on
+the credit side where the Scheme report keeps it under Assets as a negative
+value.  A book whose balances all have their normal sign (the usual case)
+produces the Scheme numbers.
+
+**Account Summary** is not a spec at all: the Scheme default sign-reverses
+credit-normal accounts (A/P +585, Equity +10,000), prints own-balance parent
+rows with no subtotal rows, offers an Account Code column, and reports as of
+today.  The spec's `balance` is the raw signed amount, `account-tree` prints
+subtree rollups plus a subtotal row per parent, has no code column, and its
+date presets only reach `all`/`this-year`.  It stays a Scheme-only report and
+is closed in `doc/report-coverage.md`, not approximated with a built-in.
 
 ## Reports a spec cannot describe: the budget reports
 
@@ -168,9 +207,10 @@ what Save produces.
 strips the `builtin` flag, posts it to `POST /api/spec/preview`, and compares
 the preview with `/report/spec/<id>` **byte for byte**: a built-in that is
 not exactly the spec a user could build by hand fails. It also asserts the
-chart's data block is the period table's own Debit/Credit figures, that an
-explicit wider date range changes the periods, and that each nonsensical
-chart combination is a 400 naming the field.
+chart's data block is the period table's own Debit/Credit figures, that the
+net-worth built-ins draw all three series, that a narrower scope and a wider
+period change the three series, and that each nonsensical chart combination
+is a 400 naming the field.
 
 `web/test/ui-test.mjs` builds a spec in the browser equivalent to an explicit
 `/report/Trial Balance?end=2018-12-31` request, previews it, saves it, reloads
@@ -183,9 +223,9 @@ change — a static chart image cannot pass.
 ## Builds without Guile
 
 The designer is part of the native report layer and needs no Guile: the same
-routes, storage and rendering work in the `WITH_GUILE=OFF` build. The four
+routes, storage and rendering work in the `WITH_GUILE=OFF` build. The six
 built-in specs are named in `/api/reports` in both builds; alongside the
 Scheme templates in a Guile build, and as the reports beyond the native
-fourteen without one. The 501 for a report the native layer does not know and this
+thirty-one without one. The 501 for a report the native layer does not know and this
 build cannot run stays exactly as it was: no built-in makes a Scheme report
 look native.
