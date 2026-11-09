@@ -83,12 +83,13 @@ reports_code=$(curl -sS -o "$REPORTS_FILE" -w '%{http_code}' "${URL}api/reports"
 reports=$(cat "$REPORTS_FILE")
 echo "$reports" | grep -q '"Trial Balance"' || fail "report list has no Trial Balance"
 for native_report in "Balance Sheet" "Income Statement" "Profit & Loss" \
-                     "Receivable Aging" "Payable Aging" "Investment Lots"; do
+                     "Receivable Aging" "Payable Aging" "Investment Lots" \
+                     "Budget Report"; do
     echo "$reports" | grep -q "\"$native_report\"" \
         || fail "report list has no $native_report"
 done
 # The built-in designer specs are reports in every build: without Guile they
-# are what the list offers beyond the native nine.
+# are what the list offers beyond the native ten.
 for builtin_report in "Income vs Expenses by Month" "Expenses by Account" \
                       "Income by Account" "Net Worth by Month"; do
     echo "$reports" | grep -q "\"$builtin_report\"" \
@@ -107,6 +108,15 @@ echo "$report" | grep -q "number-cell" || fail "native report has no amount cell
 echo "$report" | grep -q "Accounts Payable" || fail "native report has no account rows"
 [ "${#report}" -gt 5000 ] || fail "report looks empty (${#report} bytes)"
 echo "report bytes: ${#report}"
+
+# The budget report is native too.  sample1 has no budget object at all, so
+# the report's correct output is the Scheme engine's "No budgets exist"
+# warning; the budget-vs-actual numbers are covered by report-parity.sh on the
+# book web/test/make-budget-book.py generates.
+budget_report=$(curl -fsS "${URL}report/Budget%20Report") \
+    || { cat "$LOG" >&2; fail "GET Budget Report failed"; }
+echo "$budget_report" | grep -q "No budgets exist" \
+    || fail "the budget report does not explain that the book has no budget"
 
 # The balance sheet and the P&L are native too: same engine, different
 # grouping.  Check the numbers that make them recognisable rather than just

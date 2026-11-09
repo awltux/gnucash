@@ -161,6 +161,25 @@ expect_status 400 "period on the lots report" \
     "/report/Investment%20Lots?period=all"
 expect_body "period on the lots report" "does not accept a 'period' option"
 
+# The Budget Report reads a budget object rather than a query over splits, so
+# its only honest option is the account selection: its Scheme "dates" are
+# budget-period selectors, not calendar dates.  It always uses the book's
+# default budget.
+expect_status 200 "Budget Report options" "/api/report/Budget%20Report/options"
+expect_body "Budget Report options" '"name":"accounts"'
+expect_body "Budget Report options" '"type":"account-list"'
+expect_not_body "Budget Report options has no date" '"name":"start"'
+expect_not_body "Budget Report options has no end date" '"name":"end"'
+expect_not_body "Budget Report options has no currency" '"name":"currency"'
+expect_not_body "Budget Report options has no period preset" '"name":"period"'
+expect_status 400 "period on the budget report" \
+    "/report/Budget%20Report?period=all"
+expect_body "period on the budget report" "does not accept a 'period' option"
+expect_status 400 "currency on the budget report" \
+    "/report/Budget%20Report?currency=USD"
+expect_body "currency on the budget report" \
+    "does not accept a 'currency' option"
+
 expect_status 404 "options for an unknown report" "/api/report/No%20Such%20Report/options"
 
 echo "== the report list"
@@ -328,6 +347,18 @@ PY
     cp "$BODY" "$OPTDIR/no-options.html"
     fetch "/report/$enc${base:+?$base}" > /dev/null
     cp "$BODY" "$OPTDIR/baseline.html"
+
+    # A report whose data is simply absent from this book cannot demonstrate
+    # that its options are effective.  The budget report is the one such
+    # case: sample1 has no budget at all, so both the default and
+    # accounts=all render the Scheme engine's "No budgets exist" warning.
+    # The budget data path, including the account selection, is covered by
+    # report-parity.sh on the book make-budget-book.py generates.
+    if [ "$report" = "Budget Report" ] && \
+        grep -qF "No budgets exist" "$OPTDIR/no-options.html"; then
+        ok "$report has no budget in this book; the generated-book parity test covers it"
+        continue
+    fi
 
     while IFS= read -r opt; do
         [ "$opt" = "currency" ] && continue

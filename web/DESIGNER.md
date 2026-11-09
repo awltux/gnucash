@@ -93,7 +93,7 @@ period unit is rejected the same way.
 ## Built-in specs
 
 `gnc-webd` defines four report specs in code, so a fresh build — with or
-without Guile — offers reports beyond the native nine:
+without Guile — offers reports beyond the native ten:
 
 | id | report | scope and chart |
 |---|---|---|
@@ -109,6 +109,25 @@ render at `/report/spec/<id>`. They are not written to the saved store, and
 which accounts they are scoped to, because a period report over an unscoped
 double-entry book nets to zero every period: the scoping is what makes the
 numbers mean something, and an unscoped net-worth report would not exist.
+
+## Reports a spec cannot describe: the budget report
+
+A spec is a query over splits plus a column vocabulary.  The Budget Report
+(`/report/Budget%20Report`, ported from `reports/standard/budget.scm`) is not
+one: its amounts come from the book's budget object, an engine entity stored
+beside the accounts, not from splits in a date range.  It therefore has no
+built-in spec and no designer form.  It is a native report in its own right,
+so it is named in `/api/reports`, has an option descriptor (the account
+selection) and is rendered in both builds, but the designer's controls cannot
+express "budget value for this account in this budget period".
+
+That report deliberately exposes only what the native option surface can
+honestly carry: the account selection.  The Scheme report's dates are budget
+period selectors, its budget option selects among the book's budgets, and its
+accumulate/difference/total/notes switches are columns; none of those has a
+native option type yet.  The defaults of all of them are what the native
+report renders, and `web/test/report-parity.sh` compares it with the Scheme
+report on a generated book (`web/test/make-budget-book.py`).
 
 
 ## HTTP surface
@@ -155,7 +174,7 @@ change — a static chart image cannot pass.
 The designer is part of the native report layer and needs no Guile: the same
 routes, storage and rendering work in the `WITH_GUILE=OFF` build. The four
 built-in specs are named in `/api/reports` in both builds; alongside the
-Scheme templates in a Guile build, and as the reports beyond the native nine
+Scheme templates in a Guile build, and as the reports beyond the native ten
 without one. The 501 for a report the native layer does not know and this
 build cannot run stays exactly as it was: no built-in makes a Scheme report
 look native.

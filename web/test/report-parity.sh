@@ -10,7 +10,7 @@
 #
 # [report] defaults to "Trial Balance"; "Balance Sheet", "Income Statement",
 # "Profit & Loss", "Transaction Report", "General Ledger", "Receivable Aging",
-# "Payable Aging" and "Investment Lots" are supported.
+# "Payable Aging", "Investment Lots" and "Budget Report" are supported.
 # Each report has its own extractor (see extractor_for below), because the
 # reports do not agree on what a row is: the Trial Balance is (account, debit,
 # credit), the balance sheet and P&L are (label, amount) with section headings
@@ -63,6 +63,17 @@
 # Its account selection is not part of the native route: the report always
 # covers every stock and mutual fund account, which is the Scheme report's
 # default selection.
+#
+# The Budget Report needs a book with a budget; no fixture book has budget
+# values, so generate one and run the report with its own defaults (the whole
+# budget and the default account selection):
+#
+#   python3 web/test/make-budget-book.py /tmp/budget-book.gnucash
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/budget-book.gnucash "Budget Report"
+#
+# Its period range is a range of budget periods, not calendar dates, so this
+# harness refuses start/end for it.
 set -u
 
 GUILE_BUILD=${1:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end] [accounts]}
@@ -93,6 +104,7 @@ extractor_for() {
         "General Ledger")   echo general-ledger ;;
         "Receivable Aging"|"Payable Aging") echo aging ;;
         "Investment Lots") echo investment-lots ;;
+        "Budget Report") echo budget-report ;;
         *) return 1 ;;
     esac
 }
@@ -108,6 +120,7 @@ report_guid() {
         "Receivable Aging") echo "9cf76bed17f14401b8e3e22d0079cb98" ;;
         "Payable Aging")    echo "e57770f2dbca46619d6dac4ac5469b50" ;;
         "Investment Lots")  echo "ab2acc24afd14630a551f98f1a35fa81" ;;
+        "Budget Report")    echo "810ed4b25ef0486ea43bbd3dddb32b11" ;;
         *) return 1 ;;
     esac
 }
@@ -134,6 +147,9 @@ scheme_start_option() {
         "Receivable Aging"|"Payable Aging") echo "" ;;
         # The lots report calls its dates "Start date"/"End date".
         "Investment Lots") echo "Start date" ;;
+        # The budget report's period range is a range of budget periods, not
+        # calendar dates; it has no date option at all.
+        "Budget Report") echo "" ;;
         *) echo "Start Date" ;;
     esac
 }
@@ -144,18 +160,35 @@ scheme_end_option() {
         "Balance Sheet") echo "Balance Sheet Date" ;;
         "Receivable Aging"|"Payable Aging") echo "To" ;;
         "Investment Lots") echo "End date" ;;
+        "Budget Report") echo "" ;;
         *) echo "End Date" ;;
     esac
 }
 
-# The native route's own option surface.  Only the transaction engine reports
-# have an account selection.
+# The native route's own option surface.  The transaction engine reports and
+# the budget report have an account selection.
 native_takes_accounts() {
-    needs_accounts "$1"
+    case "$1" in
+        "Transaction Report"|"General Ledger"|"Budget Report") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The Scheme option name under the "Accounts" page.  The transaction reports
+# call it "Accounts"; the budget report's option is "Account".
+scheme_account_option() {
+    case "$1" in
+        "Budget Report") echo "Account" ;;
+        *) echo "Accounts" ;;
+    esac
 }
 
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Budget Report)"
+
+if [ "$REPORT" = "Budget Report" ] && { [ -n "$START" ] || [ -n "$END" ]; }; then
+    fail "the Budget Report's range is a range of budget periods, not dates"
+fi
 
 [ -x "$CLI" ] || fail "no gnucash-cli at $CLI (need a WITH_GNUCASH Guile build, or set GNC_CLI)"
 [ -x "$WEBDBIN" ] || fail "gnc-webd was not built at $WEBDBIN"
@@ -250,7 +283,7 @@ if [ -n "$START" ] || [ -n "$END" ] || [ -n "$ACCOUNTS" ]; then
                                             (member (gncAccountGetGUID a) wanted))
                                           all))))"
         fi
-        ACCOUNT_OPTION="(gnc-set-option (gnc:optiondb options) \"Accounts\" \"Accounts\"
+        ACCOUNT_OPTION="(gnc-set-option (gnc:optiondb options) \"Accounts\" \"$(scheme_account_option "$REPORT")\"
                         $ACCOUNT_EXPR)"
     fi
 
@@ -409,20 +442,24 @@ def parse(path):
 
 
 NO_ACCOUNTS = "No accounts selected"
+NO_BUDGET = "No budgets exist"
 
 
 def extract(extractor, path):
-    """Run a report's extractor, and notice its "no accounts selected" page.
+    """Run a report's extractor, and notice its warning page.
 
     The transaction report and the general ledger have no default account
-    selection; both engines then render a warning instead of a table.  That
-    warning is the report's correct default output, so compare its wording
+    selection; both engines then render a warning instead of a table.  The
+    budget report renders its own warning when the book has no budget.  Those
+    warnings are the reports' correct default output, so compare their wording
     rather than treating "no rows" as a match by accident.
     """
     raw, rows = parse(path)
     extracted = extractor(rows)
     if not extracted and NO_ACCOUNTS in raw:
         return [("PLACEHOLDER", NO_ACCOUNTS)]
+    if not extracted and NO_BUDGET in raw:
+        return [("PLACEHOLDER", NO_BUDGET)]
     return extracted
 
 
@@ -433,7 +470,7 @@ def amount(text):
     text = text.replace("\u00a0", " ")
     negative = text.strip().startswith("(") and text.strip().endswith(")")
     text = re.sub(r"[^0-9.,\-]", "", text)
-    if text in ("", "-"):
+    if text in ("", "-", "."):
         return Decimal(0)
     try:
         value = Decimal(text.replace(",", ""))
@@ -637,10 +674,38 @@ def lot_value(text, cell_class):
     return stripped
 
 
+def budget_report(rows):
+    """The budget-vs-actual table: (account, budget, actual, ...) per period.
+
+    The Scheme document has two header rows (the period date with a colspan,
+    then the Bgt/Act labels) and the native document one (``Bgt <date>`` /
+    ``Act <date>``); neither header row has a label in the first cell, so the
+    extractor keeps every row that has a text label and at least one amount.
+    A zero budget prints "." in both engines, which amount() reads as zero; a
+    zero actual prints a monetary zero.  The account labels are indented with
+    non-breaking spaces in the Scheme document, so those are stripped before
+    comparison.
+    """
+    out = []
+    for cells in rows:
+        if not cells or cells[0][1] not in LABEL:
+            continue
+        label = " ".join(cells[0][0].replace("\u00a0", " ").split())
+        if not label:
+            continue
+        numbers = tuple(amount(t) for t, c in cells[1:]
+                        if is_number(c) and t.strip())
+        if not numbers:
+            continue
+        out.append((label,) + numbers)
+    return out
+
+
 EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "transaction-report": transaction_report,
               "general-ledger": general_ledger, "aging": aging,
-              "investment-lots": investment_lots}
+              "investment-lots": investment_lots,
+              "budget-report": budget_report}
 
 extractor = EXTRACTORS[sys.argv[3]]
 report = sys.argv[4]

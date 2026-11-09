@@ -33,6 +33,7 @@ extern "C"
 #include <Split.h>
 #include <Transaction.h>
 #include <gnc-accounting-period.h>
+#include <gnc-budget.h>
 #include <gnc-commodity.h>
 #include <gnc-date.h>
 #include <gnc-lot.h>
@@ -3291,6 +3292,195 @@ investment_lots (Account* root, const LotOptions& options,
     return report;
 }
 
+/* ---------------------------------------------------------- budget report */
+
+namespace
+{
+
+/* The Scheme report's "Account Display Depth" default: two displayed
+ * levels, counted from the top-level accounts.  The Scheme account table
+ * counts a *logical* depth rather than the tree depth -- an account's depth
+ * grows only when its parent was itself displayed -- which is why an
+ * explicitly selected deep account with no selected ancestors can still be
+ * shown.  The traversal below mirrors that. */
+constexpr int budget_display_depth = 2;
+
+/* The Scheme report's default account selection: exactly these four types,
+ * not the engine's debit/credit families.  A bank account (ACCT_TYPE_BANK) is
+ * therefore outside the default scope, as it is in the Scheme report. */
+bool
+budget_default_account_type (const Account* account)
+{
+    switch (xaccAccountGetType (account))
+    {
+    case ACCT_TYPE_ASSET:
+    case ACCT_TYPE_LIABILITY:
+    case ACCT_TYPE_INCOME:
+    case ACCT_TYPE_EXPENSE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* gnc:get-account-period-rolledup-budget-value(): a value set on the account
+ * wins (budget values are inclusive of sub-accounts, so it is not added to
+ * the children's), otherwise the children's values are summed, converted into
+ * this account's commodity at the period start. */
+gnc_numeric
+budget_rolled_up_value (const GncBudget* budget, Account* account,
+                        guint period, GNCPriceDB* price_db)
+{
+    if (gnc_budget_is_account_period_value_set (budget, account, period))
+        return gnc_budget_get_account_period_value (budget, account, period);
+
+    GList* children = gnc_account_get_children_sorted (account);
+    if (children == nullptr)
+        return gnc_numeric_zero ();
+
+    gnc_commodity* currency = xaccAccountGetCommodity (account);
+    const time64 start = gnc_budget_get_period_start_date (budget, period);
+    gnc_numeric total = gnc_numeric_zero ();
+    for (GList* node = children; node != nullptr; node = node->next)
+    {
+        auto* child = static_cast<Account*> (node->data);
+        gnc_numeric value = budget_rolled_up_value (budget, child, period,
+                                                    price_db);
+        if (currency != nullptr)
+            value = gnc_pricedb_convert_balance_nearest_price_t64 (
+                price_db, value, xaccAccountGetCommodity (child), currency,
+                start);
+        total = numeric_add (total, value);
+    }
+    g_list_free (children);
+    return total;
+}
+
+void
+collect_budget_rows (Account* parent, int logical_depth,
+                     const std::set<Account*>& selected,
+                     GncBudget* budget, guint period_count,
+                     GNCPriceDB* price_db, CellTable& table)
+{
+    GList* children = gnc_account_get_children_sorted (parent);
+    for (GList* node = children; node != nullptr; node = node->next)
+    {
+        auto* account = static_cast<Account*> (node->data);
+        const bool displayed =
+            selected.count (account) != 0 &&
+            logical_depth < budget_display_depth;
+
+        if (displayed)
+        {
+            const bool reverse = gnc_reverse_balance (account);
+            gnc_commodity* commodity = xaccAccountGetCommodity (account);
+
+            std::vector<Cell> row;
+            row.push_back ({account_name (account), "text-cell", 1});
+            for (guint period = 0; period < period_count; ++period)
+            {
+                gnc_numeric budget_value = budget_rolled_up_value (
+                    budget, account, period, price_db);
+                gnc_numeric actual_value =
+                    gnc_budget_get_account_period_actual_value (budget, account,
+                                                               period);
+                if (reverse)
+                {
+                    budget_value = gnc_numeric_neg (budget_value);
+                    actual_value = gnc_numeric_neg (actual_value);
+                }
+
+                /* The Scheme report prints "." for a zero budget, but a
+                 * monetary zero for an actual that happens to be zero. */
+                row.push_back ({gnc_numeric_zero_p (budget_value)
+                                    ? "."
+                                    : format_amount (budget_value, commodity),
+                                "number-cell"});
+                row.push_back (
+                    {format_amount (actual_value, commodity), "number-cell"});
+            }
+            table.rows.push_back (std::move (row));
+        }
+
+        collect_budget_rows (account,
+                             displayed ? logical_depth + 1 : logical_depth,
+                             selected, budget, period_count, price_db, table);
+    }
+    g_list_free (children);
+}
+
+std::string
+printed_short_date (time64 when)
+{
+    char date[32] = {0};
+    qof_print_date_buff (date, sizeof date, when);
+    return std::string (date);
+}
+
+} // namespace
+
+CellTable
+budget_report (Account* root, GncBudget* budget,
+               const std::vector<Account*>& accounts)
+{
+    CellTable table;
+    if (root == nullptr || budget == nullptr)
+        return table;
+
+    const guint period_count = gnc_budget_get_num_periods (budget);
+
+    /* The headings flatten the Scheme report's two header rows (the period
+     * date with a colspan, then Bgt/Act) into one label per column.  The
+     * parity harness compares the amounts and the account labels, not the
+     * header markup. */
+    table.headings.push_back ("Account");
+    for (guint period = 0; period < period_count; ++period)
+    {
+        const std::string date = printed_short_date (
+            gnc_budget_get_period_start_date (budget, period));
+        table.headings.push_back ("Bgt " + date);
+        table.headings.push_back ("Act " + date);
+    }
+
+    std::set<Account*> selected;
+    if (accounts.empty ())
+    {
+        std::vector<Account*> all;
+        collect_accounts (root, all);
+        for (Account* account : all)
+        {
+            if (budget_default_account_type (account))
+                selected.insert (account);
+        }
+    }
+    else
+    {
+        for (Account* account : accounts)
+            selected.insert (account);
+    }
+
+    if (selected.empty ())
+        return table;
+
+    GNCPriceDB* price_db =
+        gnc_pricedb_get_db (qof_instance_get_book (QOF_INSTANCE (root)));
+    collect_budget_rows (root, 0, selected, budget, period_count, price_db,
+                         table);
+    return table;
+}
+
+std::string
+render_no_budget (const std::string& title)
+{
+    std::ostringstream out;
+    out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
+        << html_escape (title) << "</title><style>" << report_stylesheet ()
+        << "</style></head><body><h3>" << html_escape (title)
+        << ":</h3>\n<h3></h3>\n<p>No budgets exist. You must create at "
+           "least one budget.</p>\n</body></html>\n";
+    return out.str ();
+}
+
 namespace
 {
 
@@ -3620,7 +3810,8 @@ native_report_names ()
 {
     return {"Trial Balance", "Balance Sheet", "Income Statement",
             "Profit & Loss", "Transaction Report", "General Ledger",
-            "Receivable Aging", "Payable Aging", "Investment Lots"};
+            "Receivable Aging", "Payable Aging", "Investment Lots",
+            "Budget Report"};
 }
 
 /* --------------------------------------------------------------- options */
@@ -3852,6 +4043,27 @@ report_options (const std::string& name)
          * the route checks report_has_option() before resolving one. */
         return options;
     }
+    else if (name == "Budget Report")
+    {
+        /* Only the account selection.  The Scheme report's dates are budget
+         * period selectors ("Range start"/"Range end" over the budget's own
+         * periods), not calendar dates, so the route's start/end options
+         * cannot stand in for them; the budget itself defaults to the book's
+         * default budget, and the option surface has no budget type to select
+         * another one.  This is why the report is registered natively but not
+         * exposed to the designer, whose specs are queries over splits rather
+         * than over a budget object. */
+        OptionDescriptor accounts = accounts_option ();
+        accounts.description =
+            "Accounts to report on, as a comma-separated list of account "
+            "GUIDs; each GUID selects that account's subtree.  \"all\" selects "
+            "every account in the book.  Without the option the report's own "
+            "default selection applies: every ASSET, LIABILITY, INCOME and "
+            "EXPENSE account, two display levels deep, which is the Scheme "
+            "budget report's default.";
+        options.push_back (accounts);
+        return options;
+    }
     else
     {
         return {};
@@ -3878,6 +4090,51 @@ render_report (const std::string& name, Account* root,
 {
     if (root == nullptr)
         return false;
+
+    if (name == "Budget Report")
+    {
+        /* The Scheme report's budget option defaults to the book's default
+         * budget, so that is the one this report uses too.  With no budget in
+         * the book the Scheme engine prints its "No budgets exist" warning;
+         * with the default account selection empty it prints the "No accounts
+         * selected" warning instead.  Both are the report's correct output,
+         * not errors. */
+        QofBook* book = gnc_account_get_book (root);
+        GncBudget* budget =
+            book != nullptr ? gnc_budget_get_default (book) : nullptr;
+        if (budget == nullptr)
+        {
+            html = render_no_budget ("Budget Report");
+            return true;
+        }
+        if (request.accounts.empty ())
+        {
+            bool any_account = false;
+            std::vector<Account*> all;
+            collect_accounts (root, all);
+            for (Account* account : all)
+            {
+                if (budget_default_account_type (account))
+                {
+                    any_account = true;
+                    break;
+                }
+            }
+            if (!any_account)
+            {
+                html = render_no_accounts ("Budget Report", false);
+                return true;
+            }
+        }
+
+        const char* budget_name = gnc_budget_get_name (budget);
+        std::string title = "Budget Report";
+        if (budget_name != nullptr && budget_name[0] != '\0')
+            title += std::string (": ") + budget_name;
+        html = render_cell_table (
+            budget_report (root, budget, request.accounts), title);
+        return true;
+    }
 
     /* The aging reports are anchored at one date (the Scheme "To" option),
      * whose default is today -- not the accounting period the balance

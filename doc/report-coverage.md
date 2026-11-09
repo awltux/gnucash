@@ -6,6 +6,20 @@ Measured at: `a639555722`
 Scope: registry enumeration and classification only. No code, tests or report
 behaviour were changed.
 
+> **Status update (after `114073782b`).**  `Budget Report`
+> (`reports/standard/budget.scm`) is now native: a budget-vs-actual table over
+> the book's default budget, with the Scheme defaults (every ASSET, LIABILITY,
+> INCOME and EXPENSE account, two display levels, all budget periods) and the
+> account-selection option.  That makes the native layer **10 of the 66 names**
+> (9 implementations), or 11/66 by the "by name" count that also credits
+> `Account Summary` to the spec layer.  It covers one of the six budget-class
+> names; the budget-class numbers below (other = 30, budgets = 6) are the
+> measurement at `a639555722` and are intentionally left as measured.  The
+> remaining five budget reports still need their own renderers (the budget
+> model itself is reachable through `gnc_budget_*`).  Parity with the Scheme
+> report is `web/test/report-parity.sh` on the book
+> `web/test/make-budget-book.py` generates.
+
 ## Summary
 
 - The Scheme engine registers **66 report names** from `gnucash/report/reports/**`

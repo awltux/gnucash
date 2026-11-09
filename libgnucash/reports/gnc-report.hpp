@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <Account.h>
+#include <gnc-budget.h>
 #include <gnc-numeric.h>
 
 namespace gnc
@@ -462,6 +463,43 @@ struct LotReport
  *  gnc_default_report_currency(). */
 LotReport investment_lots (Account* root, const LotOptions& options,
                            gnc_commodity* currency = nullptr);
+
+/* ---------------------------------------------------------- budget report */
+
+/** The Budget Report ("Budget Report", budget.scm), the budget-vs-actual
+ *  account table.  This is the core of the six Scheme budget reports: one row
+ *  per account in the report's default scope (the ASSET, LIABILITY, INCOME
+ *  and EXPENSE accounts below `root`, two display levels deep, exactly the
+ *  Scheme option defaults), one Budget/Actual pair per budget period, and the
+ *  whole budget as the period range (the Scheme "Report for range of budget
+ *  periods" option defaults to off).
+ *
+ *  `budget` is normally the book's default budget; null renders no rows.  An
+ *  empty `accounts` means the Scheme report's default type scope; a non-empty
+ *  list is the caller's explicit selection (the web route has already
+ *  expanded each GUID to its subtree).  A budget value set on a parent is
+ *  used as is -- budget values are inclusive of sub-accounts -- and a parent
+ *  with no value of its own sums its children's values, converted into the
+ *  parent's commodity at the period start, as
+ *  gnc:get-account-period-rolledup-budget-value() does.  The actual value is
+ *  gnc_budget_get_account_period_actual_value(), which includes descendants
+ *  and excludes closing entries.  Both are sign-reversed for the account
+ *  types gnc_reverse_balance() reverses (income by default), and a zero
+ *  budget prints "." exactly as the Scheme report prints it.
+ *
+ *  Not reproduced, because the native option surface has no descriptor for
+ *  them: selecting a budget other than the book's default (gnc_budget_lookup()
+ *  exists, but the option type does not), the Scheme report's budget-period
+ *  range selection (its "start"/"end" are period numbers, not dates, so the
+ *  route's date options cannot honestly stand in), the accumulate option,
+ *  the optional Difference and row-total columns, and the optional budget
+ *  notes column.  The defaults of all of those are what this renders. */
+CellTable budget_report (Account* root, GncBudget* budget,
+                         const std::vector<Account*>& accounts);
+
+/** Render the Budget Report's "no budget" explanation, the Scheme engine's
+ *  gnc:html-make-generic-budget-warning(). */
+std::string render_no_budget (const std::string& title);
 
 /** Render an aging report as a standalone HTML document, including its
  *  explanation-instead-of-a-table case. */
