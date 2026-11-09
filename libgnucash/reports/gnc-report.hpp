@@ -22,6 +22,8 @@
 #include <gnc-budget.h>
 #include <gnc-numeric.h>
 
+#include "gnc-invoice.hpp"
+
 namespace gnc
 {
 namespace report
@@ -608,6 +610,12 @@ enum class OptionType
     Currency,
     /** One of `choices`, e.g. a period preset. */
     Choice,
+    /** Free text, e.g. the invoice report's custom title. */
+    Text,
+    /** A boolean, written "true" or "false". */
+    Bool,
+    /** The id of an invoice in the book (or its GUID). */
+    Invoice,
 };
 
 struct OptionDescriptor
@@ -669,6 +677,13 @@ struct ReportRequest
     std::vector<Account*> accounts;
     gnc_commodity* currency = nullptr;
     bool all_dates = false;
+    /** The invoice report's "Invoice Number": the document id (or GUID) of
+     *  the invoice to print.  Empty is the engine's "no invoice selected"
+     *  case and renders the warning, not an error. */
+    std::string invoice;
+    /** The invoice report's display switches; the defaults are the Scheme
+     *  report's defaults. */
+    InvoicePrintOptions invoice_options;
 };
 
 bool render_report (const std::string& name, Account* root,

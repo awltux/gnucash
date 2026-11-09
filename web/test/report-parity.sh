@@ -2,7 +2,7 @@
 # Report parity: the Scheme report versus the native one, report by report.
 #
 # Usage: report-parity.sh <guile-build> <native-build> <source-dir>
-#                         [book] [report] [start] [end] [accounts]
+#                         [book] [report] [start] [end] [accounts] [invoice]
 #
 # <guile-build> must contain bin/gnucash-cli (a WITH_GNUCASH build); override
 # the binary with GNC_CLI=/path/to/gnucash-cli.  <native-build> contains
@@ -11,13 +11,18 @@
 # [report] defaults to "Trial Balance"; "Balance Sheet", "Income Statement",
 # "Profit & Loss", "Transaction Report", "General Ledger", "Receivable Aging",
 # "Payable Aging", "Investment Lots", "Budget Report",
-# "Budget Income Statement", "Budget Profit & Loss", "Budget Balance Sheet"
-# and "Budget Flow" are supported.
+# "Budget Income Statement", "Budget Profit & Loss", "Budget Balance Sheet",
+# "Budget Flow" and "Printable Invoice" are supported.
 # Each report has its own extractor (see extractor_for below), because the
 # reports do not agree on what a row is: the Trial Balance is (account, debit,
 # credit), the balance sheet and P&L are (label, amount) with section headings
 # and totals, and the aging reports are (owner, six buckets, total) with a
-# Total row per account.
+# Total row per account.  The invoice document is compared as its line items
+# and its money totals, not cell by cell: one extractor reads (description,
+# quantity, unit price, amount) from the entries table, then the subtotal, the
+# tax, the total, any payment row and the amount due.  Both engines put those
+# in a div.entries-table with the same cell classes, so the same parser reads
+# the Scheme document and the native one.
 #
 # [start] and [end] are optional YYYY-MM-DD dates.  [accounts] is optional:
 # "all", or a comma-separated list of account GUIDs.  Each GUID means that
@@ -53,6 +58,18 @@
 #
 # (add --two-receivable to the generator to put one customer's invoices in a
 # second A/Receivable account, which exercises the per-account headings).
+#
+# The invoice report prints one document, selected by its "Invoice Number"
+# option.  No fixture book in the tree has a customer invoice, so generate
+# one and pass its id as [invoice]:
+#
+#   python3 web/test/make-invoice-book.py /tmp/invoice-book.gnucash
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/invoice-book.gnucash "Printable Invoice" "" "" "" INV-1001
+#
+# The harness resolves the id to the invoice GUID the Scheme saved report
+# needs; the native route takes the id itself.  Its dates are the posted and
+# due dates on the invoice, not report options, so start/end are refused.
 #
 # The Investment Lots report needs a book with a stock account, lots and a
 # price database; no fixture book has one, so generate it the same way and
@@ -97,6 +114,7 @@ REPORT=${5:-Trial Balance}
 START=${6:-}
 END=${7:-}
 ACCOUNTS=${8:-}
+INVOICE=${9:-}
 
 CLI=${GNC_CLI:-$GUILE_BUILD/bin/gnucash-cli}
 WEBDBIN="$NATIVE_BUILD/bin/gnc-webd"
@@ -120,6 +138,7 @@ extractor_for() {
         "Budget Report") echo budget-report ;;
         "Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo budget-statement ;;
+        "Printable Invoice") echo invoice ;;
         *) return 1 ;;
     esac
 }
@@ -140,6 +159,7 @@ report_guid() {
         "Budget Profit & Loss")    echo "e5fa5ce805e840ecbeca4dba3fa4ead9" ;;
         "Budget Balance Sheet")    echo "ecc35ea9dbfa4e20ba389fc85d59cb69" ;;
         "Budget Flow")             echo "e6e34fa3b6e748debde3cb3bc76d3e53" ;;
+        "Printable Invoice")       echo "5123a759ceb9483abf2182d01c140e8d" ;;
         *) return 1 ;;
     esac
 }
@@ -170,6 +190,8 @@ scheme_start_option() {
         # Budget Report has no date option at all.
         "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo "" ;;
+        # The invoice document's dates come from the invoice itself.
+        "Printable Invoice") echo "" ;;
         *) echo "Start Date" ;;
     esac
 }
@@ -182,6 +204,7 @@ scheme_end_option() {
         "Investment Lots") echo "End date" ;;
         "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo "" ;;
+        "Printable Invoice") echo "" ;;
         *) echo "End Date" ;;
     esac
 }
@@ -208,7 +231,7 @@ scheme_account_option() {
 }
 
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice)"
 
 case "$REPORT" in
     "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
@@ -216,6 +239,12 @@ case "$REPORT" in
         if [ -n "$START" ] || [ -n "$END" ]; then
             fail "the $REPORT period range is a range of budget periods, not dates"
         fi ;;
+    "Printable Invoice")
+        if [ -n "$START" ] || [ -n "$END" ]; then
+            fail "the $REPORT dates come from the invoice, not from report options"
+        fi
+        [ -n "$INVOICE" ] \
+            || fail "the $REPORT needs an invoice id in the [invoice] position" ;;
 esac
 
 [ -x "$CLI" ] || fail "no gnucash-cli at $CLI (need a WITH_GNUCASH Guile build, or set GNC_CLI)"
@@ -259,7 +288,8 @@ if [ -n "$ACCOUNTS" ] && ! native_takes_accounts "$REPORT"; then
     fail "$REPORT has no account selection, so [accounts] cannot be used"
 fi
 
-if [ -n "$START" ] || [ -n "$END" ] || [ -n "$ACCOUNTS" ]; then
+if [ -n "$START" ] || [ -n "$END" ] || [ -n "$ACCOUNTS" ] || \
+   [ -n "$INVOICE" ]; then
     GUID=$(report_guid "$REPORT") || fail "unknown report guid for '$REPORT'"
 
     START_T64=
@@ -315,6 +345,28 @@ if [ -n "$START" ] || [ -n "$END" ] || [ -n "$ACCOUNTS" ]; then
                         $ACCOUNT_EXPR)"
     fi
 
+    INVOICE_OPTION=""
+    if [ -n "$INVOICE" ]; then
+        # The Scheme option's value is the invoice object, which the saved
+        # report selects by GUID (GncOptionQofInstanceValue::deserialize).
+        # Resolve the document id to that GUID from the book itself, so the
+        # harness takes the same id the native route does.
+        INVOICE_GUID=$(python3 - "$BOOK" "$INVOICE" <<'PY'
+import re
+import sys
+
+raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+match = re.search(
+    r'<invoice:guid type="guid">([0-9a-fA-F]{32})</invoice:guid>\s*'
+    r'<invoice:id>' + re.escape(sys.argv[2]) + r'</invoice:id>', raw)
+if match is None:
+    sys.exit(1)
+print(match.group(1))
+PY
+        ) || fail "no invoice '$INVOICE' in $BOOK"
+        INVOICE_OPTION="(gnc-set-option (gnc:optiondb options) \"General\" \"Invoice Number\" \"$INVOICE_GUID\")"
+    fi
+
     mkdir -p "$(dirname "$SAVED_REPORTS")"
     if [ -f "$SAVED_REPORTS" ]; then
         SAVED_REPORTS_BACKUP="$TMP/saved-reports.orig"
@@ -329,6 +381,7 @@ if [ -n "$START" ] || [ -n "$END" ] || [ -n "$ACCOUNTS" ]; then
           (new-embedded-report-ids '()))
       $DATE_OPTIONS
       $ACCOUNT_OPTION
+      $INVOICE_OPTION
       options))
   (gnc:define-report
     'version 1
@@ -408,6 +461,10 @@ elif needs_accounts "$REPORT" && { [ -n "$START" ] || [ -n "$END" ]; }; then
     # for it explicitly, and that is what this is.
     add_param "accounts=all"
 fi
+if [ -n "$INVOICE" ]; then
+    ENCODED_INVOICE=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$INVOICE")
+    add_param "invoice=$ENCODED_INVOICE"
+fi
 [ -n "$REQUEST_QUERY" ] && REQUEST_QUERY="?$REQUEST_QUERY"
 curl -fsS "${URL%/}/report/$REQUEST_NAME$REQUEST_QUERY" -o "$TMP/native.html" \
     || { cat "$TMP/server.log" >&2; fail "the native report request failed"; }
@@ -430,15 +487,29 @@ class TableParser(HTMLParser):
     reads either document.
     """
 
-    def __init__(self):
+    def __init__(self, scope=None):
         super().__init__(convert_charrefs=True)
         self.rows = []
         self.row = None
         self.cell = None
         self.cell_class = ""
+        # A document (the invoice) has header tables around the one table it
+        # compares; scope limits collection to the div that carries the
+        # entries, so the client and company tables cannot leak into the rows.
+        self.scope = scope
+        self.in_scope = scope is None
+        self.scope_depth = 0
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == "div" and self.scope is not None:
+            classes = attrs.get("class", "").split()
+            if self.scope in classes:
+                self.in_scope = True
+                self.scope_depth += 1
+            return
+        if not self.in_scope:
+            return
         if tag == "tr":
             self.row = []
         elif tag in ("td", "th") and self.row is not None:
@@ -446,6 +517,12 @@ class TableParser(HTMLParser):
             self.cell_class = attrs.get("class", "")
 
     def handle_endtag(self, tag):
+        if tag == "div" and self.scope is not None:
+            if self.in_scope and self.scope_depth > 0:
+                self.scope_depth -= 1
+                if self.scope_depth == 0:
+                    self.in_scope = False
+            return
         if tag in ("td", "th") and self.row is not None and self.cell is not None:
             text = " ".join("".join(self.cell).split())
             self.row.append((text, self.cell_class))
@@ -461,8 +538,8 @@ class TableParser(HTMLParser):
             self.cell.append(data)
 
 
-def parse(path):
-    parser = TableParser()
+def parse(path, scope=None):
+    parser = TableParser(scope)
     with open(path, encoding="utf-8", errors="replace") as handle:
         raw = handle.read()
     parser.feed(raw)
@@ -473,7 +550,7 @@ NO_ACCOUNTS = "No accounts selected"
 NO_BUDGET = "No budgets exist"
 
 
-def extract(extractor, path):
+def extract(extractor, path, scope=None):
     """Run a report's extractor, and notice its warning page.
 
     The transaction report and the general ledger have no default account
@@ -482,7 +559,7 @@ def extract(extractor, path):
     warnings are the reports' correct default output, so compare their wording
     rather than treating "no rows" as a match by accident.
     """
-    raw, rows = parse(path)
+    raw, rows = parse(path, scope)
     extracted = extractor(rows)
     if not extracted and NO_ACCOUNTS in raw:
         return [("PLACEHOLDER", NO_ACCOUNTS)]
@@ -751,17 +828,77 @@ def budget_report(rows):
     return out
 
 
+def invoice(rows):
+    """The invoice document, as numbers: line items and money totals.
+
+    This is deliberately not a cell-by-cell comparison.  A document's layout
+    is allowed to differ; its numbers are not.  From the entries table
+    (div.entries-table, which the parser has already scoped to) this pulls:
+
+      * one ("ITEM", description, quantity, unit price, amount) per entry.
+        The description is the text cell after the date; the three numbers
+        are the quantity, unit-price and net-amount cells, in that order.
+      * ("PAYMENT", (amount,)) for each applied payment: the Scheme document
+        prints it as date + "Payment, thank you!" + one spanning amount.
+      * ("TOTAL", label, (amount,)) for the subtotal ("Net Price"), the tax
+        ("Tax"), the total ("Total Price") and the amount due ("Amount Due").
+
+    Both engines use number-cell/total-number-cell for the amounts, so the
+    cell classes carry the meaning even though the markup around them does
+    not match.
+    """
+    out = []
+    for cells in rows:
+        if not cells:
+            continue
+        classes = [c for _, c in cells]
+        texts = [t for t, _ in cells]
+        tokens = [c.split() for c in classes]
+
+        label_index = next(
+            (i for i, toks in enumerate(tokens) if "total-label-cell" in toks),
+            None)
+        if label_index is not None:
+            numbers = tuple(amount(t) for t, c in cells
+                            if is_number(c) and t.strip())
+            out.append(("TOTAL", texts[label_index].strip(), numbers))
+            continue
+
+        if any("total-number-cell" in toks for toks in tokens):
+            numbers = tuple(amount(t) for t, c in cells
+                            if is_number(c) and t.strip())
+            out.append(("PAYMENT", numbers))
+            continue
+
+        numbers = [(i, texts[i]) for i, toks in enumerate(tokens)
+                   if is_number(classes[i]) and texts[i].strip()]
+        if (numbers and len(cells) >= 4 and not is_number(classes[0])
+                and len(texts) >= 2):
+            quantity = amount(numbers[0][1])
+            unit_price = amount(numbers[1][1]) if len(numbers) > 1 \
+                else Decimal(0)
+            value = amount(numbers[-1][1])
+            out.append(("ITEM", texts[1].strip(), quantity, unit_price,
+                        value))
+    return out
+
+
 EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "transaction-report": transaction_report,
               "general-ledger": general_ledger, "aging": aging,
               "investment-lots": investment_lots,
               "budget-report": budget_report,
-              "budget-statement": budget_statement}
+              "budget-statement": budget_statement,
+              "invoice": invoice}
 
 extractor = EXTRACTORS[sys.argv[3]]
 report = sys.argv[4]
-scheme = extract(extractor, sys.argv[1])
-native = extract(extractor, sys.argv[2])
+# The invoice extractor is the one report whose rows live in a specific div:
+# the document has header tables (client, company, invoice details) that must
+# not be mistaken for line items.
+scope = "entries-table" if sys.argv[3] == "invoice" else None
+scheme = extract(extractor, sys.argv[1], scope)
+native = extract(extractor, sys.argv[2], scope)
 
 print(f"report: {report}")
 print(f"scheme rows: {len(scheme)}")

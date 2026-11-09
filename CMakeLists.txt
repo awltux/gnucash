@@ -980,6 +980,7 @@ set(web_DIST
   web/ui/index.html
   web/test/make-aging-book.py
   web/test/make-budget-book.py
+  web/test/make-invoice-book.py
   web/test/make-investment-book.py
   web/test/report-parity.sh
   web/test/report-options.sh

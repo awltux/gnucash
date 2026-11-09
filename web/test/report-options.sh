@@ -210,6 +210,45 @@ done
 
 expect_status 404 "options for an unknown report" "/api/report/No%20Such%20Report/options"
 
+# The invoice report's selector is a document id, not a date or an account.
+# It advertises the invoice itself, a custom title and the document's display
+# switches.  The fixture book has one invoice, "yoyo1" (a vendor bill), which
+# is enough to prove the selector, the title and every switch change the
+# document.
+echo "== the invoice document"
+expect_status 200 "Printable Invoice options" \
+    "/api/report/Printable%20Invoice/options"
+expect_body "Printable Invoice options" '"report":"Printable Invoice"'
+expect_body "Printable Invoice options" '"name":"invoice"'
+expect_body "Printable Invoice options" '"type":"invoice"'
+expect_body "Printable Invoice options" '"name":"title"'
+expect_body "Printable Invoice options" '"type":"text"'
+expect_body "Printable Invoice options" '"name":"show_date"'
+expect_body "Printable Invoice options" '"type":"bool"'
+expect_body "Printable Invoice options" '"name":"show_tax_amount"'
+expect_body "Printable Invoice options" '"default":false'
+expect_not_body "Printable Invoice options has no date range" '"name":"start"'
+expect_not_body "Printable Invoice options has no account selection" \
+    '"name":"accounts"'
+expect_not_body "Printable Invoice options has no period preset" \
+    '"name":"period"'
+
+fetch "/report/Printable%20Invoice" > /dev/null
+expect_body "an unselected invoice warns" "No valid invoice selected"
+fetch "/report/Printable%20Invoice?invoice=yoyo1" > /dev/null
+expect_body "the selected invoice renders its owner" "Yoyodyne, Inc."
+expect_body "the selected invoice renders its entries table" "entries-table"
+expect_body "the selected invoice renders a total" "Total Price"
+fetch "/report/Printable%20Invoice?invoice=yoyo1&title=Bill%20of%20Sale" \
+    > /dev/null
+expect_body "a custom title replaces the document kind" "Bill of Sale #yoyo1"
+expect_status 400 "unknown invoice" \
+    "/report/Printable%20Invoice?invoice=NO-SUCH-INVOICE"
+expect_body "unknown invoice" "unknown invoice 'NO-SUCH-INVOICE'"
+expect_status 400 "title on another report" \
+    "/report/Trial%20Balance?title=Statement"
+expect_body "title on another report" "unknown option 'title'"
+
 echo "== the report list"
 expect_status 200 "plain list" "/api/reports"
 expect_body "plain list" '"Trial Balance"'
@@ -362,14 +401,19 @@ while IFS= read -r report; do
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     for option in json.load(handle)["options"]:
-        print(option["name"])
+        print("\t".join((option["name"], option["type"],
+                         json.dumps(option["default"]))))
 PY
 
-    # A real baseline for the reports that need an account selection: their
-    # date options do nothing while the report is the empty-selection warning.
+    # A real baseline for the reports that need a selection: their date
+    # options do nothing while the report is the empty-selection warning.
+    # The invoice report is the same case with an invoice instead of accounts:
+    # the document needs one selected before any display switch is visible.
     base=""
     if grep -q '"name":"accounts"' "$OPTDIR/options.json"; then
         base="accounts=all"
+    elif grep -q '"name":"invoice"' "$OPTDIR/options.json"; then
+        base="invoice=yoyo1"
     fi
     fetch "/report/$enc" > /dev/null
     cp "$BODY" "$OPTDIR/no-options.html"
@@ -391,17 +435,57 @@ PY
             fi ;;
     esac
 
-    while IFS= read -r opt; do
+    while IFS=$'\t' read -r opt otype odefault; do
         [ "$opt" = "currency" ] && continue
-        case "$opt" in
-            start) probe="start=2018-12-31" ;;
-            end) probe="end=2030-12-31" ;;
-            accounts) probe="accounts=all" ;;
-            period) probe="period=all" ;;
-            *) bad "$report advertises unknown option '$opt'"; continue ;;
+        case "$otype" in
+            date)
+                case "$opt" in
+                    start) probe="start=2018-12-31" ;;
+                    end) probe="end=2030-12-31" ;;
+                    *) bad "$report advertises date option '$opt' with an unknown name"
+                       continue ;;
+                esac ;;
+            account-list)
+                case "$opt" in
+                    accounts) probe="accounts=all" ;;
+                    *) bad "$report advertises account option '$opt' with an unknown name"
+                       continue ;;
+                esac ;;
+            choice)
+                case "$opt" in
+                    period) probe="period=all" ;;
+                    *) bad "$report advertises choice option '$opt' with an unknown name"
+                       continue ;;
+                esac ;;
+            text)
+                case "$opt" in
+                    title) probe="title=Statement" ;;
+                    *) bad "$report advertises text option '$opt' with no probe"
+                       continue ;;
+                esac ;;
+            bool)
+                # Flip the descriptor's default, so the probe asks for the
+                # opposite of what the report already renders.
+                if [ "$odefault" = "true" ]; then
+                    probe="$opt=false"
+                else
+                    probe="$opt=true"
+                fi ;;
+            invoice)
+                # sample1's single document.  The generated invoice book has
+                # the same option with a customer invoice; this probe only has
+                # to show that selecting one changes the document.
+                case "$opt" in
+                    invoice) probe="invoice=yoyo1" ;;
+                    *) bad "$report advertises invoice option '$opt' with an unknown name"
+                       continue ;;
+                esac ;;
+            *)
+                bad "$report advertises option '$opt' of unsupported type '$otype'"
+                continue ;;
         esac
 
-        if [ "$opt" = "accounts" ]; then
+        if [ "$opt" = "accounts" ] || [ "$opt" = "invoice" ]; then
             code=$(fetch "/report/$enc?$probe")
             before="$OPTDIR/no-options.html"
         else
@@ -430,6 +514,16 @@ PY
                 "Balance Sheet:start")
                     if grep -qF 'does not use a start date' "$OPTDIR/options.json"; then
                         ok "$report $opt is the documented as-of no-op"
+                    else
+                        bad "$report $opt is a no-op but the descriptor does not say so"
+                    fi ;;
+                "Printable Invoice:show_notes"|"Printable Invoice:show_terms"|\
+                "Printable Invoice:show_payments")
+                    # sample1's bill has no notes, no terms and no payments, so
+                    # these switches have nothing to show on it.  The generated
+                    # invoice book exercises them (report-parity.sh).
+                    if grep -qF 'has no effect' "$OPTDIR/options.json"; then
+                        ok "$report $opt has nothing to show on this book; the descriptor says so"
                     else
                         bad "$report $opt is a no-op but the descriptor does not say so"
                     fi ;;

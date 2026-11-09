@@ -86,7 +86,7 @@ for native_report in "Balance Sheet" "Income Statement" "Profit & Loss" \
                      "Receivable Aging" "Payable Aging" "Investment Lots" \
                      "Budget Report" "Budget Income Statement" \
                      "Budget Profit & Loss" "Budget Balance Sheet" \
-                     "Budget Flow"; do
+                     "Budget Flow" "Printable Invoice"; do
     echo "$reports" | grep -q "\"$native_report\"" \
         || fail "report list has no $native_report"
 done
@@ -198,6 +198,25 @@ investment_lots=$(curl -fsS "${URL}report/Investment%20Lots") \
 echo "$investment_lots" | grep -q "<html" || fail "investment lots is not HTML"
 echo "$investment_lots" | grep -q "Investment Lots" \
     || fail "investment lots report has no title"
+
+# The invoice document is native.  Its default (no invoice selected) is the
+# engine's warning, and sample1's single vendor bill can be printed by id.
+invoice_warning=$(curl -fsS "${URL}report/Printable%20Invoice") \
+    || { cat "$LOG" >&2; fail "GET Printable Invoice failed"; }
+echo "$invoice_warning" | grep -q "No valid invoice selected" \
+    || fail "the unselected invoice does not explain that one must be chosen"
+invoice=$(curl -fsS "${URL}report/Printable%20Invoice?invoice=yoyo1") \
+    || { cat "$LOG" >&2; fail "GET Printable Invoice?invoice=yoyo1 failed"; }
+echo "$invoice" | grep -q "entries-table" \
+    || fail "the invoice document has no entries table"
+echo "$invoice" | grep -q "Total Price" \
+    || fail "the invoice document has no total"
+echo "$invoice" | grep -q "Yoyodyne, Inc." \
+    || fail "the invoice document lost the book's vendor"
+invalid_invoice=$(curl -sS -o /dev/null -w '%{http_code}' \
+    "${URL}report/Printable%20Invoice?invoice=NO-SUCH-INVOICE")
+[ "$invalid_invoice" = "400" ] \
+    || fail "an unknown invoice answered $invalid_invoice (expected 400)"
 
 if [ "$HAS_GUILE" = 1 ]; then
     # The Scheme engine is still the fallback for reports not ported yet.

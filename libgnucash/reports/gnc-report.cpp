@@ -4400,7 +4400,8 @@ native_report_names ()
             "Profit & Loss", "Transaction Report", "General Ledger",
             "Receivable Aging", "Payable Aging", "Investment Lots",
             "Budget Report", "Budget Income Statement",
-            "Budget Profit & Loss", "Budget Balance Sheet", "Budget Flow"};
+            "Budget Profit & Loss", "Budget Balance Sheet", "Budget Flow",
+            "Printable Invoice"};
 }
 
 /* --------------------------------------------------------------- options */
@@ -4550,6 +4551,99 @@ std::vector<OptionDescriptor>
 report_options (const std::string& name)
 {
     std::vector<OptionDescriptor> options;
+
+    if (name == "Printable Invoice")
+    {
+        /* The "Printable Invoice" layout, the base of the three Scheme
+         * invoice variants.  The Scheme option pages this maps are the
+         * invoice selector ("Invoice Number"), the custom title, the nine
+         * display columns and the print switches.  The layout-row, CSS,
+         * picture, payable-to/company-contact, extra-notes, minimum-entries,
+         * detailed-tax-summary, references and job-details options are not
+         * reproduced: the native document has one fixed layout, and the
+         * model has no reference or job fields to print. */
+        OptionDescriptor invoice;
+        invoice.name = "invoice";
+        invoice.type = OptionType::Invoice;
+        invoice.label = "Invoice Number";
+        invoice.description =
+            "The invoice to print, by its document id (for example "
+            "\"INV-1001\") or by its GUID.  Without it the report renders "
+            "the engine's \"No valid invoice selected\" warning.";
+        options.push_back (invoice);
+
+        OptionDescriptor title;
+        title.name = "title";
+        title.type = OptionType::Text;
+        title.label = "Custom Title";
+        title.description =
+            "A custom string to replace Invoice, Bill or Expense Voucher.";
+        title.default_value = "";
+        options.push_back (title);
+
+        struct ColumnOption
+        {
+            const char* name;
+            const char* label;
+            const char* description;
+            bool default_value;
+        };
+        static const ColumnOption columns[] = {
+            {"show_date", "Date", "Display the date?", true},
+            {"show_description", "Description", "Display the description?",
+             true},
+            {"show_action", "Action", "Display the action?", true},
+            {"show_quantity", "Quantity", "Display the quantity of items?",
+             true},
+            {"show_price", "Price", "Display the price per item?", true},
+            {"show_discount", "Discount", "Display the entry's discount?",
+             true},
+            {"show_taxable", "Taxable", "Display the entry's taxable status?",
+             true},
+            {"show_tax_amount", "Tax Amount",
+             "Display each entry's total tax?", false},
+            {"show_total", "Total", "Display the entry's value?", true},
+        };
+        for (const ColumnOption& column : columns)
+        {
+            OptionDescriptor option;
+            option.name = column.name;
+            option.type = OptionType::Bool;
+            option.label = column.label;
+            option.description = column.description;
+            option.default_value = column.default_value ? "true" : "false";
+            options.push_back (option);
+        }
+
+        static const ColumnOption displays[] = {
+            {"show_due_date", "Due Date", "Display due date?", true},
+            {"show_subtotal", "Subtotal", "Display the subtotals?", true},
+            {"show_billing_id", "Billing ID", "Display the billing id?", true},
+            {"show_owner_id", "Invoice owner ID",
+             "Display the customer/vendor id?", false},
+            {"show_notes", "Invoice Notes",
+             "Display the invoice notes?  A document with no notes has "
+             "nothing to show, so the option has no effect there.", false},
+            {"show_terms", "Billing Terms",
+             "Display the invoice billing terms?  A document with no terms "
+             "has nothing to show, so the option has no effect there.", true},
+            {"show_payments", "Payments",
+             "Display the payments applied to this invoice?  A document with "
+             "no payments has nothing to show, so the option has no effect "
+             "there.", true},
+        };
+        for (const ColumnOption& display : displays)
+        {
+            OptionDescriptor option;
+            option.name = display.name;
+            option.type = OptionType::Bool;
+            option.label = display.label;
+            option.description = display.description;
+            option.default_value = display.default_value ? "true" : "false";
+            options.push_back (option);
+        }
+        return options;
+    }
 
     if (name == "Trial Balance")
     {
@@ -4868,6 +4962,29 @@ render_report (const std::string& name, Account* root,
         html = render_cell_table (budget_flow (root, budget, request.accounts,
                                                request.currency),
                                   title);
+        return true;
+    }
+
+    if (name == "Printable Invoice")
+    {
+        /* The Scheme report prints its warning when the "Invoice Number"
+         * option is empty, and there is no invoice to print.  A selected
+         * invoice that the book no longer has is reported as an error by the
+         * route's option validator before this point; the warning here keeps
+         * the native renderer total. */
+        if (request.invoice.empty ())
+        {
+            html = render_invoice_not_selected ();
+            return true;
+        }
+        InvoiceDocument document;
+        std::string error;
+        if (!find_invoice_document (root, request.invoice, document, &error))
+        {
+            html = render_invoice_not_selected ();
+            return true;
+        }
+        html = render_printable_invoice (document, request.invoice_options);
         return true;
     }
 

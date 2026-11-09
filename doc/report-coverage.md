@@ -530,3 +530,57 @@ The honesty rules from the task hold: the built-ins are named in
 never written to the saved store and cannot be deleted; a Scheme-only report
 still answers 501 without Guile, so no Scheme report is made to look native,
 and the rest of the 56 non-native names remain visibly unavailable.
+
+## 10. Update: the invoice document (option C)
+
+Measured after `d2e3a8c722`, on the book `web/test/make-invoice-book.py`
+generates.  This is the first step of option C in `doc/eguile-decision.md`:
+the invoice model now exists in the native layer, and one document -- the
+**Printable Invoice** -- is rendered from it in C++/HTML.  No template
+language was added.
+
+- **Native names: 15 of 66.**  `Printable Invoice` joined
+  `native_report_names()`, so the count that was 14 in section 9 is now 15
+  (13 implementations, because Income Statement/P&L and Budget Income
+  Statement/P&L each share one, and the invoice renderer is its own).
+  It is native in both builds: in the Guile build the native dispatch takes
+  the name before the Scheme fallback; without Guile it is one of the 15
+  names `/api/reports` lists.
+- **The model is reusable and separate from the HTML.**  `libgnucash/reports/
+  gnc-invoice.{hpp,cpp}` reads a `GncInvoice` -- owner (with the job chain
+  resolved), document id and type, posted/opened/due dates, billing terms,
+  notes, currency, entries (date, description, action, quantity, unit price,
+  discount and type, taxable flag, tax table, rounded net/tax/discount
+  amounts), per-account tax totals, applied lot payments and the
+  subtotal/tax/total/amount-due -- into plain structs, and owns the currency
+  formatting the Scheme documents use.  `gnc-invoice-print.cpp` is the
+  first consumer; a receipt or tax invoice is a sibling renderer over the
+  same tree.
+- **The document is the Printable Invoice**, the base of the three Scheme
+  invoice variants: it is the one whose stylesheet is the shared base CSS
+  with no layout overrides (Easy and Fancy add rules and change header
+  rows), so it is the smallest correct layout to reproduce.
+- **Options.**  The report publishes the invoice selector (`invoice`, by
+  document id or GUID), the Scheme "Custom Title", the nine display
+  columns and seven print switches (due date, subtotal, billing id, owner
+  id, notes, terms, payments), with the Scheme report's defaults.  A
+  missing or unknown invoice, a bad boolean and every option the report
+  does not publish are 400s that name the problem; an empty selector is the
+  Scheme "No valid invoice selected" warning.  Not reproduced, and
+  documented in `gnc-report.hpp`: the layout-row/CSS/picture options, the
+  payable-to and company-contact strings, extra notes, minimum entries,
+  detailed tax summary, references and job details.
+- **Parity is a document extractor, not cell text.**  `report-parity.sh`
+  gained an `invoice` extractor: it scopes the parse to `div.entries-table`
+  and compares `(description, quantity, unit price, amount)` for every line,
+  then the payment row and the `Net Price`/`Tax`/`Total Price`/`Amount Due`
+  totals as numbers.  On the generated book both engines extract the same
+  eight rows (three line items, four totals and one payment), including the
+  10% discount on the third line and the 10% tax on two lines, in both
+  `ext4-web` and `ext4-noguile`.
+- **Unlocks.**  The receipt and tax invoice renderers, and the tax reports'
+  per-tax-code aggregation, can consume `InvoiceDocument` without another
+  engine read.  The seam for a template engine is the model/renderer split:
+  a template would produce `InvoiceDocument` or render from it, not replace
+  the engine access.
+

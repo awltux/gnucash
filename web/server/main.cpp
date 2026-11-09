@@ -284,6 +284,9 @@ option_type_name (gnc::report::OptionType type)
     case gnc::report::OptionType::AccountList: return "account-list";
     case gnc::report::OptionType::Currency:    return "currency";
     case gnc::report::OptionType::Choice:      return "choice";
+    case gnc::report::OptionType::Text:        return "text";
+    case gnc::report::OptionType::Bool:        return "bool";
+    case gnc::report::OptionType::Invoice:     return "invoice";
     }
     return "";
 }
@@ -300,10 +303,13 @@ option_json (const gnc::report::OptionDescriptor& option)
     out += "\",\"description\":\"";
     out += json_escape (option.description.c_str ());
     out += "\",\"default\":";
-    /* An account selection defaults to the empty list, everything else to a
-     * string; keep the JSON types honest so a form can use them as is. */
+    /* An account selection defaults to the empty list, a boolean to a JSON
+     * boolean, everything else to a string; keep the JSON types honest so a
+     * form can use them as is. */
     if (option.type == gnc::report::OptionType::AccountList)
         out += "[]";
+    else if (option.type == gnc::report::OptionType::Bool)
+        out += option.default_value == "true" ? "true" : "false";
     else
     {
         out += "\"";
@@ -887,8 +893,9 @@ build_report_request (const std::string& report, const std::string& query,
     if (!parse_query (query, params, error))
         return false;
 
-    const bool native = !gnc::report::report_options (report).empty ();
-    if (!native)
+    const std::vector<gnc::report::OptionDescriptor> descriptors =
+        gnc::report::report_options (report);
+    if (descriptors.empty ())
     {
         error = "report '" + report +
                 "' is not a native report and takes no options";
@@ -897,24 +904,65 @@ build_report_request (const std::string& report, const std::string& query,
     if (params.empty ())
         return true;
 
+    /* The descriptors, not a hard-coded list, decide what an option means.
+     * A name the descriptors do not publish is rejected before any value is
+     * looked at, with the message the existing tests rely on. */
+    auto descriptor_for = [&descriptors] (const std::string& name)
+        -> const gnc::report::OptionDescriptor*
+    {
+        for (const gnc::report::OptionDescriptor& descriptor : descriptors)
+        {
+            if (descriptor.name == name)
+                return &descriptor;
+        }
+        return nullptr;
+    };
+    auto route_option = [] (const std::string& name)
+    {
+        return name == "start" || name == "end" || name == "accounts" ||
+               name == "currency" || name == "period";
+    };
+
     bool have_start = false;
     bool have_end = false;
     bool have_accounts = false;
     bool all_accounts = false;
     bool have_period = false;
     bool have_currency = false;
+    bool have_invoice = false;
     std::string period;
     std::string currency;
     std::vector<std::string> guids;
 
     for (const QueryParam& param : params)
     {
-        if (param.name == "start" || param.name == "end")
+        const gnc::report::OptionDescriptor* descriptor =
+            descriptor_for (param.name);
+        if (descriptor == nullptr)
         {
-            if (!gnc::report::report_has_option (report, param.name))
-            {
+            /* Keep the engine-facing wording the existing tests pin: the
+             * account selection is "an 'accounts' option", every other
+             * route-level option is "a '<name>' option". */
+            if (param.name == "accounts")
+                error = "report '" + report +
+                        "' does not accept an 'accounts' option";
+            else if (route_option (param.name))
                 error = "report '" + report + "' does not accept a '" +
                         param.name + "' option";
+            else
+                error = "unknown option '" + param.name + "' for report '" +
+                        report + "'";
+            return false;
+        }
+
+        switch (descriptor->type)
+        {
+        case gnc::report::OptionType::Date:
+        {
+            if (param.name != "start" && param.name != "end")
+            {
+                error = "report '" + report + "' has no date option '" +
+                        param.name + "'";
                 return false;
             }
             time64 when = 0;
@@ -934,20 +982,22 @@ build_report_request (const std::string& report, const std::string& query,
                 request.end = when;
                 have_end = true;
             }
+            break;
         }
-        else if (param.name == "accounts")
+
+        case gnc::report::OptionType::AccountList:
         {
-            if (!gnc::report::report_has_option (report, "accounts"))
+            if (param.name != "accounts")
             {
-                error = "report '" + report +
-                        "' does not accept an 'accounts' option";
+                error = "report '" + report + "' has no account selection '" +
+                        param.name + "'";
                 return false;
             }
             have_accounts = true;
             if (param.value == "all")
             {
                 all_accounts = true;
-                continue;
+                break;
             }
             if (param.value.empty ())
             {
@@ -972,13 +1022,15 @@ build_report_request (const std::string& report, const std::string& query,
                     break;
                 pos = comma + 1;
             }
+            break;
         }
-        else if (param.name == "currency")
+
+        case gnc::report::OptionType::Currency:
         {
-            if (!gnc::report::report_has_option (report, "currency"))
+            if (param.name != "currency")
             {
-                error = "report '" + report +
-                        "' does not accept a 'currency' option";
+                error = "report '" + report + "' has no currency option '" +
+                        param.name + "'";
                 return false;
             }
             if (param.value.empty ())
@@ -989,28 +1041,80 @@ build_report_request (const std::string& report, const std::string& query,
             }
             have_currency = true;
             currency = param.value;
+            break;
         }
-        else if (param.name == "period")
+
+        case gnc::report::OptionType::Choice:
         {
-            /* Like every other option, "period" is only accepted when the
-             * report publishes it.  Aging and Investment Lots have fixed
-             * date semantics (one anchor day, or an end that is also the
-             * valuation date), so a preset they cannot honour is a 400, not
-             * a silently ignored convenience. */
-            if (!gnc::report::report_has_option (report, "period"))
+            if (param.name != "period")
             {
-                error = "report '" + report +
-                        "' does not accept a 'period' option";
+                error = "report '" + report + "' has no choice option '" +
+                        param.name + "'";
                 return false;
             }
+            /* Like every other option, the preset is only accepted when the
+             * report publishes it: ages and lots have fixed date semantics,
+             * so a preset they cannot honour is a 400, not a silently
+             * ignored convenience. */
             have_period = true;
             period = param.value;
+            break;
         }
-        else
+
+        case gnc::report::OptionType::Text:
         {
-            error = "unknown option '" + param.name + "' for report '" +
-                    report + "'";
-            return false;
+            if (param.name == "title")
+                request.invoice_options.custom_title = param.value;
+            else
+            {
+                error = "report '" + report + "' has no text option '" +
+                        param.name + "'";
+                return false;
+            }
+            break;
+        }
+
+        case gnc::report::OptionType::Bool:
+        {
+            bool value = false;
+            if (param.value == "true" || param.value == "1")
+                value = true;
+            else if (param.value == "false" || param.value == "0")
+                value = false;
+            else
+            {
+                error = "invalid boolean '" + param.value + "' for option '" +
+                        param.name + "' (expected true or false)";
+                return false;
+            }
+            if (!gnc::report::set_invoice_print_option (
+                    request.invoice_options, param.name, value))
+            {
+                error = "report '" + report + "' has no boolean option '" +
+                        param.name + "'";
+                return false;
+            }
+            break;
+        }
+
+        case gnc::report::OptionType::Invoice:
+        {
+            if (param.name != "invoice")
+            {
+                error = "report '" + report + "' has no invoice option '" +
+                        param.name + "'";
+                return false;
+            }
+            if (param.value.empty ())
+            {
+                error = "empty 'invoice' value (expected an invoice id or "
+                        "GUID)";
+                return false;
+            }
+            have_invoice = true;
+            request.invoice = param.value;
+            break;
+        }
         }
     }
 
@@ -1064,6 +1168,19 @@ build_report_request (const std::string& report, const std::string& query,
             return false;
         }
         request.currency = commodity;
+    }
+
+    if (have_invoice)
+    {
+        gnc::report::InvoiceDocument document;
+        std::string why;
+        if (!gnc::report::find_invoice_document (g_server.root,
+                                                 request.invoice, document,
+                                                 &why))
+        {
+            error = "unknown invoice '" + request.invoice + "': " + why;
+            return false;
+        }
     }
 
     return true;

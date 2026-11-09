@@ -6,10 +6,13 @@
 
 set (reports_SOURCES
   gnc-report.cpp
+  gnc-invoice.cpp
+  gnc-invoice-print.cpp
 )
 
 set (reports_HEADERS
   gnc-report.hpp
+  gnc-invoice.hpp
 )
 
 add_library (gnc-reports STATIC
