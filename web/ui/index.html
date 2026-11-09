@@ -20,6 +20,33 @@
   #report-list a { color: #0645ad; }
   #view { width: 100%; height: 70vh; border: 1px solid #ccc; margin-top: 1rem; }
   #view[hidden] { display: none; }
+
+  /* Report options: a form generated from /api/report/<name>/options */
+  [hidden] { display: none !important; }
+  #options { border-top: 1px solid #ddd; margin-top: 1rem; padding-top: .5rem; }
+  #options h2 { font-size: 1.1rem; margin: .5rem 0; }
+  #options h3 { font-size: 1rem; margin: 1rem 0 .25rem; }
+  .hint { color: #666; font-size: .85rem; margin: .2rem 0; }
+  #report-error { border: 1px solid #c00; background: #fff4f4; color: #a00;
+                  padding: .5rem .75rem; white-space: pre-wrap; }
+  #options-form { display: grid; gap: .75rem; max-width: 62rem; }
+  .option { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: .15rem .75rem; }
+  .option > label { font-weight: 600; padding-top: .25rem; }
+  .option > .hint { grid-column: 2; }
+  .option input[type="date"], .option input[type="text"], .option select {
+      font: inherit; padding: .2rem .3rem; max-width: 20rem; }
+  .accounts { max-height: 12rem; overflow: auto; border: 1px solid #e3e3e3;
+              padding: .25rem .5rem; background: #fafafa; }
+  ul.accounts { padding-left: 1.1rem; margin: 0; }
+  ul.accounts.root { padding-left: 0; }
+  ul.accounts label { font-weight: normal; }
+  .form-actions { display: flex; gap: .5rem; }
+  #saved-views { display: flex; flex-wrap: wrap; gap: .3rem 1rem; padding-left: 0; }
+  #saved-views li { display: flex; gap: .4rem; align-items: baseline; }
+  button.link { background: none; border: 0; padding: 0; font: inherit;
+                color: #0645ad; cursor: pointer; }
+  button.link.delete { color: #a00; }
+  .save-row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
 </style>
 </head>
 <body>
@@ -31,6 +58,24 @@
 <section id="reports">
   <h2>Reports</h2>
   <ul id="report-list"></ul>
+
+  <!-- Built from the report's option descriptors when one is opened. -->
+  <section id="options" hidden>
+    <h2 id="options-title">Options</h2>
+    <p id="options-note" class="hint" hidden></p>
+    <p id="report-error" class="error" role="alert" hidden></p>
+    <form id="options-form" hidden></form>
+    <div id="saved-views-wrap" hidden>
+      <h3>Saved views</h3>
+      <ul id="saved-views"></ul>
+      <p class="save-row">
+        <label for="view-name">Name this view</label>
+        <input id="view-name" type="text" maxlength="60" autocomplete="off">
+        <button id="save-view" type="button">Save view</button>
+      </p>
+    </div>
+  </section>
+
   <iframe id="view" title="Report" hidden></iframe>
 </section>
 <script>
@@ -46,6 +91,28 @@ function el(tag, cls, text) {
   if (text !== undefined) node.textContent = text;
   return node;
 }
+
+/* ----------------------------------------------------------------- state */
+
+let accountRoot = null;    // the root of /api/accounts, for the form's tree
+let selectedReport = null; // the report whose options are on screen
+let currentOptions = [];   // its descriptors, in display order
+let formGeneration = 0;    // guards the asynchronous options fetch
+let nativeNamesPromise = null; // names with descriptors, fetched once
+
+const STORAGE_KEY = "gnucash-webui.saved-views.v1";
+
+const view = document.getElementById("view");
+const optionsSection = document.getElementById("options");
+const optionsTitle = document.getElementById("options-title");
+const optionsNote = document.getElementById("options-note");
+const errorBox = document.getElementById("report-error");
+const form = document.getElementById("options-form");
+const savedWrap = document.getElementById("saved-views-wrap");
+const savedList = document.getElementById("saved-views");
+const viewName = document.getElementById("view-name");
+
+/* ------------------------------------------------------------- the book */
 
 // A foldable row: name toggles its children, total is read-only.
 function renderAccount(account) {
@@ -71,6 +138,7 @@ async function load() {
       `${book.accounts} accounts, ${book.top_level} top level`;
 
     const root = await (await fetch(api("api/accounts"))).json();
+    accountRoot = root;
     const tree = document.getElementById("tree");
     const list = el("ul");
     for (const account of root.children) list.append(renderAccount(account));
@@ -80,15 +148,13 @@ async function load() {
     // tree, so one is a click away and the page never navigates away.
     const names = (await (await fetch(api("api/reports"))).json()).sort();
     const reports = document.getElementById("report-list");
-    const view = document.getElementById("view");
     for (const name of names) {
       const li = el("li");
       const link = el("a", null, name);
       link.href = api("report/" + encodeURIComponent(name));
       link.addEventListener("click", (event) => {
         event.preventDefault();
-        view.hidden = false;
-        view.src = link.href;
+        selectReport(name);
       });
       li.append(link);
       reports.append(li);
@@ -99,6 +165,500 @@ async function load() {
     console.error(err);
   }
 }
+
+/* ------------------------------------------------------- the option form */
+
+function showError(text) {
+  errorBox.textContent = text;
+  errorBox.hidden = false;
+}
+
+function hideError() {
+  errorBox.hidden = true;
+  errorBox.textContent = "";
+}
+
+function note(text) {
+  optionsNote.textContent = text;
+  optionsNote.hidden = false;
+}
+
+// What a control shows before the user touches it.  The period preset is the
+// one descriptor whose default is not the report's effective state: leaving
+// it unset sends the literal dates, which is what the report does with no
+// query at all.  The server rejects a period combined with dates.
+function initialValue(option) {
+  if (option.type === "choice" && option.name === "period") return "";
+  return typeof option.default === "string" ? option.default : "";
+}
+
+function accountChoiceList(accounts, isRoot) {
+  const list = el("ul", isRoot ? "accounts root" : "accounts");
+  for (const account of accounts) {
+    const li = el("li");
+    const label = el("label");
+    const box = el("input");
+    box.type = "checkbox";
+    box.name = "accounts";
+    box.value = account.guid;
+    label.append(box, document.createTextNode(" " + account.name));
+    li.append(label);
+    if (account.children.length > 0)
+      li.append(accountChoiceList(account.children, false));
+    list.append(li);
+  }
+  return list;
+}
+
+function buildField(option) {
+  if (!option || typeof option.name !== "string") return null;
+
+  const row = el("div", "option");
+  const id = `opt-${option.name}`;
+  const label = el("label", null, option.label || option.name);
+  label.htmlFor = id;
+  row.append(label);
+
+  let control = null;
+  let hint = option.description || "";
+
+  switch (option.type) {
+    case "date": {
+      control = el("input");
+      control.type = "date";
+      control.id = id;
+      control.name = option.name;
+      control.value = initialValue(option);
+      hint = (hint ? hint + " " : "") +
+        "Leave it blank to use the report's own default.";
+      break;
+    }
+    case "choice": {
+      control = el("select");
+      control.id = id;
+      control.name = option.name;
+      if (option.name === "period") {
+        control.append(new Option("Use the dates above", ""));
+        hint = (hint ? hint + " " : "") +
+          "Leave this on 'Use the dates above' to send the dates; a preset " +
+          "replaces them, because the server rejects both together.";
+        control.addEventListener("change", syncPeriodState);
+      }
+      for (const choice of option.choices || [])
+        control.append(new Option(choice, choice));
+      control.value = initialValue(option);
+      break;
+    }
+    case "currency": {
+      if (Array.isArray(option.choices) && option.choices.length > 0) {
+        control = el("select");
+        control.id = id;
+        control.name = option.name;
+        for (const choice of option.choices)
+          control.append(new Option(choice, choice));
+        control.value = initialValue(option);
+      } else {
+        // The descriptor has a default mnemonic but no choices, so a select
+        // would be a one-entry control that could not change anything.  A
+        // text field still puts the value through the server's validation.
+        control = el("input");
+        control.type = "text";
+        control.id = id;
+        control.name = option.name;
+        control.value = initialValue(option);
+        control.placeholder = "e.g. USD";
+        control.size = 8;
+        control.autocomplete = "off";
+        control.spellcheck = false;
+        hint = (hint ? hint + " " : "") +
+          "The descriptor gives no choices, so this is a free-text commodity " +
+          "mnemonic; an unknown one is rejected by the server.";
+      }
+      break;
+    }
+    case "account-list": {
+      // One checkbox per account, indented like the tree above.  A GUID
+      // selects that account and its subtree: the server does the subtree
+      // expansion, so checking a parent is enough.
+      control = el("div", "accounts");
+      control.id = id;
+      control.append(accountChoiceList(accountRoot ? accountRoot.children : [],
+                                       true));
+      label.htmlFor = "";
+      break;
+    }
+    default:
+      return null;
+  }
+
+  row.append(control);
+  if (hint) row.append(el("p", "hint", hint));
+  return row;
+}
+
+function buildForm(options) {
+  form.replaceChildren();
+  const skipped = [];
+  for (const option of options) {
+    const field = buildField(option);
+    if (field) form.append(field);
+    else skipped.push(option);
+  }
+
+  const actions = el("div", "form-actions");
+  const submit = el("button", null, "Update report");
+  submit.type = "submit";
+  submit.id = "options-submit";
+  const reset = el("button", null, "Reset");
+  reset.type = "button";
+  reset.id = "options-reset";
+  reset.addEventListener("click", resetForm);
+  actions.append(submit, reset);
+  form.append(actions);
+
+  if (skipped.length > 0) {
+    note(`Not shown: ${skipped.map((option) => option.name || "?").join(", ")}. ` +
+         "The form does not render those option types yet.");
+  }
+  syncPeriodState();
+}
+
+// The period preset and the date fields are alternatives on the server; show
+// that by greying the dates out while a preset is chosen.
+function syncPeriodState() {
+  const period = form.querySelector('select[name="period"]');
+  if (!period) return;
+  const preset = period.value !== "";
+  for (const option of currentOptions) {
+    if (option.type !== "date") continue;
+    const control = form.querySelector(
+      `input[name="${CSS.escape(option.name)}"]`);
+    if (control) control.disabled = preset;
+  }
+}
+
+function readValues() {
+  const values = {};
+  for (const option of currentOptions) {
+    if (option.type === "account-list") {
+      values[option.name] = [
+        ...form.querySelectorAll(
+          `input[type="checkbox"][name="${CSS.escape(option.name)}"]`),
+      ].filter((box) => box.checked).map((box) => box.value);
+    } else {
+      const control = form.querySelector(
+        `[name="${CSS.escape(option.name)}"]`);
+      if (control) values[option.name] = control.value;
+    }
+  }
+  return values;
+}
+
+function applyValues(values) {
+  for (const option of currentOptions) {
+    const value = values[option.name];
+    if (value === undefined) continue;
+    if (option.type === "account-list") {
+      const wanted = new Set(
+        Array.isArray(value) ? value.filter((item) => typeof item === "string")
+                             : []);
+      for (const box of form.querySelectorAll(
+             `input[type="checkbox"][name="${CSS.escape(option.name)}"]`))
+        box.checked = wanted.has(box.value);
+      continue;
+    }
+    const control = form.querySelector(
+      `[name="${CSS.escape(option.name)}"]`);
+    if (!control) continue;
+    if (option.type === "date") {
+      // Never put arbitrary text into a date input; a saved view from an
+      // older version (or a hand-edited store) must not become a bad query.
+      if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value))
+        control.value = value;
+    } else if (typeof value === "string") {
+      control.value = value;
+    }
+  }
+  syncPeriodState();
+}
+
+// The query the form sends.  Dates are omitted when a period preset is
+// chosen (the server rejects the combination) and when a field is blank
+// (blank means "the report's own default").
+function buildQuery(values) {
+  const params = new URLSearchParams();
+  const preset = values["period"];
+  const hasPreset = typeof preset === "string" && preset !== "";
+
+  for (const option of currentOptions) {
+    if (option.name === "period") continue;
+    const value = values[option.name];
+    if (option.type === "date") {
+      if (hasPreset) continue;
+      if (typeof value === "string" && value !== "")
+        params.set(option.name, value);
+    } else if (option.type === "currency") {
+      if (typeof value === "string" && value.trim() !== "")
+        params.set(option.name, value.trim());
+    } else if (option.type === "account-list") {
+      if (Array.isArray(value) && value.length > 0)
+        params.set(option.name, value.join(","));
+    }
+  }
+  if (hasPreset) params.set("period", preset);
+  return params;
+}
+
+function submitOptions() {
+  if (!selectedReport) return;
+  const query = buildQuery(readValues()).toString();
+  hideError();
+  view.hidden = false;
+  view.src = api("report/" + encodeURIComponent(selectedReport)) +
+             (query ? `?${query}` : "");
+}
+
+function resetForm() {
+  for (const option of currentOptions) {
+    if (option.type === "account-list") {
+      for (const box of form.querySelectorAll(
+             `input[type="checkbox"][name="${CSS.escape(option.name)}"]`))
+        box.checked = false;
+    } else {
+      const control = form.querySelector(
+        `[name="${CSS.escape(option.name)}"]`);
+      if (control) control.value = initialValue(option);
+    }
+  }
+  syncPeriodState();
+  hideError();
+  view.hidden = false;
+  view.src = api("report/" + encodeURIComponent(selectedReport));
+}
+
+/* ------------------------------------------------------- report loading */
+
+const NO_DESCRIPTORS =
+  "This report has no option descriptors, so it renders with its own " +
+  "defaults.";
+
+// /api/reports?options=1 names the reports that publish descriptors.  A
+// Scheme-only report has none, and asking for them would be a 404 in the
+// console, so check the list first.  If the bulk list cannot be fetched the
+// promise resolves null and the caller asks the report itself instead.
+function reportsWithDescriptors() {
+  if (nativeNamesPromise === null) {
+    nativeNamesPromise = fetch(api("api/reports?options=1"))
+      .then((response) => response.ok ? response.json()
+                                      : Promise.reject(new Error()))
+      .then((list) => Array.isArray(list)
+        ? new Set(list.map((entry) => entry.report))
+        : new Set())
+      .catch(() => null);
+  }
+  return nativeNamesPromise;
+}
+
+async function selectReport(name) {
+  const generation = ++formGeneration;
+  selectedReport = name;
+  currentOptions = [];
+  optionsSection.hidden = false;
+  optionsTitle.textContent = `Options for ${name}`;
+  optionsNote.hidden = true;
+  optionsNote.textContent = "";
+  hideError();
+  form.hidden = true;
+  form.replaceChildren();
+  savedWrap.hidden = true;
+  savedList.replaceChildren();
+
+  // The frame loads straight away with the report's own defaults, as before;
+  // the form appears when the descriptors arrive.
+  view.hidden = false;
+  view.src = api("report/" + encodeURIComponent(name));
+
+  const descriptors = await reportsWithDescriptors();
+  if (generation !== formGeneration) return;
+  if (descriptors !== null && descriptors.size > 0 &&
+      !descriptors.has(name)) {
+    note(NO_DESCRIPTORS);
+    return;
+  }
+
+  let response;
+  try {
+    response = await fetch(
+      api(`api/report/${encodeURIComponent(name)}/options`));
+  } catch (err) {
+    if (generation === formGeneration)
+      showError(`Could not load the report's options: ${err.message}`);
+    return;
+  }
+  if (generation !== formGeneration) return;
+
+  if (response.status === 404) {
+    // Scheme-only reports have no native descriptors.  The frame still
+    // renders them; there is simply nothing to generate a form from.
+    note(NO_DESCRIPTORS);
+    return;
+  }
+  if (!response.ok) {
+    showError(`Could not load the report's options (HTTP ${response.status}).`);
+    return;
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch (err) {
+    if (generation === formGeneration)
+      showError("The report's option descriptors are not valid JSON.");
+    return;
+  }
+  if (generation !== formGeneration) return;
+
+  currentOptions = Array.isArray(data.options) ? data.options : [];
+  if (currentOptions.length === 0) {
+    note(NO_DESCRIPTORS);
+    return;
+  }
+
+  buildForm(currentOptions);
+  form.hidden = false;
+  savedWrap.hidden = false;
+  renderSavedViews();
+}
+
+// A rejected option is a text/plain 400 from the server.  Move that message
+// into the page and hide the frame instead of leaving the error document in
+// the frame, so the page never just goes blank.
+view.addEventListener("load", () => {
+  // The initial about:blank document also fires load; it is not a report.
+  if (!selectedReport || !view.getAttribute("src")) return;
+  let doc;
+  try {
+    doc = view.contentDocument;
+  } catch (err) {
+    return;
+  }
+  if (!doc) return;
+  if (doc.contentType && doc.contentType !== "text/html") {
+    const text = doc.body && doc.body.innerText
+      ? doc.body.innerText.trim()
+      : "";
+    view.hidden = true;
+    showError(text || "The server did not render the report.");
+    return;
+  }
+  view.hidden = false;
+  hideError();
+});
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submitOptions();
+});
+
+/* --------------------------------------------------------- saved views */
+
+// Named option sets live in localStorage: the page has no write path into
+// the engine, and the server never hears about them.
+function readStore() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function writeStore(store) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    return true;
+  } catch (err) {
+    showError(`Could not save the view in this browser: ${err.message}`);
+    return false;
+  }
+}
+
+function viewsFor(report) {
+  const list = readStore()[report];
+  if (!Array.isArray(list)) return [];
+  return list.filter((entry) =>
+    entry !== null && typeof entry === "object" &&
+    typeof entry.name === "string" && entry.name !== "" &&
+    entry.values !== null && typeof entry.values === "object" &&
+    !Array.isArray(entry.values));
+}
+
+function renderSavedViews() {
+  savedList.replaceChildren();
+  if (!selectedReport) return;
+  const views = viewsFor(selectedReport);
+  if (views.length === 0) {
+    savedList.append(el("li", "hint", "No saved views for this report."));
+    return;
+  }
+  for (const entry of views) {
+    const li = el("li");
+    const apply = el("button", "link apply-view", entry.name);
+    apply.type = "button";
+    apply.title = "Apply this saved view";
+    apply.addEventListener("click", () => {
+      applyValues(entry.values);
+      submitOptions();
+    });
+    const remove = el("button", "link delete delete-view", "Delete");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Delete saved view ${entry.name}`);
+    remove.addEventListener("click", () => deleteView(entry.name));
+    li.append(apply, remove);
+    savedList.append(li);
+  }
+}
+
+function saveView() {
+  if (!selectedReport) return;
+  const name = viewName.value.trim();
+  if (name === "") {
+    showError("Give the view a name before saving it.");
+    viewName.focus();
+    return;
+  }
+  hideError();
+  const store = readStore();
+  const list = viewsFor(selectedReport).filter(
+    (entry) => entry.name !== name);
+  list.push({ name, values: readValues() });
+  store[selectedReport] = list;
+  if (!writeStore(store)) return;
+  viewName.value = "";
+  renderSavedViews();
+}
+
+function deleteView(name) {
+  if (!selectedReport) return;
+  const store = readStore();
+  const list = viewsFor(selectedReport).filter(
+    (entry) => entry.name !== name);
+  if (list.length === 0) delete store[selectedReport];
+  else store[selectedReport] = list;
+  if (writeStore(store)) renderSavedViews();
+}
+
+document.getElementById("save-view").addEventListener("click", saveView);
+viewName.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    saveView();
+  }
+});
 
 load();
 </script>
