@@ -9,8 +9,8 @@
 # gnc-webd.  Both run against the same book.
 #
 # [report] defaults to "Trial Balance"; "Balance Sheet", "Income Statement",
-# "Profit & Loss", "Transaction Report", "General Ledger", "Receivable Aging"
-# and "Payable Aging" are supported.
+# "Profit & Loss", "Transaction Report", "General Ledger", "Receivable Aging",
+# "Payable Aging" and "Investment Lots" are supported.
 # Each report has its own extractor (see extractor_for below), because the
 # reports do not agree on what a row is: the Trial Balance is (account, debit,
 # credit), the balance sheet and P&L are (label, amount) with section headings
@@ -51,6 +51,18 @@
 #
 # (add --two-receivable to the generator to put one customer's invoices in a
 # second A/Receivable account, which exercises the per-account headings).
+#
+# The Investment Lots report needs a book with a stock account, lots and a
+# price database; no fixture book has one, so generate it the same way and
+# pass it as [book]:
+#
+#   python3 web/test/make-investment-book.py /tmp/investment-book.gnucash
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/investment-book.gnucash "Investment Lots" 2026-01-01 2026-06-30
+#
+# Its account selection is not part of the native route: the report always
+# covers every stock and mutual fund account, which is the Scheme report's
+# default selection.
 set -u
 
 GUILE_BUILD=${1:?usage: report-parity.sh <guile-build> <native-build> <source-dir> [book] [report] [start] [end] [accounts]}
@@ -80,6 +92,7 @@ extractor_for() {
         "Transaction Report") echo transaction-report ;;
         "General Ledger")   echo general-ledger ;;
         "Receivable Aging"|"Payable Aging") echo aging ;;
+        "Investment Lots") echo investment-lots ;;
         *) return 1 ;;
     esac
 }
@@ -94,6 +107,7 @@ report_guid() {
         "General Ledger")   echo "2e22929e5c5b4b769f615a815ef0c20f" ;;
         "Receivable Aging") echo "9cf76bed17f14401b8e3e22d0079cb98" ;;
         "Payable Aging")    echo "e57770f2dbca46619d6dac4ac5469b50" ;;
+        "Investment Lots")  echo "ab2acc24afd14630a551f98f1a35fa81" ;;
         *) return 1 ;;
     esac
 }
@@ -118,6 +132,8 @@ scheme_start_option() {
         "Balance Sheet") echo "" ;;
         # The aging reports have a single "To" date as well.
         "Receivable Aging"|"Payable Aging") echo "" ;;
+        # The lots report calls its dates "Start date"/"End date".
+        "Investment Lots") echo "Start date" ;;
         *) echo "Start Date" ;;
     esac
 }
@@ -127,6 +143,7 @@ scheme_end_option() {
         "Trial Balance") echo "Date of Report" ;;
         "Balance Sheet") echo "Balance Sheet Date" ;;
         "Receivable Aging"|"Payable Aging") echo "To" ;;
+        "Investment Lots") echo "End date" ;;
         *) echo "End Date" ;;
     esac
 }
@@ -569,9 +586,61 @@ def aging(rows):
     return out
 
 
+def investment_lots(rows):
+    """The lots report: one section per account, one row per lot.
+
+    Every cell of a lot row counts: the opened/closed dates sit in number
+    cells ("03/10/25"), the share amounts carry their commodity ("50. ACME"),
+    the money columns are currency amounts and the two CAGR columns are
+    percentages ("85.1%").  A zero amount that the report blanks on a
+    non-total row is a None, which is a different thing from a printed zero.
+    The account heading, its end price line, the column heading rows and the
+    grand total are compared too, so the report's layout is part of the claim.
+    """
+    out = []
+    for cells in rows:
+        classes = [c for _, c in cells]
+        texts = [t for t, _ in cells]
+        if len(cells) == 1:
+            text = texts[0].strip()
+            if not text:
+                continue          # padding rows and the rulers between sections
+            if classes[0].startswith("column-heading-left"):
+                out.append(("ACCOUNT", text))
+            elif text.startswith("End price:") or text == "No price found":
+                out.append(("PRICE", text))
+            continue
+        if all(c.startswith("column-heading-center") for c in classes):
+            out.append(("HEADINGS", tuple(texts)))
+            continue
+        # The first cell is the row label (lot title, "Account Lots Total",
+        # "Grand Total"); it carries the total-number-cell class on total
+        # rows, so it must be read as text, not as an amount.
+        values = [texts[0].strip()]
+        values.extend(lot_value(text, cell_class)
+                      for text, cell_class in cells[1:])
+        out.append(("ROW", tuple(values)))
+    return out
+
+
+def lot_value(text, cell_class):
+    """One cell of a lots-table row, as a comparable value."""
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", stripped):
+        return stripped          # a date in a number cell
+    if stripped.endswith("%"):
+        return Decimal(stripped[:-1])
+    if is_number(cell_class):
+        return amount(stripped)
+    return stripped
+
+
 EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "transaction-report": transaction_report,
-              "general-ledger": general_ledger, "aging": aging}
+              "general-ledger": general_ledger, "aging": aging,
+              "investment-lots": investment_lots}
 
 extractor = EXTRACTORS[sys.argv[3]]
 report = sys.argv[4]

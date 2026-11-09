@@ -81,7 +81,7 @@ reports_code=$(curl -sS -o "$REPORTS_FILE" -w '%{http_code}' "${URL}api/reports"
 reports=$(cat "$REPORTS_FILE")
 echo "$reports" | grep -q '"Trial Balance"' || fail "report list has no Trial Balance"
 for native_report in "Balance Sheet" "Income Statement" "Profit & Loss" \
-                     "Receivable Aging" "Payable Aging"; do
+                     "Receivable Aging" "Payable Aging" "Investment Lots"; do
     echo "$reports" | grep -q "\"$native_report\"" \
         || fail "report list has no $native_report"
 done
@@ -146,6 +146,16 @@ receivable_aging=$(curl -fsS "${URL}report/Receivable%20Aging") \
     || { cat "$LOG" >&2; fail "GET Receivable Aging failed"; }
 echo "$receivable_aging" | grep -q "no suitable transactions" \
     || fail "receivable aging does not explain the empty fixture book"
+
+# The Investment Lots report is native too.  sample1 has no stock account, so
+# there are no lots to print; that it answers at all is this test's claim, and
+# the lots themselves are compared cell by cell with the Scheme report by
+# report-parity.sh on a generated book (web/test/make-investment-book.py).
+investment_lots=$(curl -fsS "${URL}report/Investment%20Lots") \
+    || { cat "$LOG" >&2; fail "GET Investment Lots failed"; }
+echo "$investment_lots" | grep -q "<html" || fail "investment lots is not HTML"
+echo "$investment_lots" | grep -q "Investment Lots" \
+    || fail "investment lots report has no title"
 
 if [ "$HAS_GUILE" = 1 ]; then
     # The Scheme engine is still the fallback for reports not ported yet.

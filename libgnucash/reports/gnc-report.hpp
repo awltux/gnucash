@@ -255,6 +255,10 @@ struct Cell
 {
     std::string text;
     std::string css;
+    /** How many table columns the cell occupies.  The Scheme renderer's
+     *  table cells take a colspan, and the reports that print an account
+     *  heading or a warning inside the table use it to span the row. */
+    int span = 1;
 };
 
 struct CellTable
@@ -371,6 +375,58 @@ AgingReport payable_aging (Account* root, const AgingOptions& options);
 /** The end of today, which is the Scheme aging reports' default report date
  *  (their "To" option defaults to the relative date 'today'). */
 time64 default_aging_date ();
+
+/* ------------------------------------------------------- investment lots */
+
+/** The period the Investment Lots report covers.  Both bounds are inclusive
+ *  and are taken at the end of their day. */
+struct LotOptions
+{
+    /** Purchases before this date still count towards a lot's amount and
+     *  basis, but are not shown in the bought columns; sales before it are
+     *  not counted as realised.  This is what makes the report's "Opened"
+     *  date able to precede its "Start date". */
+    time64 start = 0;
+    /** Splits after this date are ignored.  It is also the date the end price
+     *  and the short-term/long-term test are taken at. */
+    time64 end = 0;
+};
+
+/** A rendered Investment Lots report: the table and its title
+ *  ("Investment Lots, <interval>"). */
+struct LotReport
+{
+    CellTable table;
+    std::string title;
+};
+
+/** The Investment Lots report ("Investment Lots", investment-lots.scm) for
+ *  every stock and mutual fund account below `root`, with the Scheme report's
+ *  default options: one section per account (the account's full name and its
+ *  end price), a 20-column table of lots -- opened/closed, bought amount,
+ *  value and average price, sold splits, amount, basis, value and average
+ *  price, end amount/basis/value, short- and long-term realised gain,
+ *  realised CAGR, short- and long-term unrealised gain and unrealised CAGR --
+ *  the account's lots total, and a grand total.
+ *
+ *  A sale's basis is its share of the lot's running basis, rounded to the
+ *  report currency; its gain is the sale's value minus that basis; the end
+ *  value is the lot's remaining amount at the end-date price.  Purchases
+ *  before `start` are counted in the basis and the end amount but not in the
+ *  bought columns, exactly as the Scheme report does.  Short- and long-term
+ *  are decided by gnc:date-year-delta() with the Scheme default of one year.
+ *
+ *  Not reproduced, and documented rather than silently different: the Scheme
+ *  report's optional chart (its four gain series per account do not fit the
+ *  shared Chart type), its column/display/validation option pages (the
+ *  defaults above are what is rendered), its account selection (the report
+ *  always covers every stock and mutual fund account, which is the Scheme
+ *  option's default), and its "Show blanks instead of zeros" toggle is always
+ *  on because that is the default.  Lots are reported in the price source's
+ *  default ("Last up through report date"); a null `currency` means
+ *  gnc_default_report_currency(). */
+LotReport investment_lots (Account* root, const LotOptions& options,
+                           gnc_commodity* currency = nullptr);
 
 /** Render an aging report as a standalone HTML document, including its
  *  explanation-instead-of-a-table case. */

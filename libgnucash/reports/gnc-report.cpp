@@ -14,8 +14,10 @@
 #include <config.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -35,6 +37,7 @@ extern "C"
 #include <gnc-date.h>
 #include <gnc-lot.h>
 #include <gnc-numeric.h>
+#include <gnc-pricedb.h>
 #include <gnc-unicode.h>
 #include <gnc-ui-util.h>
 #include <gncInvoice.h>
@@ -2005,6 +2008,850 @@ aging_report (Account* root, const AgingOptions& options, bool receivable)
     return report;
 }
 
+/* -------------------------------------------------------- investment lots */
+
+/* The Scheme report measures a holding period with gnc:date-year-delta():
+ * whole years plus the difference of the two dates' day-of-year over 366,
+ * with February 29 normalised away so that a day after February is the same
+ * distance from January 1 in a leap year and in a common year. */
+double
+date_year_delta (time64 from, time64 to)
+{
+    struct tm from_tm;
+    struct tm to_tm;
+    gnc_localtime_r (&from, &from_tm);
+    gnc_localtime_r (&to, &to_tm);
+
+    const int year1 = from_tm.tm_year + 1900;
+    const int year2 = to_tm.tm_year + 1900;
+    const int day1 = from_tm.tm_yday + 1;
+    const int day2 = to_tm.tm_yday + 1;
+
+    auto leap_year = [] (int year)
+    {
+        return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    };
+    const int adjusted1 = (!leap_year (year1) && day1 >= 59) ? day1 + 1 : day1;
+    const int adjusted2 = (!leap_year (year2) && day2 >= 59) ? day2 + 1 : day2;
+
+    return (year2 - year1) + (adjusted2 - adjusted1) / 366.0;
+}
+
+/* calculate-cagr(): false when the ratio is undefined, else compound annual
+ * growth as a fraction (0.1 is 10%). */
+std::optional<double>
+calculate_cagr (gnc_numeric basis, gnc_numeric end_value,
+                std::optional<double> years)
+{
+    if (!years.has_value () || *years <= 0.0)
+        return std::nullopt;
+    if (gnc_numeric_zero_p (basis) || gnc_numeric_negative_p (basis) ||
+        gnc_numeric_negative_p (end_value))
+        return std::nullopt;
+    const double ratio = gnc_numeric_to_double (end_value) /
+                         gnc_numeric_to_double (basis);
+    return std::pow (ratio, 1.0 / *years) - 1.0;
+}
+
+/* long-term?(): strictly more than the threshold, as the Scheme `>` does. */
+bool
+is_long_term (std::optional<time64> bought, time64 sold, double years)
+{
+    if (!bought.has_value ())
+        return false;
+    return date_year_delta (*bought, sold) > years;
+}
+
+struct PriceHit
+{
+    /* Owned by the caller: gnc_price_unref() when done with it. */
+    GNCPrice* price = nullptr;
+};
+
+/* find-price(): among the prices for `commodity` nearest before the report
+ * date, prefer one quoted in the report currency; a price quoted the other
+ * way round is inverted, and with no match at all the first price is used.
+ * That is the Scheme report's search order for its default "Last up through
+ * report date" price source. */
+PriceHit
+find_price (GNCPriceDB* db, gnc_commodity* commodity, gnc_commodity* report_cur,
+            time64 as_of)
+{
+    PriceHit hit;
+    if (db == nullptr || commodity == nullptr || report_cur == nullptr)
+        return hit;
+
+    PriceList* prices = gnc_pricedb_lookup_nearest_before_any_currency_t64 (
+        db, commodity, time64CanonicalDayTime (as_of));
+    if (prices == nullptr)
+        return hit;
+
+    GNCPrice* direct = nullptr;
+    GNCPrice* inverse = nullptr;
+    for (GList* node = prices; node != nullptr; node = node->next)
+    {
+        auto* price = static_cast<GNCPrice*> (node->data);
+        if (gnc_commodity_equiv (report_cur, gnc_price_get_currency (price)))
+        {
+            direct = price;
+            break;
+        }
+        if (inverse == nullptr &&
+            gnc_commodity_equiv (report_cur, gnc_price_get_commodity (price)))
+            inverse = price;
+    }
+
+    if (direct != nullptr)
+    {
+        gnc_price_ref (direct);
+        hit.price = direct;
+    }
+    else if (inverse != nullptr)
+        hit.price = gnc_price_invert (inverse);
+    else
+    {
+        auto* first = static_cast<GNCPrice*> (prices->data);
+        gnc_price_ref (first);
+        hit.price = first;
+    }
+    gnc_price_list_destroy (prices);
+    return hit;
+}
+
+/* The Scheme report converts every amount with gnc:case-exchange-fn() at its
+ * default pricedb-before source; the engine has the same lookup.  Equal
+ * commodities are the identity, which is the whole of a single-currency
+ * book. */
+gnc_numeric
+convert_to_report_currency (gnc_numeric amount, gnc_commodity* from,
+                            gnc_commodity* report_cur, GNCPriceDB* db,
+                            time64 as_of)
+{
+    if (from == nullptr || report_cur == nullptr ||
+        gnc_commodity_equiv (from, report_cur))
+        return amount;
+    return gnc_pricedb_convert_balance_nearest_before_price_t64 (
+        db, amount, from, report_cur, as_of);
+}
+
+/* One row's worth of numbers, and the same struct after merging a group of
+ * rows into a total (an account's lots, or every account's).  The Scheme
+ * report calls this a "lot stats collector"; keeping it a value rather than
+ * a closure is the only difference. */
+struct LotStats
+{
+    enum class Kind
+    {
+        Lot,
+        Account,
+        GrandTotal,
+    };
+
+    Kind kind = Kind::Lot;
+    GNCLot* lot = nullptr;
+    Account* account = nullptr;
+    gnc_commodity* currency = nullptr;
+
+    int bought_split_count = 0;
+    gnc_numeric old_bought_amount;
+    gnc_numeric old_bought_value;
+    gnc_numeric bought_amount;
+    gnc_numeric bought_value;
+    int sold_split_count = 0;
+    gnc_numeric st_sold_amount;
+    gnc_numeric st_sold_basis;
+    gnc_numeric st_sold_value;
+    gnc_numeric st_realized_gain;
+    gnc_numeric lt_sold_amount;
+    gnc_numeric lt_sold_basis;
+    gnc_numeric lt_sold_value;
+    gnc_numeric lt_realized_gain;
+    double weighted_realized_cagr = 0.0;
+    gnc_numeric end_amount;
+    gnc_numeric end_basis;
+    gnc_numeric end_value;
+    gnc_numeric unrealized_gain;
+    gnc_numeric st_unrealized_gain;
+    gnc_numeric lt_unrealized_gain;
+    double weighted_unrealized_cagr = 0.0;
+    bool has_warnings = false;
+    bool active = false;
+    gnc_numeric splits_realized_gain;
+
+    std::optional<time64> earliest_bought_date;
+    std::optional<time64> latest_bought_date;
+    Split* earliest_bought_split = nullptr;
+    Split* last_sold_split = nullptr;
+    std::optional<time64> last_sold_date;
+    bool has_negative = false;
+    std::optional<time64> first_negative_date;
+    std::optional<double> unrealized_cagr;
+};
+
+gnc_numeric
+zero_in (gnc_commodity* commodity)
+{
+    const int fraction =
+        commodity != nullptr ? gnc_commodity_get_fraction (commodity) : 100;
+    return gnc_numeric_create (0, fraction);
+}
+
+LotStats
+make_stats (LotStats::Kind kind, Account* account, gnc_commodity* report_cur)
+{
+    LotStats stats;
+    stats.kind = kind;
+    stats.account = account;
+    stats.currency =
+        account != nullptr ? xaccAccountGetCommodity (account) : nullptr;
+
+    stats.old_bought_amount = zero_in (stats.currency);
+    stats.bought_amount = zero_in (stats.currency);
+    stats.st_sold_amount = zero_in (stats.currency);
+    stats.lt_sold_amount = zero_in (stats.currency);
+    stats.end_amount = zero_in (stats.currency);
+
+    stats.old_bought_value = zero_in (report_cur);
+    stats.bought_value = zero_in (report_cur);
+    stats.st_sold_basis = zero_in (report_cur);
+    stats.st_sold_value = zero_in (report_cur);
+    stats.st_realized_gain = zero_in (report_cur);
+    stats.lt_sold_basis = zero_in (report_cur);
+    stats.lt_sold_value = zero_in (report_cur);
+    stats.lt_realized_gain = zero_in (report_cur);
+    stats.end_basis = zero_in (report_cur);
+    stats.end_value = zero_in (report_cur);
+    stats.unrealized_gain = zero_in (report_cur);
+    stats.st_unrealized_gain = zero_in (report_cur);
+    stats.lt_unrealized_gain = zero_in (report_cur);
+    stats.splits_realized_gain = zero_in (report_cur);
+    return stats;
+}
+
+/* Merge one collector into another.  Amounts (shares) are only summed into an
+ * account's total: the grand total may span accounts with different
+ * commodities, so there they are left out, exactly as the Scheme report's
+ * merge-stats does with its include-amounts flag. */
+void
+merge_stats (LotStats& into, const LotStats& from)
+{
+    into.bought_split_count += from.bought_split_count;
+    into.old_bought_value =
+        gnc_numeric_add_fixed (into.old_bought_value, from.old_bought_value);
+    into.bought_value =
+        gnc_numeric_add_fixed (into.bought_value, from.bought_value);
+    into.sold_split_count += from.sold_split_count;
+    into.st_sold_basis =
+        gnc_numeric_add_fixed (into.st_sold_basis, from.st_sold_basis);
+    into.st_sold_value =
+        gnc_numeric_add_fixed (into.st_sold_value, from.st_sold_value);
+    into.st_realized_gain =
+        gnc_numeric_add_fixed (into.st_realized_gain, from.st_realized_gain);
+    into.lt_sold_basis =
+        gnc_numeric_add_fixed (into.lt_sold_basis, from.lt_sold_basis);
+    into.lt_sold_value =
+        gnc_numeric_add_fixed (into.lt_sold_value, from.lt_sold_value);
+    into.lt_realized_gain =
+        gnc_numeric_add_fixed (into.lt_realized_gain, from.lt_realized_gain);
+    into.weighted_realized_cagr += from.weighted_realized_cagr;
+    into.end_basis = gnc_numeric_add_fixed (into.end_basis, from.end_basis);
+    into.end_value = gnc_numeric_add_fixed (into.end_value, from.end_value);
+    into.unrealized_gain =
+        gnc_numeric_add_fixed (into.unrealized_gain, from.unrealized_gain);
+    into.st_unrealized_gain = gnc_numeric_add_fixed (into.st_unrealized_gain,
+                                                     from.st_unrealized_gain);
+    into.lt_unrealized_gain = gnc_numeric_add_fixed (into.lt_unrealized_gain,
+                                                     from.lt_unrealized_gain);
+    into.has_warnings = into.has_warnings || from.has_warnings;
+    into.active = into.active || from.active;
+
+    if (into.kind != LotStats::Kind::GrandTotal)
+    {
+        into.old_bought_amount = gnc_numeric_add_fixed (into.old_bought_amount,
+                                                        from.old_bought_amount);
+        into.bought_amount =
+            gnc_numeric_add_fixed (into.bought_amount, from.bought_amount);
+        into.st_sold_amount =
+            gnc_numeric_add_fixed (into.st_sold_amount, from.st_sold_amount);
+        into.lt_sold_amount =
+            gnc_numeric_add_fixed (into.lt_sold_amount, from.lt_sold_amount);
+        into.end_amount =
+            gnc_numeric_add_fixed (into.end_amount, from.end_amount);
+        if (into.currency == nullptr)
+            into.currency = from.currency;
+    }
+
+    /* The Scheme report weights a lot's unrealised CAGR by its end amount as
+     * the lot's row is added, so only the lots a report shows contribute. */
+    if (from.kind == LotStats::Kind::Lot && from.unrealized_cagr.has_value ())
+        into.weighted_unrealized_cagr +=
+            *from.unrealized_cagr * gnc_numeric_to_double (from.end_amount);
+}
+
+std::vector<Split*>
+account_splits_until (Account* account, time64 end)
+{
+    std::vector<Split*> splits;
+    for (GList* node = xaccAccountGetSplitList (account); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*> (node->data);
+        Transaction* txn = xaccSplitGetParent (split);
+        if (xaccTransGetVoidStatus (txn))
+            continue;
+        if (xaccTransGetDate (txn) > end)
+            continue;
+        splits.push_back (split);
+    }
+    return splits;
+}
+
+/* The lot's splits up to the report date, in the Scheme report's order: by
+ * transaction date, purchases before sales on the same date, and the engine's
+ * transaction order to break a tie between two purchases. */
+std::vector<Split*>
+lot_splits_until (GNCLot* lot, time64 end)
+{
+    std::vector<Split*> splits;
+    for (GList* node = gnc_lot_get_split_list (lot); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*> (node->data);
+        Transaction* txn = xaccSplitGetParent (split);
+        if (xaccTransGetVoidStatus (txn))
+            continue;
+        if (xaccTransGetDate (txn) > end)
+            continue;
+        splits.push_back (split);
+    }
+
+    std::stable_sort (
+        splits.begin (), splits.end (),
+        [] (Split* left, Split* right)
+        {
+            Transaction* left_txn = xaccSplitGetParent (left);
+            Transaction* right_txn = xaccSplitGetParent (right);
+            const time64 left_date = xaccTransGetDate (left_txn);
+            const time64 right_date = xaccTransGetDate (right_txn);
+            if (left_date != right_date)
+                return left_date < right_date;
+            const bool left_purchase =
+                gnc_numeric_positive_p (xaccSplitGetAmount (left));
+            const bool right_purchase =
+                gnc_numeric_positive_p (xaccSplitGetAmount (right));
+            if (left_purchase && right_purchase)
+                return xaccTransOrder (left_txn, right_txn) < 0;
+            return left_purchase && !right_purchase;
+        });
+    return splits;
+}
+
+/* The Scheme report's "Start date" option is a relative date whose default is
+ * the last entry of the option's start-date list, START_ACCOUNTING_PERIOD.
+ * The accounting period comes from the accounting-summary preference, whose
+ * default (start-period 5) is the start of the current calendar year.  The
+ * native layer has no preference store, and the engine's period helpers need
+ * a current session that the report process does not set, so resolve the
+ * preference's own default period directly. */
+time64
+default_calendar_year_start ()
+{
+    GDate* date = gnc_accounting_period_start_gdate (
+        GNC_ACCOUNTING_PERIOD_CYEAR, nullptr, nullptr);
+    if (date == nullptr)
+        return default_start_date ();
+    const time64 start = gnc_time64_get_day_start_gdate (date);
+    g_date_free (date);
+    return start;
+}
+
+/* True for a stock-split event, which the Scheme report recognises by the
+ * split's type or its action. */
+bool
+stock_split_event (Split* split)
+{
+    const char* type = xaccSplitGetType (split);
+    const char* action = xaccSplitGetAction (split);
+    if (type != nullptr && g_strcmp0 (type, "stock-split") == 0)
+        return true;
+    return action != nullptr && g_ascii_strcasecmp (action, "split") == 0;
+}
+
+/* Accumulate one lot.  This is merge-lot()/merge-split() from the Scheme
+ * report, in the same order and with the same rounding. */
+LotStats
+compute_lot (GNCLot* lot, Account* account, const LotOptions& options,
+             gnc_commodity* report_cur, GNCPriceDB* price_db, bool have_price,
+             gnc_numeric price_value, double long_term_years)
+{
+    LotStats stats = make_stats (LotStats::Kind::Lot, account, report_cur);
+    stats.lot = lot;
+
+    const int report_fraction = gnc_commodity_get_fraction (report_cur);
+
+    for (Split* split : lot_splits_until (lot, options.end))
+    {
+        Transaction* txn = xaccSplitGetParent (split);
+        const time64 date = xaccTransGetDate (txn);
+        const gnc_numeric amount = xaccSplitGetAmount (split);
+        const gnc_numeric value = convert_to_report_currency (
+            xaccSplitGetValue (split), xaccTransGetCurrency (txn), report_cur,
+            price_db, options.end);
+
+        if (stock_split_event (split) && gnc_numeric_negative_p (amount) &&
+            gnc_numeric_zero_p (value))
+        {
+            /* A reverse stock split: shares go down, basis and gains do not. */
+            stats.end_amount =
+                gnc_numeric_sub_fixed (stats.end_amount,
+                                       gnc_numeric_neg (amount));
+            if (date >= options.start && !stats.has_negative &&
+                gnc_numeric_negative_p (stats.end_amount))
+            {
+                stats.has_negative = true;
+                stats.first_negative_date = date;
+            }
+        }
+        else if (gnc_numeric_positive_p (amount))
+        {
+            if (!stats.earliest_bought_date.has_value () ||
+                date < *stats.earliest_bought_date)
+            {
+                stats.earliest_bought_date = date;
+                stats.earliest_bought_split = split;
+            }
+            if (!stats.latest_bought_date.has_value () ||
+                date > *stats.latest_bought_date)
+                stats.latest_bought_date = date;
+
+            stats.end_basis = gnc_numeric_add_fixed (stats.end_basis, value);
+            stats.end_amount = gnc_numeric_add_fixed (stats.end_amount, amount);
+
+            if (date >= options.start)
+            {
+                stats.bought_amount =
+                    gnc_numeric_add_fixed (stats.bought_amount, amount);
+                stats.bought_value =
+                    gnc_numeric_add_fixed (stats.bought_value, value);
+            }
+            else
+            {
+                stats.old_bought_amount =
+                    gnc_numeric_add_fixed (stats.old_bought_amount, amount);
+                stats.old_bought_value =
+                    gnc_numeric_add_fixed (stats.old_bought_value, value);
+            }
+            ++stats.bought_split_count;
+        }
+        else if (gnc_numeric_negative_p (amount))
+        {
+            /* A sale: its basis is its share of the lot's running basis,
+             * rounded to the report currency, and its gain is the proceeds
+             * minus that basis. */
+            const gnc_numeric sold_amount = gnc_numeric_neg (amount);
+            const gnc_numeric sold_value = gnc_numeric_neg (value);
+            const gnc_numeric sold_fraction = gnc_numeric_div (
+                sold_amount, stats.end_amount, GNC_DENOM_AUTO,
+                GNC_HOW_DENOM_REDUCE);
+            const gnc_numeric basis = gnc_numeric_mul (
+                sold_fraction, stats.end_basis, report_fraction,
+                GNC_HOW_RND_ROUND);
+            const gnc_numeric gain = gnc_numeric_sub (
+                sold_value, basis, report_fraction, GNC_HOW_RND_ROUND);
+            const bool long_term =
+                is_long_term (stats.latest_bought_date, date, long_term_years);
+
+            stats.end_basis = gnc_numeric_sub_fixed (stats.end_basis, basis);
+            stats.end_amount =
+                gnc_numeric_sub_fixed (stats.end_amount, sold_amount);
+
+            if (date >= options.start)
+            {
+                if (!stats.has_negative &&
+                    gnc_numeric_negative_p (stats.end_amount))
+                {
+                    stats.has_negative = true;
+                    stats.first_negative_date = date;
+                }
+
+                std::optional<double> years;
+                if (stats.latest_bought_date.has_value ())
+                    years = date_year_delta (*stats.latest_bought_date, date);
+                const std::optional<double> cagr =
+                    calculate_cagr (basis, sold_value, years);
+                /* A sale with no meaningful CAGR (bought and sold the same
+                 * day, say) does not contribute to the weighted total. */
+                if (cagr.has_value ())
+                    stats.weighted_realized_cagr +=
+                        *cagr * gnc_numeric_to_double (sold_amount);
+
+                if (long_term)
+                {
+                    stats.lt_sold_amount =
+                        gnc_numeric_add_fixed (stats.lt_sold_amount,
+                                               sold_amount);
+                    stats.lt_sold_basis =
+                        gnc_numeric_add_fixed (stats.lt_sold_basis, basis);
+                    stats.lt_sold_value =
+                        gnc_numeric_add_fixed (stats.lt_sold_value, sold_value);
+                    stats.lt_realized_gain =
+                        gnc_numeric_add_fixed (stats.lt_realized_gain, gain);
+                }
+                else
+                {
+                    stats.st_sold_amount =
+                        gnc_numeric_add_fixed (stats.st_sold_amount,
+                                               sold_amount);
+                    stats.st_sold_basis =
+                        gnc_numeric_add_fixed (stats.st_sold_basis, basis);
+                    stats.st_sold_value =
+                        gnc_numeric_add_fixed (stats.st_sold_value, sold_value);
+                    stats.st_realized_gain =
+                        gnc_numeric_add_fixed (stats.st_realized_gain, gain);
+                }
+
+                ++stats.sold_split_count;
+                stats.last_sold_split = split;
+                stats.last_sold_date = date;
+            }
+        }
+        else if (date >= options.start)
+        {
+            /* A zero-amount split in the lot is a "Realized Gain/Loss" split;
+             * its value is what the report checks its own gains against. */
+            stats.splits_realized_gain =
+                gnc_numeric_add_fixed (stats.splits_realized_gain, value);
+        }
+    }
+
+    stats.end_value =
+        have_price ? gnc_numeric_mul (stats.end_amount, price_value,
+                                      report_fraction, GNC_HOW_RND_ROUND)
+                   : zero_in (report_cur);
+    stats.unrealized_gain =
+        gnc_numeric_sub_fixed (stats.end_value, stats.end_basis);
+
+    const bool lot_long_term =
+        is_long_term (stats.latest_bought_date, options.end, long_term_years);
+    stats.st_unrealized_gain =
+        lot_long_term ? zero_in (report_cur) : stats.unrealized_gain;
+    stats.lt_unrealized_gain =
+        lot_long_term ? stats.unrealized_gain : zero_in (report_cur);
+
+    stats.active = stats.sold_split_count > 0 ||
+                   gnc_numeric_positive_p (stats.end_amount);
+
+    std::optional<double> years;
+    if (stats.latest_bought_date.has_value ())
+        years = date_year_delta (*stats.latest_bought_date, options.end);
+    stats.unrealized_cagr = calculate_cagr (stats.end_basis, stats.end_value,
+                                            years);
+    return stats;
+}
+
+/* -------------------------------------------------- investment lots cells */
+
+Cell
+blank_cell ()
+{
+    return Cell {};
+}
+
+Cell
+label_cell (const std::string& text, const char* css, int span = 1)
+{
+    Cell cell;
+    cell.text = text;
+    cell.css = css;
+    cell.span = span;
+    return cell;
+}
+
+/* to-cell() in the Scheme report: an amount is a blank cell when it is zero
+ * and the row is not a total row, because "Show blanks instead of zeros"
+ * defaults to on. */
+Cell
+value_cell (gnc_numeric value, gnc_commodity* currency, bool bold)
+{
+    if (!bold && gnc_numeric_zero_p (value))
+        return blank_cell ();
+    Cell cell;
+    cell.text = format_amount (value, currency);
+    cell.css = bold ? "total-number-cell" : "number-cell";
+    if (gnc_numeric_negative_p (value))
+        cell.css += " neg";
+    return cell;
+}
+
+Cell
+integer_cell (int value, bool bold)
+{
+    if (!bold && value == 0)
+        return blank_cell ();
+    Cell cell;
+    cell.text = std::to_string (value);
+    cell.css = bold ? "total-number-cell" : "number-cell";
+    return cell;
+}
+
+Cell
+percent_cell (std::optional<double> fraction, bool bold)
+{
+    if (!fraction.has_value ())
+        return blank_cell ();
+    if (!bold && *fraction == 0.0)
+        return blank_cell ();
+    char text[32] = {0};
+    g_snprintf (text, sizeof text, "%.1f%%", *fraction * 100.0);
+    Cell cell;
+    cell.text = text;
+    cell.css = bold ? "total-number-cell" : "number-cell";
+    return cell;
+}
+
+/* value/amount (the report's "average price"), or zero when undefined. */
+gnc_numeric
+average_price (gnc_numeric amount, gnc_numeric value,
+               gnc_commodity* report_cur)
+{
+    if (gnc_numeric_zero_p (amount))
+        return zero_in (report_cur);
+    return gnc_numeric_div (value, amount, GNC_DENOM_AUTO,
+                            GNC_HOW_DENOM_REDUCE);
+}
+
+std::string
+printed_date (time64 when)
+{
+    char date[32] = {0};
+    qof_print_date_buff (date, sizeof date, when);
+    return std::string (date);
+}
+
+/* get-lot-warnings(): the lot-level validation messages, with the options at
+ * their defaults (multiple bought splits, negative balance, gains mismatch). */
+std::vector<std::string>
+lot_warnings (const LotStats& stats, gnc_commodity* report_cur)
+{
+    std::vector<std::string> warnings;
+
+    if (stats.bought_split_count > 1)
+        warnings.push_back (
+            "Warning: Above lot has " +
+            std::to_string (stats.bought_split_count) +
+            " bought splits. Consider separating them into their own lots.");
+
+    if (stats.has_negative && stats.first_negative_date.has_value ())
+        warnings.push_back (
+            "Warning: Above lot's balance is negative on " +
+            printed_date (*stats.first_negative_date) +
+            ". Consider removing the responsible sale split from the lot and "
+            "then scrubbing.");
+
+    if (stats.bought_split_count > 0)
+    {
+        const gnc_numeric computed = gnc_numeric_add_fixed (
+            stats.st_realized_gain, stats.lt_realized_gain);
+        const gnc_numeric discrepancy =
+            gnc_numeric_sub_fixed (computed, stats.splits_realized_gain);
+        if (!gnc_numeric_zero_p (discrepancy))
+            warnings.push_back (
+                "Warning: Above lot's computed gain " +
+                format_amount (computed, report_cur) +
+                " is not equal to the \"Realized Gain/Loss\" split(s) sum " +
+                format_amount (stats.splits_realized_gain, report_cur) +
+                ". Difference: " + format_amount (discrepancy, report_cur));
+    }
+    return warnings;
+}
+
+/* get-account-warnings(): splits outside any lot, and a lot total that does
+ * not equal the account's own balance. */
+std::vector<std::string>
+account_warnings (const LotStats& stats, const std::vector<Split*>& unassigned,
+                  time64 end, gnc_commodity* report_cur)
+{
+    std::vector<std::string> warnings;
+
+    if (!unassigned.empty ())
+        warnings.push_back (
+            "Warning: " + std::to_string (unassigned.size ()) +
+            " split(s) are not assigned to a lot. Do lots need to be "
+            "scrubbed?");
+
+    const gnc_numeric balance =
+        xaccAccountGetBalanceAsOfDate (stats.account, end);
+    const gnc_numeric discrepancy =
+        gnc_numeric_sub_fixed (stats.end_amount, balance);
+    if (!gnc_numeric_zero_p (discrepancy))
+        warnings.push_back (
+            "Warning: End amount " +
+            format_amount (stats.end_amount, stats.currency) +
+            " is not equal to actual account balance " +
+            format_amount (balance, stats.currency) + ". Difference: " +
+            format_amount (discrepancy, stats.currency) +
+            ". Do lots need to be scrubbed?");
+    return warnings;
+}
+
+void
+append_warning_rows (CellTable& table, const std::vector<std::string>& warnings,
+                     int column_count)
+{
+    for (const std::string& warning : warnings)
+        table.rows.push_back (
+            {label_cell (warning, "total-label-cell neg", column_count)});
+}
+
+/* One row of the lots table.  `grand_total` blanks the share amounts and the
+ * two CAGR columns, because accounts with different commodities cannot be
+ * added together (the Scheme report's get-column-header-list makes the same
+ * distinction for its headings). */
+void
+append_stats_row (CellTable& table, const LotStats& stats, bool bold,
+                  bool grand_total, gnc_commodity* report_cur)
+{
+    std::vector<Cell> row;
+
+    std::string label;
+    if (stats.kind == LotStats::Kind::Lot)
+    {
+        const char* title = stats.lot != nullptr ? gnc_lot_get_title (stats.lot)
+                                                 : nullptr;
+        label = title != nullptr ? title : "";
+    }
+    else if (stats.kind == LotStats::Kind::Account)
+        label = "Account Lots Total";
+    else
+        label = "Grand Total";
+    row.push_back (bold ? label_cell (label, "total-number-cell")
+                        : label_cell (label, ""));
+
+    /* Opened and Closed: only a lot has them.  A closed lot's close date is
+     * the last sale that took its amount to zero. */
+    if (stats.kind == LotStats::Kind::Lot &&
+        stats.earliest_bought_date.has_value ())
+        row.push_back (label_cell (printed_date (*stats.earliest_bought_date),
+                                   "number-cell"));
+    else
+        row.push_back (blank_cell ());
+
+    if (stats.kind == LotStats::Kind::Lot &&
+        gnc_numeric_zero_p (stats.end_amount) &&
+        stats.last_sold_date.has_value ())
+        row.push_back (label_cell (printed_date (*stats.last_sold_date),
+                                   "number-cell"));
+    else
+        row.push_back (blank_cell ());
+
+    /* Bought. */
+    if (grand_total)
+        row.push_back (blank_cell ());
+    else
+        row.push_back (value_cell (stats.bought_amount, stats.currency, bold));
+    row.push_back (value_cell (stats.bought_value, report_cur, bold));
+    /* The average price needs the amount, and the grand total has none, so
+     * its price cells are blank (the Scheme report passes #f there). */
+    if (grand_total)
+        row.push_back (blank_cell ());
+    else
+        row.push_back (value_cell (
+            average_price (stats.bought_amount, stats.bought_value, report_cur),
+            report_cur, bold));
+
+    /* Sold: the split count, then the amount/basis/value and their average
+     * price. */
+    row.push_back (integer_cell (stats.sold_split_count, bold));
+    const gnc_numeric sold_amount = gnc_numeric_add_fixed (
+        stats.st_sold_amount, stats.lt_sold_amount);
+    const gnc_numeric sold_basis = gnc_numeric_add_fixed (stats.st_sold_basis,
+                                                          stats.lt_sold_basis);
+    const gnc_numeric sold_value = gnc_numeric_add_fixed (stats.st_sold_value,
+                                                          stats.lt_sold_value);
+    if (grand_total)
+        row.push_back (blank_cell ());
+    else
+        row.push_back (value_cell (sold_amount, stats.currency, bold));
+    row.push_back (value_cell (sold_basis, report_cur, bold));
+    row.push_back (value_cell (sold_value, report_cur, bold));
+    if (grand_total)
+        row.push_back (blank_cell ());
+    else
+        row.push_back (value_cell (
+            average_price (sold_amount, sold_value, report_cur), report_cur,
+            bold));
+
+    /* End. */
+    if (grand_total)
+        row.push_back (blank_cell ());
+    else
+        row.push_back (value_cell (stats.end_amount, stats.currency, bold));
+    row.push_back (value_cell (stats.end_basis, report_cur, bold));
+    row.push_back (value_cell (stats.end_value, report_cur, bold));
+
+    /* Realised gain: short and long term, then the weighted CAGR. */
+    row.push_back (value_cell (stats.st_realized_gain, report_cur, bold));
+    row.push_back (value_cell (stats.lt_realized_gain, report_cur, bold));
+    if (grand_total)
+        row.push_back (blank_cell ());
+    else if (gnc_numeric_zero_p (sold_amount))
+        row.push_back (integer_cell (0, bold));
+    else
+        row.push_back (percent_cell (stats.weighted_realized_cagr /
+                                         gnc_numeric_to_double (sold_amount),
+                                     bold));
+
+    /* Unrealised gain, the same way; a lot's CAGR is its own, an account's is
+     * weighted by the lots' end amounts. */
+    row.push_back (value_cell (stats.st_unrealized_gain, report_cur, bold));
+    row.push_back (value_cell (stats.lt_unrealized_gain, report_cur, bold));
+    if (grand_total)
+        row.push_back (blank_cell ());
+    else if (stats.kind == LotStats::Kind::Lot)
+        row.push_back (percent_cell (stats.unrealized_cagr, bold));
+    else if (gnc_numeric_zero_p (stats.end_amount))
+        row.push_back (integer_cell (0, bold));
+    else
+        row.push_back (percent_cell (stats.weighted_unrealized_cagr /
+                                         gnc_numeric_to_double (stats.end_amount),
+                                     bold));
+
+    table.rows.push_back (std::move (row));
+}
+
+/* The 20 column headings, and the same list with only the columns a grand
+ * total can add up (the amount columns are blank there). */
+const char* const lot_headings[] = {
+    "Lot Title",           "Opened",          "Closed",
+    "Bought Amount",       "Bought Value (Basis)", "Bought Average Price",
+    "Sold Splits",         "Sold Amount",     "Sold Basis",
+    "Sold Value",          "Sold Average Price", "End Amount",
+    "End Basis",           "End Value",       "ST Realized Gain",
+    "LT Realized Gain",    "Realized CAGR",   "ST Unrealized Gain",
+    "LT Unrealized Gain",  "Unrealized CAGR"};
+
+const bool lot_heading_totals[] = {
+    false, false, false, false, true,  false, true,  false, true,  true,
+    false, false, true,  true,  true,  true,  false, true,  true,  false};
+
+void
+append_heading_row (CellTable& table, bool grand_total)
+{
+    std::vector<Cell> row;
+    for (int index = 0; index < 20; ++index)
+        row.push_back (label_cell (
+            grand_total && !lot_heading_totals[index] ? "" : lot_headings[index],
+            "column-heading-center"));
+    table.rows.push_back (std::move (row));
+}
+
+void
+append_padding_rows (CellTable& table, int count, int column_count)
+{
+    for (int index = 0; index < count; ++index)
+        table.rows.push_back ({label_cell ("", "", column_count)});
+}
+
 } // namespace
 
 std::vector<std::string>
@@ -2049,6 +2896,181 @@ render_aging (const AgingReport& report)
         << html_escape (report.title) << "</h3>\n<p class='text-cell'>"
         << html_escape (report.warning) << "</p>\n</body></html>\n";
     return out.str ();
+}
+
+LotReport
+investment_lots (Account* root, const LotOptions& options,
+                 gnc_commodity* requested)
+{
+    LotReport report;
+    report.title = "Investment Lots";
+
+    gchar* interval = gnc_date_interval_format (options.start, options.end);
+    if (interval != nullptr)
+    {
+        report.title += ", ";
+        report.title += interval;
+        g_free (interval);
+    }
+
+    gnc_commodity* report_cur = report_currency (root, requested);
+    if (root == nullptr || report_cur == nullptr)
+        return report;
+
+    GNCPriceDB* price_db =
+        gnc_pricedb_get_db (qof_instance_get_book (QOF_INSTANCE (root)));
+
+    /* The Scheme report's "Long term gains age (years)" default. */
+    const double long_term_years = 1.0;
+    const int column_count = 20;
+
+    CellTable& table = report.table;
+    LotStats grand =
+        make_stats (LotStats::Kind::GrandTotal, nullptr, report_cur);
+
+    std::vector<Account*> accounts;
+    collect_accounts (root, accounts);
+
+    bool have_account_selection = false;
+    for (Account* account : accounts)
+    {
+        const GNCAccountType type = xaccAccountGetType (account);
+        /* The Scheme report's account option defaults to every stock and
+         * mutual fund account.  When the book has none, the option machinery
+         * falls back to the first account of an allowed type (asset, bank,
+         * stock or mutual) rather than to an empty selection, and the report
+         * then prints an empty grand-total section instead of nothing at
+         * all.  Only stock and mutual fund accounts can have lots worth
+         * reporting, so the fallback account contributes no rows. */
+        if (type == ACCT_TYPE_ASSET || type == ACCT_TYPE_BANK ||
+            type == ACCT_TYPE_STOCK || type == ACCT_TYPE_MUTUAL)
+            have_account_selection = true;
+        if (type != ACCT_TYPE_STOCK && type != ACCT_TYPE_MUTUAL)
+            continue;
+
+        gnc_commodity* account_currency = xaccAccountGetCommodity (account);
+        if (account_currency == nullptr)
+            continue;
+
+        PriceHit price =
+            find_price (price_db, account_currency, report_cur, options.end);
+        gnc_numeric price_value = zero_in (report_cur);
+        if (price.price != nullptr)
+            price_value = convert_to_report_currency (
+                gnc_price_get_value (price.price),
+                gnc_price_get_currency (price.price), report_cur, price_db,
+                options.end);
+
+        std::vector<Split*> splits =
+            account_splits_until (account, options.end);
+        std::vector<GNCLot*> lots;
+        std::set<GNCLot*> seen;
+        std::vector<Split*> unassigned;
+        for (Split* split : splits)
+        {
+            GNCLot* lot = xaccSplitGetLot (split);
+            if (lot == nullptr)
+            {
+                unassigned.push_back (split);
+                continue;
+            }
+            if (seen.insert (lot).second)
+                lots.push_back (lot);
+        }
+
+        /* "Include accounts with no lots" defaults to false. */
+        if (lots.empty ())
+        {
+            if (price.price != nullptr)
+                gnc_price_unref (price.price);
+            continue;
+        }
+
+        /* One account's rows are built aside and only copied into the report
+         * when the account has something to show, as the Scheme report's
+         * temporary account table does. */
+        CellTable section;
+
+        gchar* full_name = gnc_account_get_full_name (account);
+        section.rows.push_back (
+            {label_cell (full_name != nullptr ? full_name
+                                              : account_name (account),
+                         "column-heading-left", column_count)});
+        g_free (full_name);
+
+        std::string price_line = "No price found";
+        if (price.price != nullptr)
+        {
+            gnc_commodity* price_currency = gnc_price_get_currency (price.price);
+            price_line = "End price: ";
+            price_line +=
+                format_amount (gnc_price_get_value (price.price), price_currency);
+            if (!gnc_commodity_equiv (price_currency, report_cur))
+            {
+                price_line += " [";
+                price_line += format_amount (price_value, report_cur);
+                price_line += "]";
+            }
+            price_line += " on ";
+            price_line += printed_date (gnc_price_get_time64 (price.price));
+        }
+        section.rows.push_back (
+            {label_cell (price_line, "text-cell", column_count)});
+
+        append_heading_row (section, false);
+
+        LotStats account_stats =
+            make_stats (LotStats::Kind::Account, account, report_cur);
+        /* An account with splits outside any lot is shown even when its lots
+         * are not, because those splits are a warning about the account. */
+        account_stats.active = !unassigned.empty ();
+
+        for (GNCLot* lot : lots)
+        {
+            LotStats stats = compute_lot (lot, account, options, report_cur,
+                                          price_db, price.price != nullptr,
+                                          price_value, long_term_years);
+            /* "Include closed lots" defaults to true, so every lot active in
+             * the window is shown. */
+            if (!stats.active)
+                continue;
+
+            const std::vector<std::string> warnings =
+                lot_warnings (stats, report_cur);
+            stats.has_warnings = !warnings.empty ();
+            append_stats_row (section, stats, false, false, report_cur);
+            append_warning_rows (section, warnings, column_count);
+            merge_stats (account_stats, stats);
+        }
+
+        append_stats_row (section, account_stats, true, false, report_cur);
+        append_warning_rows (section,
+                             account_warnings (account_stats, unassigned,
+                                               options.end, report_cur),
+                             column_count);
+
+        if (account_stats.active)
+        {
+            append_padding_rows (table, 3, column_count);
+            table.rows.insert (table.rows.end (), section.rows.begin (),
+                               section.rows.end ());
+            merge_stats (grand, account_stats);
+        }
+
+        if (price.price != nullptr)
+            gnc_price_unref (price.price);
+    }
+
+    /* With an account selection at all the grand total section is always
+     * printed, even when every lot was inactive: its totals are the report's
+     * "nothing to show" statement. */
+    if (have_account_selection)
+    {
+        append_padding_rows (table, 3, column_count);
+        append_heading_row (table, true);
+        append_stats_row (table, grand, true, true, report_cur);
+    }
+    return report;
 }
 
 namespace
@@ -2311,10 +3333,17 @@ render_cell_table (const CellTable& table, const std::string& title)
      * though the document title stays the report name. */
     if (!table.subtitle.empty ())
         out << "<h3>" << html_escape (table.subtitle) << "</h3>\n";
-    out << "<table cellspacing='0' cellpadding='4' border='0'><thead><tr>";
-    for (const std::string& heading : table.headings)
-        out << "<th>" << html_escape (heading) << "</th>";
-    out << "</tr></thead><tbody>\n";
+    out << "<table cellspacing='0' cellpadding='4' border='0'>";
+    /* A report may put its column headings in the body instead (the lots
+     * report repeats a heading row per account), so the header is optional. */
+    if (!table.headings.empty ())
+    {
+        out << "<thead><tr>";
+        for (const std::string& heading : table.headings)
+            out << "<th>" << html_escape (heading) << "</th>";
+        out << "</tr></thead>";
+    }
+    out << "<tbody>\n";
 
     for (const std::vector<Cell>& row : table.rows)
     {
@@ -2324,6 +3353,8 @@ render_cell_table (const CellTable& table, const std::string& title)
             out << "<td";
             if (!cell.css.empty ())
                 out << " class='" << cell.css << "'";
+            if (cell.span > 1)
+                out << " colspan='" << cell.span << "'";
             out << ">";
             out << (cell.text.empty () ? " " : html_escape (cell.text));
             out << "</td>";
@@ -2340,7 +3371,7 @@ native_report_names ()
 {
     return {"Trial Balance", "Balance Sheet", "Income Statement",
             "Profit & Loss", "Transaction Report", "General Ledger",
-            "Receivable Aging", "Payable Aging"};
+            "Receivable Aging", "Payable Aging", "Investment Lots"};
 }
 
 /* --------------------------------------------------------------- options */
@@ -2548,6 +3579,25 @@ report_options (const std::string& name)
             default_aging_date ()));
         return options;
     }
+    else if (name == "Investment Lots")
+    {
+        options.push_back (date_option (
+            "start", "Start date",
+            "The first day of the period the lots are reported for.  Purchases "
+            "before it still count towards a lot's amount and basis, but are "
+            "not shown in the bought columns; sales before it are not counted "
+            "as realised.  It defaults to the start of the current calendar "
+            "year, which is what the accounting-period preference the Scheme "
+            "option resolves to defaults to.",
+            default_calendar_year_start ()));
+        options.push_back (date_option (
+            "end", "End date",
+            "The last day of the period the lots are reported for.  It is also "
+            "the date the end price and the short/long-term test are taken at, "
+            "and it defaults to today, as the Scheme report's does.",
+            default_aging_date ()));
+        options.push_back (currency_option ());
+    }
     else
     {
         return {};
@@ -2666,6 +3716,18 @@ render_report (const std::string& name, Account* root,
         CellTable table = general_ledger (root, request.accounts, start, end);
         table.subtitle = interval;
         html = render_cell_table (table, "General Ledger");
+        return true;
+    }
+    if (name == "Investment Lots")
+    {
+        /* The lots report has a real period, unlike the as-of reports.  Its
+         * own defaults are the start of the current calendar year and today,
+         * matching the Scheme report's options; a caller may pin either. */
+        LotOptions options;
+        options.start = request.start.value_or (default_calendar_year_start ());
+        options.end = request.end.value_or (default_aging_date ());
+        LotReport report = investment_lots (root, options, request.currency);
+        html = render_cell_table (report.table, report.title);
         return true;
     }
     return false;

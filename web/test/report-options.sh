@@ -133,6 +133,22 @@ expect_status 400 "accounts on an aging report" \
     "/report/Receivable%20Aging?accounts=all"
 expect_body "accounts on an aging report" "does not accept an 'accounts' option"
 
+# The Investment Lots report takes a period and a currency, and covers every
+# stock account in the book, so it has no account selection either.
+expect_status 200 "Investment Lots options" "/api/report/Investment%20Lots/options"
+expect_body "Investment Lots options" '"name":"start"'
+expect_body "Investment Lots options" '"label":"Start date"'
+expect_body "Investment Lots options" '"label":"End date"'
+expect_body "Investment Lots options" '"name":"end"'
+expect_body "Investment Lots options" '"type":"date"'
+expect_body "Investment Lots options" '"name":"currency"'
+expect_not_body "Investment Lots options has no account selection" \
+    '"name":"accounts"'
+expect_status 400 "accounts on the lots report" \
+    "/report/Investment%20Lots?accounts=all"
+expect_body "accounts on the lots report" \
+    "does not accept an 'accounts' option"
+
 expect_status 404 "options for an unknown report" "/api/report/No%20Such%20Report/options"
 
 echo "== the report list"
