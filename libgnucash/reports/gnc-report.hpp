@@ -70,6 +70,13 @@ const char* column_name (Column column);
 /** Human heading used by the HTML renderer: "Account Name", "Debit", ... */
 const char* column_heading (Column column);
 
+/** Every column a report spec may ask for, in display order. */
+std::vector<Column> column_vocabulary ();
+
+/** Resolve a spec's column name ("debit", ...).  False for a name outside
+ *  the vocabulary; the caller reports it as a bad spec. */
+bool column_from_name (const std::string& name, Column& column);
+
 /* -------------------------------------------------------------- table model */
 
 enum class RowType
@@ -92,6 +99,23 @@ struct Row
     bool blank = false;
 };
 
+/** A chart section attached to a table.  The renderer emits the data as JSON
+ *  and draws it with the vendored Chart.js; the data lives in the document so
+ *  a reader (or a test) can see the numbers the chart is made of without
+ *  running the script. */
+enum class ChartType
+{
+    Bar,
+};
+
+struct Chart
+{
+    ChartType type = ChartType::Bar;
+    std::string title;
+    std::vector<std::string> labels;
+    std::vector<gnc_numeric> values;
+};
+
 /** A rendered table.  `amount` is signed: the Debit column shows positive
  *  amounts, the Credit column their negations, and Balance shows the sign. */
 struct Table
@@ -102,6 +126,8 @@ struct Table
     bool has_totals = false;
     gnc_numeric debit_total = gnc_numeric_zero ();
     gnc_numeric credit_total = gnc_numeric_zero ();
+    /** An optional chart section rendered below the table. */
+    std::optional<Chart> chart;
 };
 
 /* --------------------------------------------------------------- grouping */
@@ -122,6 +148,49 @@ Table account_table (Account* root, const Query& query,
                      const std::vector<Column>& columns,
                      const Grouping& grouping,
                      bool (*filter) (const Account*) = nullptr);
+
+/* ------------------------------------------------------------ report spec */
+
+/** How a designer-built report groups its rows. */
+enum class GroupingMode
+{
+    /** One flat row per account in scope (a Trial Balance shape). */
+    None,
+    /** The account tree, with subtree rollups and a subtotal per parent. */
+    AccountTree,
+    /** One row per period in the date range, totalling the scope. */
+    Period,
+};
+
+enum class PeriodUnit
+{
+    Year,
+    Month,
+};
+
+/** A report built from the vocabulary rather than from a C++ report: the
+ *  designer saves this shape as JSON, and the same renderer serves a preview
+ *  and a saved report. */
+struct TableSpec
+{
+    std::string title;
+    std::vector<Column> columns;
+    GroupingMode grouping = GroupingMode::None;
+    PeriodUnit period_unit = PeriodUnit::Year;
+    std::optional<time64> start;
+    std::optional<time64> end;
+    gnc_commodity* currency = nullptr;
+    /** The accounts in scope.  Empty means every account in the book. */
+    std::vector<Account*> accounts;
+    /** Add a bar chart below the table. */
+    bool chart = false;
+};
+
+/** Render a TableSpec as an HTML document.  A period-grouped spec needs both
+ *  dates; without them nothing is rendered and the caller reports the
+ *  problem. */
+bool render_table_spec (const TableSpec& spec, Account* root,
+                        std::string& html);
 
 /* --------------------------------------------------------------- reports */
 

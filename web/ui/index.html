@@ -47,6 +47,23 @@
                 color: #0645ad; cursor: pointer; }
   button.link.delete { color: #a00; }
   .save-row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+
+  /* Report designer: a form over the saved report spec. */
+  #designer { border-top: 1px solid #ccc; margin-top: 2rem; padding-top: .5rem; }
+  #designer h2 { font-size: 1.2rem; }
+  #spec-form { display: grid; gap: .75rem; max-width: 62rem; }
+  #spec-error { border: 1px solid #c00; background: #fff4f4; color: #a00;
+                padding: .5rem .75rem; white-space: pre-wrap; }
+  .checks { display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; }
+  .checks label { font-weight: normal; }
+  #spec-form input[type="text"], #spec-form input[type="date"],
+  #spec-form select { font: inherit; padding: .2rem .3rem; max-width: 20rem; }
+  #spec-form .accounts { max-height: 12rem; overflow: auto; border: 1px solid #e3e3e3;
+                         padding: .25rem .5rem; background: #fafafa; }
+  #spec-form ul.accounts { padding-left: 1.1rem; margin: 0; }
+  #spec-form ul.accounts.root { padding-left: 0; }
+  #report-list li.saved-report { display: flex; gap: .35rem; align-items: baseline; }
+  #report-list li.saved-report a { font-style: normal; }
 </style>
 </head>
 <body>
@@ -78,6 +95,65 @@
 
   <iframe id="view" title="Report" hidden></iframe>
 </section>
+
+<section id="designer">
+  <h2>Report designer</h2>
+  <p class="hint">
+    Build a report from the same query, columns and options the native
+    reports use. Preview it, then save it under a name: saved reports live on
+    the server (outside the book) and appear in the Reports list above.
+  </p>
+  <p id="spec-error" class="error" role="alert" hidden></p>
+  <form id="spec-form">
+    <div class="option">
+      <label for="spec-name">Name</label>
+      <input id="spec-name" type="text" maxlength="80" autocomplete="off"
+             placeholder="e.g. Expenses by month">
+    </div>
+    <div class="option">
+      <label for="spec-title">Title</label>
+      <input id="spec-title" type="text" maxlength="120" autocomplete="off"
+             placeholder="Defaults to the name">
+    </div>
+    <div class="option">
+      <label>Columns</label>
+      <div id="spec-columns" class="checks"></div>
+    </div>
+    <div class="option">
+      <label for="spec-grouping">Grouping</label>
+      <select id="spec-grouping"></select>
+      <p class="hint">
+        A flat list prints one row per account; the account tree rolls
+        parents up and adds a subtotal; by period prints one row per year or
+        month in the date range.
+      </p>
+    </div>
+    <div class="option" id="spec-period-unit-row">
+      <label for="spec-period-unit">Period length</label>
+      <select id="spec-period-unit"></select>
+    </div>
+    <div class="option">
+      <label>Accounts</label>
+      <div id="spec-accounts" class="accounts"></div>
+      <p class="hint">
+        Each checked account means that account and its whole subtree.
+        Nothing checked means every account in the book.
+      </p>
+    </div>
+    <div id="spec-options"></div>
+    <div class="option">
+      <label for="spec-chart">Chart</label>
+      <select id="spec-chart">
+        <option value="">No chart</option>
+        <option value="bar">Bar chart</option>
+      </select>
+    </div>
+    <div class="form-actions">
+      <button id="spec-preview" type="button">Preview</button>
+      <button id="spec-save" type="submit">Save report</button>
+    </div>
+  </form>
+</section>
 <script>
 "use strict";
 
@@ -96,9 +172,13 @@ function el(tag, cls, text) {
 
 let accountRoot = null;    // the root of /api/accounts, for the form's tree
 let selectedReport = null; // the report whose options are on screen
+let selectedSpecId = null; // the saved spec currently rendered, if any
 let currentOptions = [];   // its descriptors, in display order
 let formGeneration = 0;    // guards the asynchronous options fetch
 let nativeNamesPromise = null; // names with descriptors, fetched once
+let reportNames = [];      // the native/Scheme reports, from /api/reports
+let savedSpecs = [];       // designer reports, from /api/specs
+let specFields = null;     // the designer vocabulary, from /api/spec/options
 
 const STORAGE_KEY = "gnucash-webui.saved-views.v1";
 
@@ -111,6 +191,18 @@ const form = document.getElementById("options-form");
 const savedWrap = document.getElementById("saved-views-wrap");
 const savedList = document.getElementById("saved-views");
 const viewName = document.getElementById("view-name");
+const reportList = document.getElementById("report-list");
+const specForm = document.getElementById("spec-form");
+const specName = document.getElementById("spec-name");
+const specTitle = document.getElementById("spec-title");
+const specColumns = document.getElementById("spec-columns");
+const specGrouping = document.getElementById("spec-grouping");
+const specPeriodUnit = document.getElementById("spec-period-unit");
+const specPeriodUnitRow = document.getElementById("spec-period-unit-row");
+const specAccounts = document.getElementById("spec-accounts");
+const specOptions = document.getElementById("spec-options");
+const specChart = document.getElementById("spec-chart");
+const specError = document.getElementById("spec-error");
 
 /* ------------------------------------------------------------- the book */
 
@@ -146,24 +238,66 @@ async function load() {
 
     // Reports are rendered by the server and shown in the frame below the
     // tree, so one is a click away and the page never navigates away.
-    const names = (await (await fetch(api("api/reports"))).json()).sort();
-    const reports = document.getElementById("report-list");
-    for (const name of names) {
-      const li = el("li");
-      const link = el("a", null, name);
-      link.href = api("report/" + encodeURIComponent(name));
-      link.addEventListener("click", (event) => {
-        event.preventDefault();
-        selectReport(name);
-      });
-      li.append(link);
-      reports.append(li);
-    }
+    reportNames = (await (await fetch(api("api/reports"))).json()).sort();
+    await loadSpecs();
+    await loadDesignerOptions();
   } catch (err) {
     document.getElementById("summary").textContent = "Could not load the book.";
     document.getElementById("summary").className = "error";
     console.error(err);
   }
+}
+
+// Saved designer reports and the report templates share one list.  The
+// template list keeps its own order; saved reports follow it, each with its
+// delete control.
+function renderReportList() {
+  reportList.replaceChildren();
+  for (const name of reportNames) {
+    const li = el("li");
+    const link = el("a", null, name);
+    link.href = api("report/" + encodeURIComponent(name));
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      selectReport(name);
+    });
+    li.append(link);
+    reportList.append(li);
+  }
+  for (const spec of savedSpecs) {
+    const li = el("li", "saved-report");
+    const link = el("a", "saved-report-link", spec.name);
+    link.href = api("report/spec/" + encodeURIComponent(spec.id));
+    link.dataset.specId = spec.id;
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      selectSpec(spec);
+    });
+    const remove = el("button", "link delete delete-spec", "Delete");
+    remove.type = "button";
+    remove.title = "Delete this saved report";
+    remove.setAttribute("aria-label", `Delete saved report ${spec.name}`);
+    remove.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      deleteSpec(spec);
+    });
+    li.append(link, remove);
+    reportList.append(li);
+  }
+}
+
+async function loadSpecs() {
+  try {
+    const response = await fetch(api("api/specs"));
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    savedSpecs = Array.isArray(data.specs) ? data.specs : [];
+  } catch (err) {
+    savedSpecs = [];
+    showSpecError(`Could not load the saved reports: ${err.message}`);
+  }
+  renderReportList();
 }
 
 /* ------------------------------------------------------- the option form */
@@ -192,19 +326,19 @@ function initialValue(option) {
   return typeof option.default === "string" ? option.default : "";
 }
 
-function accountChoiceList(accounts, isRoot) {
+function accountChoiceList(accounts, isRoot, name = "accounts") {
   const list = el("ul", isRoot ? "accounts root" : "accounts");
   for (const account of accounts) {
     const li = el("li");
     const label = el("label");
     const box = el("input");
     box.type = "checkbox";
-    box.name = "accounts";
+    box.name = name;
     box.value = account.guid;
     label.append(box, document.createTextNode(" " + account.name));
     li.append(label);
     if (account.children.length > 0)
-      li.append(accountChoiceList(account.children, false));
+      li.append(accountChoiceList(account.children, false, name));
     list.append(li);
   }
   return list;
@@ -462,6 +596,7 @@ function reportsWithDescriptors() {
 async function selectReport(name) {
   const generation = ++formGeneration;
   selectedReport = name;
+  selectedSpecId = null;
   currentOptions = [];
   optionsSection.hidden = false;
   optionsTitle.textContent = `Options for ${name}`;
@@ -475,6 +610,7 @@ async function selectReport(name) {
 
   // The frame loads straight away with the report's own defaults, as before;
   // the form appears when the descriptors arrive.
+  view.removeAttribute("srcdoc");
   view.hidden = false;
   view.src = api("report/" + encodeURIComponent(name));
 
@@ -530,11 +666,265 @@ async function selectReport(name) {
   renderSavedViews();
 }
 
+/* ------------------------------------------------------ report designer */
+
+function showSpecError(text) {
+  specError.textContent = text;
+  specError.hidden = false;
+}
+
+function hideSpecError() {
+  specError.hidden = true;
+  specError.textContent = "";
+}
+
+function specField(name) {
+  const node = document.getElementById(`spec-opt-${name}`);
+  return node ? node.value : "";
+}
+
+function fillSelect(select, entries) {
+  select.replaceChildren();
+  for (const entry of entries || [])
+    select.append(new Option(entry.label || entry.name, entry.name));
+}
+
+async function loadDesignerOptions() {
+  if (!accountRoot) return;
+  let data;
+  try {
+    const response = await fetch(api("api/spec/options"));
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    data = await response.json();
+  } catch (err) {
+    showSpecError(`Could not load the designer vocabulary: ${err.message}`);
+    return;
+  }
+  specFields = data;
+  buildDesigner();
+}
+
+function buildDesigner() {
+  if (!specFields) return;
+
+  specColumns.replaceChildren();
+  for (const column of specFields.columns || []) {
+    const label = el("label");
+    const box = el("input");
+    box.type = "checkbox";
+    box.name = "spec-columns";
+    box.value = column.name;
+    box.checked = column.name === "account-name";
+    label.append(box, document.createTextNode(" " + (column.label || column.name)));
+    specColumns.append(label);
+  }
+
+  fillSelect(specGrouping, specFields.groupings);
+  specGrouping.value = "none";
+  fillSelect(specPeriodUnit, specFields.period_units);
+  specPeriodUnit.value = "year";
+
+  specAccounts.replaceChildren(
+    accountChoiceList(accountRoot ? accountRoot.children : [], true,
+                      "spec-accounts"));
+
+  specOptions.replaceChildren();
+  for (const option of specFields.options || []) {
+    const row = el("div", "option");
+    const id = `spec-opt-${option.name}`;
+    const label = el("label", null, option.label || option.name);
+    label.htmlFor = id;
+    row.append(label);
+
+    let control;
+    if (option.type === "date") {
+      control = el("input");
+      control.type = "date";
+      control.value = typeof option.default === "string" ? option.default : "";
+    } else if (option.type === "choice") {
+      control = el("select");
+      control.append(new Option("Use the dates above", ""));
+      for (const choice of option.choices || [])
+        control.append(new Option(choice, choice));
+      control.value = typeof option.default === "string" ? option.default : "";
+    } else {
+      // The currency descriptor has a default but no choices; free text goes
+      // through the server's validation like the report form's field does.
+      control = el("input");
+      control.type = "text";
+      control.value = typeof option.default === "string" ? option.default : "";
+      control.placeholder = "e.g. USD";
+      control.size = 8;
+      control.autocomplete = "off";
+      control.spellcheck = false;
+    }
+    control.id = id;
+    control.name = option.name;
+    row.append(control);
+    if (option.description) row.append(el("p", "hint", option.description));
+    specOptions.append(row);
+  }
+  syncDesignerState();
+}
+
+// "By period" needs the period length; a date preset replaces the two date
+// fields, exactly as on the report option form.
+function syncDesignerState() {
+  specPeriodUnitRow.hidden = specGrouping.value !== "period";
+  const preset = specField("date_preset");
+  for (const input of specOptions.querySelectorAll('input[type="date"]'))
+    input.disabled = preset !== "";
+}
+
+// The JSON the server validates and saves.  Blank dates and a blank currency
+// are left out rather than sent as empty strings; the server applies its own
+// defaults then.
+function readDesignerSpec() {
+  const name = specName.value.trim();
+  if (name === "") {
+    showSpecError("Give the report a name before previewing or saving it.");
+    specName.focus();
+    return null;
+  }
+  const columns = [...specColumns.querySelectorAll("input:checked")]
+    .map((box) => box.value);
+  if (columns.length === 0) {
+    showSpecError("Choose at least one column.");
+    return null;
+  }
+  const spec = {
+    name,
+    title: specTitle.value.trim() || name,
+    columns,
+    grouping: specGrouping.value || "none",
+    period_unit: specPeriodUnit.value || "year",
+    accounts: [...specAccounts.querySelectorAll("input:checked")]
+      .map((box) => box.value),
+    chart: specChart.value,
+  };
+  const preset = specField("date_preset");
+  if (preset !== "") {
+    spec.date_preset = preset;
+  } else {
+    const start = specField("start");
+    const end = specField("end");
+    if (start !== "") spec.start = start;
+    if (end !== "") spec.end = end;
+  }
+  const currency = specField("currency").trim();
+  if (currency !== "") spec.currency = currency;
+  return spec;
+}
+
+async function previewSpec() {
+  const spec = readDesignerSpec();
+  if (!spec) return;
+  hideSpecError();
+  try {
+    const response = await fetch(api("api/spec/preview"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(spec),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      view.hidden = true;
+      showSpecError(text.trim() || `The preview failed (HTTP ${response.status}).`);
+      return;
+    }
+    // A preview is not a saved report: clear the selection so the frame's
+    // load handler does not treat it as one.
+    formGeneration++;
+    selectedReport = null;
+    selectedSpecId = null;
+    optionsSection.hidden = true;
+    view.removeAttribute("src");
+    view.hidden = false;
+    view.srcdoc = text;
+  } catch (err) {
+    showSpecError(`Could not preview the report: ${err.message}`);
+  }
+}
+
+async function saveSpec(event) {
+  event.preventDefault();
+  const spec = readDesignerSpec();
+  if (!spec) return;
+  hideSpecError();
+  try {
+    const response = await fetch(api("api/specs"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(spec),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      showSpecError(text.trim() || `The report could not be saved (HTTP ${response.status}).`);
+      return;
+    }
+    const saved = JSON.parse(text);
+    specName.value = "";
+    specTitle.value = "";
+    await loadSpecs();
+    selectSpec(saved);
+  } catch (err) {
+    showSpecError(`Could not save the report: ${err.message}`);
+  }
+}
+
+function selectSpec(spec) {
+  formGeneration++;
+  selectedReport = spec.name;
+  selectedSpecId = spec.id;
+  currentOptions = [];
+  optionsSection.hidden = false;
+  optionsTitle.textContent = `Saved report: ${spec.name}`;
+  optionsNote.textContent =
+    "This report is saved on the server, outside the book. " +
+    "Use the Reports list to open or delete it.";
+  optionsNote.hidden = false;
+  hideError();
+  form.hidden = true;
+  form.replaceChildren();
+  savedWrap.hidden = true;
+  savedList.replaceChildren();
+  view.removeAttribute("srcdoc");
+  view.hidden = false;
+  view.src = api("report/spec/" + encodeURIComponent(spec.id));
+}
+
+async function deleteSpec(spec) {
+  hideSpecError();
+  try {
+    const response = await fetch(
+      api("api/specs/" + encodeURIComponent(spec.id)), { method: "DELETE" });
+    if (!response.ok) {
+      showSpecError((await response.text()).trim() ||
+                    `The report could not be deleted (HTTP ${response.status}).`);
+      return;
+    }
+    if (selectedSpecId === spec.id) {
+      selectedReport = null;
+      selectedSpecId = null;
+      view.hidden = true;
+      optionsSection.hidden = true;
+    }
+    await loadSpecs();
+  } catch (err) {
+    showSpecError(`Could not delete the report: ${err.message}`);
+  }
+}
+
+specForm.addEventListener("submit", saveSpec);
+document.getElementById("spec-preview").addEventListener("click", previewSpec);
+specGrouping.addEventListener("change", syncDesignerState);
+specOptions.addEventListener("change", syncDesignerState);
+specOptions.addEventListener("input", syncDesignerState);
+
 // A rejected option is a text/plain 400 from the server.  Move that message
 // into the page and hide the frame instead of leaving the error document in
 // the frame, so the page never just goes blank.
-view.addEventListener("load", () => {
-  // The initial about:blank document also fires load; it is not a report.
+view.addEventListener("load", () => {  // The initial about:blank document also fires load; it is not a report.
   if (!selectedReport || !view.getAttribute("src")) return;
   let doc;
   try {

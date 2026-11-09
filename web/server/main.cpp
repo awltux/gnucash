@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
 #include <set>
 #include <string>
 #include <vector>
@@ -50,6 +51,9 @@ extern "C" {
 }
 
 #include <gnc-report.hpp>
+
+#include "json.hpp"
+#include "report-spec.hpp"
 
 namespace
 {
@@ -348,6 +352,90 @@ native_reports_options_json ()
     return body;
 }
 
+/* /api/spec/options: the vocabulary the designer form is generated from.
+ * The columns, groupings and date/currency options are the native layer's,
+ * not a list in JavaScript, so a new column or preset appears in the form
+ * without a UI change. */
+std::string
+spec_options_json ()
+{
+    std::string body = "{\"columns\":[";
+    bool first = true;
+    for (const gnc::report::Column column : gnc::report::column_vocabulary ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "{\"name\":\"";
+        body += json_escape (gnc::report::column_name (column));
+        body += "\",\"label\":\"";
+        body += json_escape (gnc::report::column_heading (column));
+        body += "\"}";
+    }
+    body += "],\"groupings\":["
+            "{\"name\":\"none\",\"label\":\"Flat account list\"},"
+            "{\"name\":\"account-tree\",\"label\":\"By account tree\"},"
+            "{\"name\":\"period\",\"label\":\"By period\"}],"
+            "\"period_units\":["
+            "{\"name\":\"year\",\"label\":\"Year\"},"
+            "{\"name\":\"month\",\"label\":\"Month\"}],\"options\":[";
+
+    std::vector<gnc::report::OptionDescriptor> options;
+    for (const auto& option :
+         gnc::report::report_options ("Income Statement"))
+    {
+        if (option.name == "start" || option.name == "end")
+            options.push_back (option);
+    }
+    gnc::report::OptionDescriptor preset;
+    preset.name = "date_preset";
+    preset.type = gnc::report::OptionType::Choice;
+    preset.label = "Date range";
+    preset.description =
+        "Use the dates above, or resolve them from the accounting period; "
+        "the two are alternatives, as on the report route.";
+    preset.default_value = "";
+    preset.choices = {"this-year", "last-year", "all"};
+    options.push_back (preset);
+    for (const auto& option :
+         gnc::report::report_options ("Income Statement"))
+    {
+        if (option.name == "currency")
+            options.push_back (option);
+    }
+
+    first = true;
+    for (const auto& option : options)
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += option_json (option);
+    }
+    body += "]}";
+    return body;
+}
+
+/* Find a saved spec by id.  The store is re-read per request: it is a small
+ * file, and a save from another tab must be visible without a restart. */
+bool
+find_spec (const std::string& id, web::ReportSpec& spec, std::string& error)
+{
+    std::vector<web::ReportSpec> specs;
+    if (!web::load_specs (specs, error))
+        return false;
+    for (const web::ReportSpec& candidate : specs)
+    {
+        if (candidate.id == id)
+        {
+            spec = candidate;
+            return true;
+        }
+    }
+    error = "no saved report with id '" + id + "'";
+    return false;
+}
+
 std::string
 register_json (Account* account)
 {
@@ -426,7 +514,18 @@ rewrite_links (const std::string& html, const std::string& token)
     const std::string register_route = "/" + token + "/register/";
     const std::string report_prefix = "gnc-report:";
     const std::string report_route = "/" + token + "/report-id/";
+    /* The native renderer cannot know the server's token, so it writes the
+     * vendored assets with this placeholder and the server fills the token
+     * in.  It must not collide with a real URL type (gnc-register:, ...). */
+    const std::string webui_prefix = "gnc-webui:";
+    const std::string webui_route = "/" + token + "/";
 
+    for (size_t pos = out.find (webui_prefix); pos != std::string::npos;
+         pos = out.find (webui_prefix, pos))
+    {
+        out.replace (pos, webui_prefix.size (), webui_route);
+        pos += webui_route.size ();
+    }
     for (size_t pos = out.find (register_prefix); pos != std::string::npos;
          pos = out.find (register_prefix, pos))
     {
@@ -505,37 +604,96 @@ register_html (Account* account)
     return out;
 }
 
-/* Reads until the end of the request headers. Returns the path, or an empty
- * string if the request is malformed. */
-std::string
-read_request_path (GSocketConnection* connection)
+/* One request, already read.  The designer's POST bodies are small JSON
+ * documents, so the whole body is read here rather than streamed; anything
+ * above the limit is refused by the route instead of being buffered. */
+struct HttpRequest
+{
+    std::string method;
+    std::string path;
+    std::string body;
+    bool body_too_large = false;
+};
+
+constexpr size_t max_request_body = 1024 * 1024;
+
+/* Reads the request line, the headers and (for POST) the body. Returns an
+ * empty path if the request is malformed. */
+HttpRequest
+read_request (GSocketConnection* connection)
 {
     GInputStream* in = g_io_stream_get_input_stream (G_IO_STREAM (connection));
     std::string request;
     char buffer[1024];
+    size_t header_end = std::string::npos;
 
-    while (request.find ("\r\n\r\n") == std::string::npos
-           && request.size() < 16 * 1024)
+    while (header_end == std::string::npos && request.size () < 32 * 1024)
     {
         gssize read = g_input_stream_read (in, buffer, sizeof buffer, nullptr,
                                            nullptr);
         if (read <= 0)
             break;
         request.append (buffer, static_cast<size_t>(read));
+        header_end = request.find ("\r\n\r\n");
     }
 
+    HttpRequest result;
     const size_t line_end = request.find ("\r\n");
     if (line_end == std::string::npos)
-        return {};
+        return result;
 
     const std::string line = request.substr (0, line_end);
     /* "GET <path> HTTP/1.1" */
     const size_t first = line.find (' ');
     const size_t second = line.find (' ', first + 1);
     if (first == std::string::npos || second == std::string::npos)
-        return {};
+        return result;
+    result.method = line.substr (0, first);
+    result.path = line.substr (first + 1, second - first - 1);
 
-    return line.substr (first + 1, second - first - 1);
+    if (header_end == std::string::npos)
+        return result;
+
+    size_t content_length = 0;
+    size_t pos = line_end + 2;
+    while (pos < header_end)
+    {
+        const size_t end = request.find ("\r\n", pos);
+        if (end == std::string::npos || end > header_end)
+            break;
+        const std::string header = request.substr (pos, end - pos);
+        const size_t colon = header.find (':');
+        if (colon != std::string::npos)
+        {
+            const std::string name = header.substr (0, colon);
+            if (g_ascii_strcasecmp (name.c_str (), "Content-Length") == 0)
+            {
+                const std::string value = header.substr (colon + 1);
+                content_length = static_cast<size_t> (
+                    g_ascii_strtoull (value.c_str (), nullptr, 10));
+            }
+        }
+        pos = end + 2;
+    }
+
+    result.body = request.substr (header_end + 4);
+    if (content_length > max_request_body)
+    {
+        result.body_too_large = true;
+        result.body.clear ();
+        return result;
+    }
+    while (result.body.size () < content_length)
+    {
+        gssize read = g_input_stream_read (in, buffer, sizeof buffer, nullptr,
+                                           nullptr);
+        if (read <= 0)
+            break;
+        result.body.append (buffer, static_cast<size_t>(read));
+    }
+    if (result.body.size () > content_length)
+        result.body.resize (content_length);
+    return result;
 }
 
 /* The report route's option surface.  The names and defaults come from the
@@ -877,6 +1035,56 @@ static_file (const char* name)
     return body;
 }
 
+/* The vendored Chart.js.  It is served straight out of borrowed/ so the tree
+ * has one copy of a 200 KB library, not two: an installed build copies the
+ * same file into webui/vendor at install time (see web/CMakeLists.txt), and
+ * GNC_CHARTJS can point at it for a build that is run from somewhere else.
+ * chart.umd.js is the file borrowed/chartjs-4 already installs and ships in
+ * the distribution, so no new copy is added to the repository. */
+std::string
+chartjs_file ()
+{
+    const gchar* override = g_getenv ("GNC_CHARTJS");
+    if (override != nullptr && override[0] != '\0')
+    {
+        std::string body;
+        gchar* contents = nullptr;
+        gsize length = 0;
+        if (g_file_get_contents (override, &contents, &length, nullptr))
+            body.assign (contents, length);
+        g_free (contents);
+        if (!body.empty ())
+            return body;
+    }
+
+    const gchar* dir = g_getenv ("GNC_WEBUI_DIR");
+    if (dir == nullptr)
+        dir = GNC_WEBUI_DIR;
+
+    /* Installed layout: <webui>/vendor/chart.umd.js.  Source layout:
+     * <src>/web/ui/../../borrowed/chartjs-4/chart.umd.js. */
+    gchar* installed = g_build_filename (dir, "vendor", "chart.umd.js",
+                                         nullptr);
+    gchar* source = g_build_filename (dir, "..", "..", "borrowed", "chartjs-4",
+                                      "chart.umd.js", nullptr);
+    std::string body;
+    for (gchar* path : {installed, source})
+    {
+        gchar* contents = nullptr;
+        gsize length = 0;
+        if (g_file_get_contents (path, &contents, &length, nullptr))
+        {
+            body.assign (contents, length);
+            g_free (contents);
+            break;
+        }
+        g_free (contents);
+    }
+    g_free (installed);
+    g_free (source);
+    return body;
+}
+
 gboolean
 on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
 {
@@ -886,7 +1094,8 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
      * local request arrives immediately; anything slower is not a request. */
     g_socket_set_timeout (g_socket_connection_get_socket (connection), 1);
 
-    const std::string path = read_request_path (connection);
+    const HttpRequest request = read_request (connection);
+    const std::string path = request.path;
 
     if (!authorised (path))
     {
@@ -1013,6 +1222,200 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
 #endif
         }
     }
+    else if (route == "api/spec/options")
+    {
+        send_response (connection, "200 OK", "application/json",
+                       spec_options_json ());
+    }
+    else if (route == "api/spec/preview")
+    {
+        /* Preview an unsaved spec.  Nothing is written; the same validator
+         * and renderer a saved report uses run here, so a preview cannot
+         * disagree with what Save will produce. */
+        if (request.method != "POST")
+        {
+            send_response (connection, "405 Method Not Allowed", "text/plain",
+                           "previewing a spec needs POST\n");
+        }
+        else if (request.body_too_large)
+        {
+            send_response (connection, "413 Payload Too Large", "text/plain",
+                           "the spec is larger than 1 MiB\n");
+        }
+        else
+        {
+            web::ReportSpec spec;
+            std::string error;
+            if (!web::spec_from_json (request.body, g_server.root, spec, error))
+            {
+                send_response (connection, "400 Bad Request", "text/plain",
+                               error + "\n");
+            }
+            else
+            {
+                std::string html;
+                if (!web::render_spec_html (spec, g_server.root, html, error))
+                    send_response (connection, "400 Bad Request", "text/plain",
+                                   error + "\n");
+                else
+                    send_response (connection, "200 OK",
+                                   "text/html; charset=utf-8",
+                                   rewrite_links (html, g_server.token));
+            }
+        }
+    }
+    else if (route == "api/specs")
+    {
+        if (request.method == "GET")
+        {
+            std::vector<web::ReportSpec> specs;
+            std::string error;
+            if (!web::load_specs (specs, error))
+                send_response (connection, "500 Internal Server Error",
+                               "text/plain", error + "\n");
+            else
+                send_response (connection, "200 OK", "application/json",
+                               web::specs_to_json (specs));
+        }
+        else if (request.method == "POST")
+        {
+            if (request.body_too_large)
+            {
+                send_response (connection, "413 Payload Too Large",
+                               "text/plain",
+                               "the spec is larger than 1 MiB\n");
+            }
+            else
+            {
+                web::ReportSpec spec;
+                std::string error;
+                if (!web::spec_from_json (request.body, g_server.root, spec,
+                                          error))
+                {
+                    send_response (connection, "400 Bad Request", "text/plain",
+                                   error + "\n");
+                }
+                else
+                {
+                    std::vector<web::ReportSpec> specs;
+                    if (!web::load_specs (specs, error))
+                    {
+                        send_response (connection, "500 Internal Server Error",
+                                       "text/plain", error + "\n");
+                    }
+                    else
+                    {
+                        bool duplicate = false;
+                        for (const web::ReportSpec& existing : specs)
+                            duplicate = duplicate ||
+                                        existing.name == spec.name;
+                        if (duplicate)
+                        {
+                            send_response (
+                                connection, "400 Bad Request", "text/plain",
+                                "a report named '" + spec.name +
+                                    "' already exists\n");
+                        }
+                        else
+                        {
+                            gchar* id = g_uuid_string_random ();
+                            spec.id = id != nullptr ? id : "";
+                            g_free (id);
+                            specs.push_back (spec);
+                            if (!web::save_specs (specs, error))
+                                send_response (
+                                    connection, "500 Internal Server Error",
+                                    "text/plain", error + "\n");
+                            else
+                                send_response (connection,
+                                               "201 Created",
+                                               "application/json",
+                                               web::spec_to_json (spec));
+                        }
+                    }
+                }
+            }
+        }
+        else
+        {
+            send_response (connection, "405 Method Not Allowed", "text/plain",
+                           "use GET to list saved reports, POST to create\n");
+        }
+    }
+    else if (route.compare (0, 10, "api/specs/") == 0)
+    {
+        const std::string id = url_decode (route.substr (10));
+        std::vector<web::ReportSpec> specs;
+        std::string error;
+        if (!web::load_specs (specs, error))
+        {
+            send_response (connection, "500 Internal Server Error",
+                           "text/plain", error + "\n");
+        }
+        else
+        {
+            auto found = std::find_if (
+                specs.begin (), specs.end (),
+                [&id] (const web::ReportSpec& spec) { return spec.id == id; });
+            if (request.method == "GET")
+            {
+                if (found == specs.end ())
+                    send_response (connection, "404 Not Found", "text/plain",
+                                   "no saved report with id '" + id + "'\n");
+                else
+                    send_response (connection, "200 OK", "application/json",
+                                   web::spec_to_json (*found));
+            }
+            else if (request.method == "DELETE")
+            {
+                if (found == specs.end ())
+                    send_response (connection, "404 Not Found", "text/plain",
+                                   "no saved report with id '" + id + "'\n");
+                else
+                {
+                    specs.erase (found);
+                    if (!web::save_specs (specs, error))
+                        send_response (
+                            connection, "500 Internal Server Error",
+                            "text/plain", error + "\n");
+                    else
+                        send_response (connection, "200 OK",
+                                       "application/json",
+                                       "{\"deleted\":\"" + id + "\"}");
+                }
+            }
+            else
+            {
+                send_response (connection, "405 Method Not Allowed",
+                               "text/plain",
+                               "use GET or DELETE on a saved report\n");
+            }
+        }
+    }
+    else if (route.compare (0, 12, "report/spec/") == 0)
+    {
+        /* A saved spec renders through the native layer, exactly like a
+         * built-in report; the id is the only thing in the path. */
+        const std::string id = url_decode (route.substr (12));
+        web::ReportSpec spec;
+        std::string error;
+        if (!find_spec (id, spec, error))
+        {
+            send_response (connection, "404 Not Found", "text/plain",
+                           error + "\n");
+        }
+        else
+        {
+            std::string html;
+            if (!web::render_spec_html (spec, g_server.root, html, error))
+                send_response (connection, "500 Internal Server Error",
+                               "text/plain", error + "\n");
+            else
+                send_response (connection, "200 OK",
+                               "text/html; charset=utf-8",
+                               rewrite_links (html, g_server.token));
+        }
+    }
     else if (route.compare (0, 11, "api/report/") == 0)
     {
         /* /api/report/<name>/options -- the option descriptors as JSON.  A
@@ -1113,6 +1516,21 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
             reports_unavailable (connection);
         }
 #endif
+    }
+    else if (route == "vendor/chart.umd.js")
+    {
+        /* Vendored Chart.js, served from borrowed/ (see chartjs_file). */
+        std::string script = chartjs_file ();
+        if (script.empty ())
+        {
+            send_response (connection, "404 Not Found", "text/plain",
+                           "chart.umd.js was not found in this build\n");
+        }
+        else
+        {
+            send_response (connection, "200 OK",
+                           "application/javascript; charset=utf-8", script);
+        }
     }
     else if (route.empty() || route == "index.html")
     {

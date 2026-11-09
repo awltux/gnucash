@@ -107,6 +107,21 @@ echo "$balance_sheet" | grep -q "Total Assets" || fail "balance sheet has no ass
 echo "$balance_sheet" | grep -q "Total Liabilities &amp; Equity" \
     || fail "balance sheet has no liabilities+equity total"
 echo "$balance_sheet" | grep -q "10,000.00" || fail "balance sheet lost the asset total"
+echo "$balance_sheet" | grep -q "report-chart-canvas" \
+    || fail "balance sheet has no chart canvas"
+echo "$balance_sheet" | grep -q "report-chart-data" \
+    || fail "balance sheet chart has no data block"
+
+# Stage 4 ships Chart.js from the vendored copy; the report's <script> is only
+# useful if this route serves it.  No CDN is involved.
+chartjs=$(curl -fsS "${URL}vendor/chart.umd.js") \
+    || { cat "$LOG" >&2; fail "GET vendor/chart.umd.js failed"; }
+[ "${#chartjs}" -gt 100000 ] || fail "the vendored Chart.js looks truncated (${#chartjs} bytes)"
+
+# The designer's vocabulary is published by the server, so the form is built
+# from the same column/grouping/option names the renderer accepts.
+curl -fsS "${URL}api/spec/options" | grep -q '"groupings"' \
+    || fail "the designer vocabulary is not served"
 
 income_statement=$(curl -fsS "${URL}report/Income%20Statement") \
     || { cat "$LOG" >&2; fail "GET Income Statement failed"; }

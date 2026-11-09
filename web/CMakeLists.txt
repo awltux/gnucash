@@ -6,9 +6,15 @@
 
 set(webd_SOURCES
   server/main.cpp
+  server/report-spec.cpp
 )
 
-add_executable(gnc-webd ${webd_SOURCES})
+set(webd_HEADERS
+  server/json.hpp
+  server/report-spec.hpp
+)
+
+add_executable(gnc-webd ${webd_SOURCES} ${webd_HEADERS})
 
 # The report engine is the only Guile consumer in this tier. Without it the
 # report routes are compiled out of main.cpp and the binary links neither
@@ -56,6 +62,12 @@ install(TARGETS gnc-webd
 
 install(DIRECTORY ui/
   DESTINATION ${CMAKE_INSTALL_DATADIR}/gnucash/webui)
+
+# The chart library is vendored once, under borrowed/.  The source tree is
+# served from there; an installed build gets the same file next to the UI so
+# the report route's vendor/chart.umd.js works without the source tree.
+install(FILES ${CMAKE_SOURCE_DIR}/borrowed/chartjs-4/chart.umd.js
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/gnucash/webui/vendor)
 
 # The distribution list lives at the top level: the web tier ships even when
 # WITH_WEBUI is off, so the tarball is complete either way.

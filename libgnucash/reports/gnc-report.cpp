@@ -15,9 +15,12 @@
 
 #include <algorithm>
 #include <cstring>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include <glib.h>
 
 #include "gnc-report.hpp"
 
@@ -66,6 +69,77 @@ html_escape (const std::string& text)
         case '"':  out += "&quot;"; break;
         case '\'': out += "&#39;"; break;
         default:   out += c;
+        }
+    }
+    return out;
+}
+
+/* The stylesheet the native reports carry inline.  The Scheme reports ship
+ * their default stylesheet in the document as well (gnucash/report/
+ * stylesheets/css.scm, "default-css"), so this is deliberately the same
+ * vocabulary: the same font, table cell classes, right-aligned numbers and
+ * bold 12pt totals.  The parity harness reads cells by class, not by style,
+ * so restyling cannot change the numbers; keeping the classes identical is
+ * what keeps both renderers readable by the same extractor. */
+const char*
+report_stylesheet ()
+{
+    return
+        "html,body{height:100vh;margin:0 8px;color:#222;background:#fff;"
+        "font-family:\"Noto Sans\",sans-serif;font-size:10pt}"
+        "body,p,table,tr,td,a,th{vertical-align:top}"
+        "h3{font-size:15pt;font-weight:bold;margin:.4em 0}"
+        "a{font-style:italic;color:#0645ad}"
+        "table{border-collapse:collapse;width:100%}"
+        "td,th{padding:4px;border-bottom:1px solid #e0e0e0}"
+        "th{text-align:left;font-weight:bold;color:#444}"
+        "tr{page-break-inside:avoid!important}"
+        "td.total-number-cell,td.total-label-cell,td.centered-label-cell{"
+        "font-size:12pt;font-weight:bold}"
+        "th.column-heading-left{text-align:left}"
+        "td.centered-label-cell,th.column-heading-center{text-align:center}"
+        "td.number-header,th.column-heading-right,td.number-cell,"
+        "td.total-number-cell{text-align:right}"
+        "td.neg{color:red}"
+        "td.number-cell,td.total-number-cell,td.anchor-cell,td.date-cell{"
+        "white-space:nowrap}"
+        "td.highlight{background-color:#e1e1e1}"
+        ".report-chart{margin:1.5rem 0 .5rem;max-width:48rem}"
+        ".report-chart h4{font-size:12pt;font-weight:bold;margin:.25rem 0 .5rem}"
+        ".report-chart canvas{width:640px;height:320px;max-width:100%;"
+        "border:1px solid #e0e0e0;background:#fff}"
+        "@media print{html,body{height:unset}}";
+}
+
+std::string
+json_escape (const std::string& text)
+{
+    std::string out;
+    out.reserve (text.size ());
+    for (const char c : text)
+    {
+        switch (c)
+        {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        /* A chart's labels are account names, and the data block is embedded
+         * in a <script> element: an unescaped "<" could close it early. */
+        case '<':  out += "\\u003c"; break;
+        case '>':  out += "\\u003e"; break;
+        case '&':  out += "\\u0026"; break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20)
+            {
+                char escape[8];
+                g_snprintf (escape, sizeof escape, "\\u%04x",
+                            static_cast<unsigned char>(c));
+                out += escape;
+            }
+            else
+                out += c;
         }
     }
     return out;
@@ -434,6 +508,27 @@ column_heading (Column column)
     return "";
 }
 
+std::vector<Column>
+column_vocabulary ()
+{
+    return {Column::AccountName, Column::Debit, Column::Credit,
+            Column::Balance, Column::Subtotal};
+}
+
+bool
+column_from_name (const std::string& name, Column& column)
+{
+    for (const Column candidate : column_vocabulary ())
+    {
+        if (name == column_name (candidate))
+        {
+            column = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
 /* -------------------------------------------------------------- grouping */
 
 Table
@@ -457,7 +552,311 @@ account_table (Account* root, const Query& query,
     return table;
 }
 
-/* --------------------------------------------------------------- reports */
+/* ------------------------------------------------------------ report spec */
+
+namespace
+{
+
+/* The GUIDs a spec's account selection means: each named account and its
+ * whole subtree, which is the route's "accounts" rule.  An empty selection
+ * is the whole book; an empty set here would mean the same thing, so callers
+ * use is_empty() to distinguish "all" from "nothing". */
+std::set<std::string>
+spec_scope (const std::vector<Account*>& accounts)
+{
+    std::set<std::string> scope;
+    for (Account* account : accounts)
+    {
+        scope.insert (account_guid (account));
+        GList* descendants = gnc_account_get_descendants_sorted (account);
+        for (GList* node = descendants; node != nullptr; node = node->next)
+            scope.insert (account_guid (static_cast<Account*> (node->data)));
+        g_list_free (descendants);
+    }
+    return scope;
+}
+
+bool
+spec_includes (const std::set<std::string>& scope, Account* account)
+{
+    return scope.empty () || scope.count (account_guid (account)) > 0;
+}
+
+void
+spec_flat_rows (const Query& query, Account* account,
+                const std::set<std::string>& scope, Table& table)
+{
+    if (spec_includes (scope, account))
+    {
+        Row row;
+        row.type = RowType::Account;
+        row.label = account_name (account);
+        row.guid = account_guid (account);
+        row.amount = query.sum (account);
+        table.rows.push_back (std::move (row));
+    }
+
+    GList* children = gnc_account_get_children_sorted (account);
+    for (GList* node = children; node != nullptr; node = node->next)
+        spec_flat_rows (query, static_cast<Account*> (node->data), scope,
+                        table);
+    g_list_free (children);
+}
+
+bool
+spec_tree_rows (const Query& query, Account* account,
+                const std::set<std::string>& scope, const Grouping& grouping,
+                int depth, Table& table)
+{
+    const bool include = spec_includes (scope, account);
+    if (include)
+    {
+        Row row;
+        row.type = RowType::Account;
+        row.label = account_name (account);
+        row.guid = account_guid (account);
+        row.depth = depth;
+        row.amount = grouping.rollup ? subtree_sum (query, account)
+                                     : query.sum (account);
+        table.rows.push_back (std::move (row));
+    }
+
+    bool child_rows = false;
+    GList* children = gnc_account_get_children_sorted (account);
+    for (GList* node = children; node != nullptr; node = node->next)
+    {
+        child_rows = spec_tree_rows (query, static_cast<Account*> (node->data),
+                                     scope, grouping, depth + 1, table) ||
+                     child_rows;
+    }
+    g_list_free (children);
+
+    if (grouping.subtotals && include && child_rows)
+    {
+        Row row;
+        row.type = RowType::Subtotal;
+        row.label = "Total " + account_name (account);
+        row.depth = depth;
+        row.amount = subtree_sum (query, account);
+        table.rows.push_back (std::move (row));
+    }
+    return include || child_rows;
+}
+
+std::string
+period_label (const GDate& date, PeriodUnit unit)
+{
+    gchar buffer[64] = {0};
+    g_date_strftime (buffer, sizeof buffer,
+                     unit == PeriodUnit::Month ? "%B %Y" : "%Y", &date);
+    return buffer;
+}
+
+/* One row per period, each the net of every account in scope over that
+ * period.  Only balance-sheet-style net amounts make sense here, so the
+ * caller's column choice still decides how they are printed. */
+bool
+spec_period_rows (const TableSpec& spec, const Query& base,
+                  const std::vector<Account*>& accounts, Table& table,
+                  std::vector<std::string>& labels,
+                  std::vector<gnc_numeric>& values, std::string& error)
+{
+    if (!spec.start.has_value () || !spec.end.has_value ())
+    {
+        error = "a period-grouped report needs both a start and an end date";
+        return false;
+    }
+
+    GDate cursor = time64_to_gdate (*spec.start);
+    GDate last = time64_to_gdate (*spec.end);
+    if (spec.period_unit == PeriodUnit::Month)
+    {
+        g_date_set_day (&cursor, 1);
+    }
+    else
+    {
+        g_date_set_day (&cursor, 1);
+        g_date_set_month (&cursor, G_DATE_JANUARY);
+    }
+    if (!g_date_valid (&cursor) || !g_date_valid (&last))
+    {
+        error = "cannot resolve the report's date range";
+        return false;
+    }
+
+    gnc_numeric total = gnc_numeric_zero ();
+    while (g_date_compare (&cursor, &last) <= 0)
+    {
+        GDate next = cursor;
+        if (spec.period_unit == PeriodUnit::Month)
+            g_date_add_months (&next, 1);
+        else
+            g_date_add_years (&next, 1);
+        GDate period_last = next;
+        g_date_subtract_days (&period_last, 1);
+
+        Query query = base;
+        query.start = gnc_time64_get_day_start_gdate (&cursor);
+        query.end = gnc_time64_get_day_end_gdate (&period_last);
+
+        gnc_numeric amount = gnc_numeric_zero ();
+        for (Account* account : accounts)
+            amount = numeric_add (amount, query.sum (account));
+
+        const std::string label = period_label (cursor, spec.period_unit);
+        Row row;
+        row.type = RowType::Account;
+        row.label = label;
+        row.amount = amount;
+        table.rows.push_back (std::move (row));
+        labels.push_back (label);
+        values.push_back (amount);
+        total = numeric_add (total, amount);
+
+        cursor = next;
+    }
+
+    if (table.rows.empty ())
+    {
+        error = "the date range does not contain a period";
+        return false;
+    }
+
+    Row row;
+    row.type = RowType::Total;
+    row.label = "Total";
+    row.amount = total;
+    table.rows.push_back (std::move (row));
+    /* The chart shows the periods, not the grand total: a total bar would
+     * dwarf every other one and say nothing new. */
+    return true;
+}
+
+} // namespace
+
+bool
+render_table_spec (const TableSpec& spec, Account* root, std::string& html)
+{
+    if (root == nullptr)
+        return false;
+    if (spec.columns.empty ())
+        return false;
+
+    Query query;
+    query.scope = root;
+    query.start = spec.start;
+    query.end = spec.end;
+    /* A spec without a currency means the report default, exactly like the
+     * built-in reports; without this the amounts would print as empty
+     * strings. */
+    query.currency = report_currency (root, spec.currency);
+
+    Table table;
+    table.columns = spec.columns;
+    table.currency = query.currency;
+
+    std::vector<std::string> chart_labels;
+    std::vector<gnc_numeric> chart_values;
+
+    if (spec.grouping == GroupingMode::Period)
+    {
+        std::vector<Account*> accounts = spec.accounts;
+        if (accounts.empty ())
+            collect_accounts (root, accounts);
+        std::string error;
+        if (!spec_period_rows (spec, query, accounts, table, chart_labels,
+                               chart_values, error))
+            return false;
+    }
+    else
+    {
+        const std::set<std::string> scope = spec_scope (spec.accounts);
+        if (spec.grouping == GroupingMode::AccountTree)
+        {
+            Grouping grouping;
+            grouping.rollup = true;
+            grouping.subtotals = true;
+
+            /* Start at the book root so ancestors keep their place in the
+             * tree, but only selected rows (and the subtotals of selected
+             * parents) are emitted. */
+            GList* children = gnc_account_get_children_sorted (root);
+            for (GList* node = children; node != nullptr;
+                 node = node->next)
+                spec_tree_rows (query, static_cast<Account*> (node->data),
+                                scope, grouping, 0, table);
+            g_list_free (children);
+
+            /* Totals would double-count a rolled-up tree; the subtotals are
+             * the totals.  A chart, if asked for, uses the top-level section
+             * subtotals rather than every nested one. */
+            for (const Row& row : table.rows)
+            {
+                if (row.type == RowType::Subtotal && row.depth == 0)
+                {
+                    chart_labels.push_back (row.label);
+                    chart_values.push_back (row.amount);
+                }
+            }
+        }
+        else
+        {
+            GList* children = gnc_account_get_children_sorted (root);
+            for (GList* node = children; node != nullptr; node = node->next)
+                spec_flat_rows (query, static_cast<Account*> (node->data),
+                                scope, table);
+            g_list_free (children);
+
+            for (const Row& row : table.rows)
+            {
+                if (chart_labels.size () >= 12)
+                    break;
+                if (row.type == RowType::Account &&
+                    !gnc_numeric_zero_p (row.amount))
+                {
+                    chart_labels.push_back (row.label);
+                    chart_values.push_back (row.amount);
+                }
+            }
+        }
+
+        /* A flat account list sums one row per account, so its debit/credit
+         * columns have the same totals the Trial Balance prints.  The tree
+         * case deliberately has none (see above). */
+        if (spec.grouping == GroupingMode::None)
+        {
+            bool has_debit_or_credit = false;
+            for (const Column column : spec.columns)
+                has_debit_or_credit = has_debit_or_credit ||
+                                      column == Column::Debit ||
+                                      column == Column::Credit;
+            for (const Row& row : table.rows)
+            {
+                if (gnc_numeric_positive_p (row.amount))
+                    table.debit_total = numeric_add (table.debit_total,
+                                                     row.amount);
+                else if (gnc_numeric_negative_p (row.amount))
+                    table.credit_total = numeric_add (table.credit_total,
+                                                      gnc_numeric_neg (row.amount));
+            }
+            table.has_totals = has_debit_or_credit && !table.rows.empty ();
+        }
+    }
+
+    if (spec.chart && !chart_labels.empty ())
+    {
+        Chart chart;
+        chart.type = ChartType::Bar;
+        chart.title = spec.title.empty () ? "Report Totals" : spec.title;
+        chart.labels = std::move (chart_labels);
+        chart.values = std::move (chart_values);
+        table.chart = std::move (chart);
+    }
+
+    html = render_html (table, spec.title.empty () ? "Custom Report"
+                                                   : spec.title);
+    return true;
+}
 
 /* ------------------------------------------------------- transaction report */
 
@@ -996,6 +1395,17 @@ balance_sheet (Account* root, std::optional<time64> as_of,
     add_total ("Total Equity", total_equity);
     add_total ("Total Liabilities & Equity",
                numeric_add (gnc_numeric_neg (liabilities), total_equity));
+
+    /* Stage 4's chart: the three section totals, drawn below the table.  The
+     * values are the same numbers the Total rows print, in the same sign
+     * convention, so the chart cannot disagree with the report. */
+    Chart chart;
+    chart.type = ChartType::Bar;
+    chart.title = "Balance Sheet Totals";
+    chart.labels = {"Assets", "Liabilities", "Equity"};
+    chart.values = {assets, gnc_numeric_neg (liabilities), total_equity};
+    table.chart = std::move (chart);
+
     return table;
 }
 
@@ -1104,24 +1514,114 @@ income_statement (Account* root, std::optional<time64> start,
     return table;
 }
 
+namespace
+{
+
+/* The chart's numbers, as JSON in the document.  Keeping the data in the
+ * markup (rather than only inside the drawing call) means the chart can be
+ * read back, tested and archived without running JavaScript. */
+std::string
+chart_json (const Chart& chart, gnc_commodity* currency)
+{
+    std::ostringstream out;
+    out << "{\"type\":\"bar\",\"title\":\"" << json_escape (chart.title)
+        << "\",\"labels\":[";
+    for (size_t index = 0; index < chart.labels.size (); ++index)
+    {
+        if (index > 0)
+            out << ",";
+        out << "\"" << json_escape (chart.labels[index]) << "\"";
+    }
+    out << "],\"values\":[";
+    for (size_t index = 0; index < chart.values.size (); ++index)
+    {
+        if (index > 0)
+            out << ",";
+        char number[G_ASCII_DTOSTR_BUF_SIZE] = {0};
+        g_ascii_dtostr (number, sizeof number,
+                        gnc_numeric_to_double (chart.values[index]));
+        out << number;
+    }
+    out << "]";
+    const char* mnemonic =
+        currency != nullptr ? gnc_commodity_get_mnemonic (currency) : nullptr;
+    if (mnemonic != nullptr && mnemonic[0] != '\0')
+        out << ",\"currency\":\"" << json_escape (mnemonic) << "\"";
+    out << "}";
+    return out.str ();
+}
+
+/* A chart section: a canvas, the data block and a small initialiser.  The
+ * Chart.js script itself is vendored and served by gnc-webd; gnc-webui: is a
+ * placeholder the server rewrites to the token-prefixed route, so the same
+ * markup works for /report/<name> and /report/spec/<id>. */
+void
+render_chart (std::ostringstream& out, const Chart& chart,
+              gnc_commodity* currency)
+{
+    out << "<section class='report-chart' data-chart-type='bar'>\n"
+        << "<h4 class='chart-title'>" << html_escape (chart.title)
+        << "</h4>\n"
+        << "<div class='chart-box'><canvas id='report-chart-canvas' "
+           "width='640' height='320' role='img' aria-label='"
+        << html_escape (chart.title) << "'></canvas></div>\n"
+        << "<script type='application/json' id='report-chart-data'>"
+        << chart_json (chart, currency) << "</script>\n"
+        << "<script src='gnc-webui:vendor/chart.umd.js'></script>\n"
+        << R"JS(<script>
+(function () {
+  var source = document.getElementById("report-chart-data");
+  var canvas = document.getElementById("report-chart-canvas");
+  if (!source || !canvas || typeof Chart === "undefined") return;
+  var data = JSON.parse(source.textContent);
+  var money = null;
+  try {
+    if (data.currency) money = new Intl.NumberFormat(undefined,
+        {style: "currency", currency: data.currency});
+  } catch (err) { money = null; }
+  var palette = ["#1f5fa8", "#a83b1f", "#2f7d32", "#7a4b9c",
+                 "#c08a00", "#3d7f8c"];
+  var chart = new Chart(canvas.getContext("2d"), {
+    type: "bar",
+    data: {
+      labels: data.labels,
+      datasets: [{
+        label: data.title,
+        data: data.values,
+        backgroundColor: data.values.map(function (_, index) {
+          return palette[index % palette.length];
+        }),
+        borderWidth: 0
+      }]
+    },
+    options: {
+      animation: false,
+      responsive: false,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, title: { display: false } },
+      scales: {
+        y: { beginAtZero: true, ticks: { callback: function (value) {
+          return money ? money.format(value) : String(value);
+        } } },
+        x: { grid: { display: false } }
+      }
+    }
+  });
+  window.__reportCharts = (window.__reportCharts || []).concat([chart]);
+}());
+</script>)JS"
+        << "\n</section>\n";
+}
+
+} // namespace
+
 std::string
 render_html (const Table& table, const std::string& title)
 {
     std::ostringstream out;
     out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
-        << html_escape (title)
-        << "</title><style>"
-           "body{font-family:system-ui,sans-serif;margin:1rem;color:#222}"
-           "h3{font-size:1.1rem}"
-           "table{border-collapse:collapse;width:100%}"
-           "th,td{padding:.3rem .6rem;border-bottom:1px solid #e0e0e0;"
-           "text-align:left}"
-           "th{font-weight:600;color:#444}"
-           "td.number-cell,td.total-number-cell{text-align:right;"
-           "font-variant-numeric:tabular-nums}"
-           "td.total-label-cell,td.total-number-cell{font-weight:600}"
-           "</style></head><body><h3>"
-        << html_escape (title) << "</h3>\n"
+        << html_escape (title) << "</title><style>" << report_stylesheet ()
+        << "</style></head><body><h3>" << html_escape (title) << "</h3>\n"
         << "<table cellspacing='0' cellpadding='4' border='0'><thead><tr>";
 
     for (const Column column : table.columns)
@@ -1228,7 +1728,12 @@ render_html (const Table& table, const std::string& title)
         out << "</tr>\n";
     }
 
-    out << "</tbody></table></body></html>\n";
+    out << "</tbody></table>\n";
+
+    if (table.chart.has_value ())
+        render_chart (out, *table.chart, table.currency);
+
+    out << "</body></html>\n";
     return out.str ();
 }
 
@@ -1244,11 +1749,8 @@ render_no_accounts (const std::string& title, bool with_title_heading)
      * report does not. */
     std::ostringstream out;
     out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
-        << html_escape (title)
-        << "</title><style>"
-           "body{font-family:system-ui,sans-serif;margin:1rem;color:#222}"
-           "h3{font-size:1.1rem}"
-           "</style></head><body>";
+        << html_escape (title) << "</title><style>" << report_stylesheet ()
+        << "</style></head><body>";
     if (with_title_heading)
         out << "<h3>" << html_escape (title) << "</h3>\n";
     out << "<h3>" << html_escape (title) << ":</h3>\n"
@@ -1264,18 +1766,8 @@ render_cell_table (const CellTable& table, const std::string& title)
 {
     std::ostringstream out;
     out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
-        << html_escape (title)
-        << "</title><style>"
-           "body{font-family:system-ui,sans-serif;margin:1rem;color:#222}"
-           "h3{font-size:1.1rem}"
-           "table{border-collapse:collapse;width:100%}"
-           "th,td{padding:.3rem .6rem;border-bottom:1px solid #e0e0e0;"
-           "text-align:left}"
-           "th{font-weight:600;color:#444}"
-           "td.number-cell,td.total-number-cell{text-align:right;"
-           "font-variant-numeric:tabular-nums}"
-           "td.total-label-cell,td.total-number-cell{font-weight:600}"
-           "</style></head><body><h3>"
+        << html_escape (title) << "</title><style>" << report_stylesheet ()
+        << "</style></head><body><h3>"
         << html_escape (title) << "</h3>\n";
     /* The Scheme transaction engine prints the date interval as a heading of
      * its own above the table; do the same so the period is visible even

@@ -969,10 +969,14 @@ endif()
 # the source root because this list is assembled here, not in web/.
 set(web_DIST
   web/CMakeLists.txt
+  web/DESIGNER.md
   web/run-smoke-test.sh
   web/run-ui-test.sh
   web/WINDOWS.md
   web/server/main.cpp
+  web/server/json.hpp
+  web/server/report-spec.cpp
+  web/server/report-spec.hpp
   web/ui/index.html
   web/test/report-parity.sh
   web/test/report-options.sh

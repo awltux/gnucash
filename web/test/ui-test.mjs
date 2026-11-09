@@ -106,6 +106,51 @@ check('reports are listed',
       `${reportNames.length} reports (${nativeNames.size} native` +
       `${hasSchemeReports ? ' + Scheme' : ''})`);
 
+/* --------------------------------------------------------- stage 4 chart */
+
+// The balance sheet is the native report with a chart section.  A canvas
+// element alone would prove nothing, so wait for Chart.js to register the
+// chart and then read the pixels back out of the canvas.
+await page.locator('#report-list a', { hasText: 'Balance Sheet' }).first().click();
+await page.waitForFunction(() => {
+    const frame = document.getElementById('view');
+    const doc = frame && frame.contentDocument;
+    return doc && doc.getElementById('report-chart-canvas') &&
+        doc.defaultView && (doc.defaultView.__reportCharts || []).length > 0;
+}, null, { timeout: 15000 });
+
+const chart = await page.evaluate(() => {
+    const doc = document.getElementById('view').contentDocument;
+    const canvas = doc.getElementById('report-chart-canvas');
+    const dataNode = doc.getElementById('report-chart-data');
+    let data = null;
+    try { data = JSON.parse(dataNode.textContent); } catch (err) { data = null; }
+    const pixels = canvas.getContext('2d')
+        .getImageData(0, 0, canvas.width, canvas.height).data;
+    let drawn = 0;
+    for (let index = 3; index < pixels.length; index += 4)
+        if (pixels[index] !== 0) drawn++;
+    return {
+        width: canvas.width,
+        height: canvas.height,
+        drawn,
+        data,
+        charts: (doc.defaultView.__reportCharts || []).length,
+        chartjs: typeof doc.defaultView.Chart,
+    };
+});
+check('the report HTML has a canvas and its data',
+      chart.width === 640 && chart.height === 320 &&
+      chart.data && Array.isArray(chart.data.labels) &&
+      chart.data.labels.length === 3 &&
+      chart.data.values.length === 3,
+      `${chart.width}x${chart.height}, ` +
+      `${chart.data ? chart.data.labels.join('/') : 'no data'}`);
+check('the chart canvas actually drew content',
+      chart.chartjs === 'function' && chart.charts === 1 &&
+      chart.drawn > 5000,
+      `${chart.drawn} non-blank pixels, Chart.js=${chart.chartjs}`);
+
 // Open a report the way a user does, then look inside the frame.
 await page.locator('#report-list a', { hasText: 'Trial Balance' }).first().click();
 await page.waitForFunction(() => {
@@ -304,6 +349,135 @@ check('an account checkbox becomes an account GUID',
       transactionHtml.includes('Checking Account') &&
       !transactionHtml.includes('No accounts selected'),
       accountGuid);
+
+/* ------------------------------------------------------ stage 5 designer */
+
+// Build a spec equivalent to an explicit Trial Balance request, inside the
+// UI, and require the rendered table to be the same table: a designer that
+// silently produced different numbers would pass every weaker check.
+await page.waitForSelector('#spec-columns input[value="debit"]',
+                           { timeout: 15000 });
+const specVocabulary = await page.evaluate(() => ({
+    columns: [...document.querySelectorAll('#spec-columns input')]
+        .map((node) => node.value),
+    groupings: [...document.querySelectorAll('#spec-grouping option')]
+        .map((node) => node.value),
+    options: [...document.querySelectorAll('#spec-options [name]')]
+        .map((node) => node.name),
+}));
+check('the designer is built from the server vocabulary',
+      specVocabulary.columns.includes('account-name') &&
+      specVocabulary.columns.includes('debit') &&
+      ['none', 'account-tree', 'period']
+          .every((name) => specVocabulary.groupings.includes(name)) &&
+      ['start', 'end', 'date_preset', 'currency']
+          .every((name) => specVocabulary.options.includes(name)),
+      `columns=${specVocabulary.columns.join(',')} ` +
+      `groupings=${specVocabulary.groupings.join(',')} ` +
+      `options=${specVocabulary.options.join(',')}`);
+
+await page.fill('#spec-name', 'Designer Trial Balance');
+await page.fill('#spec-title', 'Designer Trial Balance');
+await page.check('#spec-columns input[value="debit"]');
+await page.check('#spec-columns input[value="credit"]');
+await page.selectOption('#spec-grouping', 'none');
+await page.fill('#spec-opt-start', '');
+await page.fill('#spec-opt-end', '2018-12-31');
+
+const explicitUrl = new URL('report/Trial%20Balance?end=2018-12-31', url).href;
+// Compare table *text*, cell by cell: the DOM normalises attribute quoting
+// when it serialises the preview, and the point of the gate is the numbers,
+// not the markup's quote style.
+const explicitRows = await page.evaluate(async (target) => {
+    const text = await (await fetch(target)).text();
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    return [...doc.querySelectorAll('table tr')].map((row) =>
+        [...row.cells].map((cell) =>
+            cell.textContent.replace(/\s+/g, ' ').trim()).join(' | '));
+}, explicitUrl);
+const readTableRows = () => page.evaluate(() => {
+    const doc = document.getElementById('view').contentDocument;
+    return [...doc.querySelectorAll('table tr')].map((row) =>
+        [...row.cells].map((cell) =>
+            cell.textContent.replace(/\s+/g, ' ').trim()).join(' | '));
+});
+
+await page.click('#spec-preview');
+await page.waitForFunction(() => {
+    const frame = document.getElementById('view');
+    const doc = frame && frame.contentDocument;
+    // The preview replaces the frame with srcdoc; the old report may already
+    // contain the same figures, so wait for the preview's own title.
+    return doc && doc.title === 'Designer Trial Balance' &&
+        doc.body && doc.body.innerText.includes('10,000.00');
+}, null, { timeout: 15000 });
+const previewRows = await readTableRows();
+check('the designer preview matches the explicit request',
+      JSON.stringify(previewRows) === JSON.stringify(explicitRows),
+      `${previewRows.length} rows vs ${explicitRows.length}`);
+
+await page.click('#spec-save');
+await page.waitForFunction(() => {
+    const link = [...document.querySelectorAll('#report-list a.saved-report-link')]
+        .find((node) => node.textContent === 'Designer Trial Balance');
+    return Boolean(link);
+}, null, { timeout: 15000 });
+const savedSpec = await page.evaluate(async (base) => {
+    const response = await fetch(new URL('api/specs', base));
+    const data = await response.json();
+    return data.specs.find((spec) => spec.name === 'Designer Trial Balance');
+}, url);
+check('the spec is saved server-side and listed',
+      Boolean(savedSpec) && typeof savedSpec.id === 'string' &&
+      savedSpec.grouping === 'none',
+      savedSpec ? savedSpec.id : 'not in /api/specs');
+
+await page.waitForFunction(() => {
+    const frame = document.getElementById('view');
+    const doc = frame && frame.contentDocument;
+    return frame && /\/report\/spec\//.test(frame.src) && doc &&
+        doc.body && doc.body.innerText.includes('10,000.00');
+}, null, { timeout: 15000 });
+const savedRows = await readTableRows();
+check('the saved report renders the same table as the explicit request',
+      JSON.stringify(savedRows) === JSON.stringify(explicitRows),
+      `${savedRows.length} rows vs ${explicitRows.length}`);
+
+await page.reload({ waitUntil: 'domcontentloaded' });
+await page.waitForFunction(
+    () => document.getElementById('summary')?.textContent.includes('accounts'),
+    null, { timeout: 15000 });
+await page.waitForFunction(() =>
+    [...document.querySelectorAll('#report-list a.saved-report-link')]
+        .some((node) => node.textContent === 'Designer Trial Balance'),
+    null, { timeout: 15000 });
+check('the saved report survives a page reload', true,
+      'it lives on the server, not in localStorage');
+
+await page.locator('#report-list a.saved-report-link',
+                  { hasText: 'Designer Trial Balance' }).first().click();
+await page.waitForFunction(() => {
+    const frame = document.getElementById('view');
+    const doc = frame && frame.contentDocument;
+    return frame && /\/report\/spec\//.test(frame.src) && doc &&
+        doc.body && doc.body.innerText.includes('10,000.00');
+}, null, { timeout: 15000 });
+const reloadedRows = await readTableRows();
+check('a saved report opened after a reload still matches',
+      JSON.stringify(reloadedRows) === JSON.stringify(explicitRows),
+      `${reloadedRows.length} rows vs ${explicitRows.length}`);
+
+await page.locator('#report-list li.saved-report',
+                  { hasText: 'Designer Trial Balance' })
+    .locator('button.delete-spec').click();
+await page.waitForFunction(() =>
+    ![...document.querySelectorAll('#report-list a.saved-report-link')]
+        .some((node) => node.textContent === 'Designer Trial Balance'),
+    null, { timeout: 15000 });
+const specsAfterDelete = await (await fetch(new URL('api/specs', url))).json();
+check('deleting a saved report removes it from the server',
+      specsAfterDelete.specs.length === 0,
+      `${specsAfterDelete.specs.length} left`);
 
 /* ------------------------------------------------- rejected options */
 

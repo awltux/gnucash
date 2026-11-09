@@ -29,7 +29,9 @@ if [ ! -f "$SCHEMAS/gschemas.compiled" ]; then
 fi
 
 LOG=$(mktemp)
-trap 'kill "$SERVER_PID" 2>/dev/null; rm -f "$LOG"' EXIT
+REPORT_DIR=$(mktemp -d)
+REPORT_STORE="$REPORT_DIR/reports.json"
+trap 'kill "$SERVER_PID" 2>/dev/null; rm -f "$LOG"; rm -rf "$REPORT_DIR"' EXIT
 
 env GNC_UNINSTALLED=YES GNC_BUILDDIR="$BUILD" \
     ${SCHEMAS:+GSETTINGS_SCHEMA_DIR="$SCHEMAS"} \
@@ -38,6 +40,7 @@ env GNC_UNINSTALLED=YES GNC_BUILDDIR="$BUILD" \
     GUILE_LOAD_PATH="$BUILD/share/guile/site/3.0" \
     GUILE_LOAD_COMPILED_PATH="${CCACHE:-}" \
     GNC_WEBUI_DIR="$SRC/web/ui" \
+    GNC_WEBUI_REPORTS="$REPORT_STORE" \
     "$BUILD/bin/gnc-webd" "$BOOK" > "$LOG" 2>&1 &
 SERVER_PID=$!
 
