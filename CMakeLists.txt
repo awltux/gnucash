@@ -982,9 +982,12 @@ set(web_DIST
   web/test/make-budget-book.py
   web/test/make-invoice-book.py
   web/test/make-investment-book.py
+  web/test/make-tax-book.py
+  web/test/gen-tax-codes.py
   web/test/report-parity.sh
   web/test/report-options.sh
   web/test/report-spec.sh
+  web/test/tax-txf-parity.sh
   web/test/ui-test.mjs)
 add_subdirectory (bindings)
 add_subdirectory (test-templates)

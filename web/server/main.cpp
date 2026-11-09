@@ -1046,19 +1046,58 @@ build_report_request (const std::string& report, const std::string& query,
 
         case gnc::report::OptionType::Choice:
         {
-            if (param.name != "period")
+            const auto choice_ok = [&descriptor] (const std::string& value)
             {
-                error = "report '" + report + "' has no choice option '" +
-                        param.name + "'";
-                return false;
+                return std::find (descriptor->choices.begin (),
+                                  descriptor->choices.end (), value) !=
+                       descriptor->choices.end ();
+            };
+            if (param.name == "period")
+            {
+                /* Like every other option, the preset is only accepted when
+                 * the report publishes it: ages and lots have fixed date
+                 * semantics, so a preset they cannot honour is a 400, not a
+                 * silently ignored convenience. */
+                have_period = true;
+                period = param.value;
+                break;
             }
-            /* Like every other option, the preset is only accepted when the
-             * report publishes it: ages and lots have fixed date semantics,
-             * so a preset they cannot honour is a 400, not a silently
-             * ignored convenience. */
-            have_period = true;
-            period = param.value;
-            break;
+            if (param.name == "alternate-period")
+            {
+                if (report != "Tax Schedule Report/TXF Export")
+                {
+                    error = "report '" + report +
+                            "' has no choice option 'alternate-period'";
+                    return false;
+                }
+                if (!choice_ok (param.value))
+                {
+                    error = "invalid alternate-period '" + param.value + "'";
+                    return false;
+                }
+                request.tax_alternate_period = param.value;
+                break;
+            }
+            if (param.name == "format")
+            {
+                if (report != "Tax Schedule Report/TXF Export")
+                {
+                    error = "report '" + report +
+                            "' has no choice option 'format'";
+                    return false;
+                }
+                if (!choice_ok (param.value))
+                {
+                    error = "invalid format '" + param.value +
+                            "' (expected report or txf)";
+                    return false;
+                }
+                request.tax_format = param.value;
+                break;
+            }
+            error = "report '" + report + "' has no choice option '" +
+                    param.name + "'";
+            return false;
         }
 
         case gnc::report::OptionType::Text:
@@ -1094,8 +1133,16 @@ build_report_request (const std::string& report, const std::string& query,
                 return false;
             }
             bool accepted = false;
-            if (report == "Tax Invoice" ||
-                report == "Australian Tax Invoice")
+            if (report == "Tax Schedule Report/TXF Export")
+            {
+                if (param.name == "suppress-zero")
+                {
+                    request.tax_suppress_zero = value;
+                    accepted = true;
+                }
+            }
+            else if (report == "Tax Invoice" ||
+                     report == "Australian Tax Invoice")
                 accepted = gnc::report::set_tax_invoice_option (
                     request.tax_invoice_options, param.name, value);
             else
@@ -1669,6 +1716,20 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
             {
                 send_response (connection, "400 Bad Request", "text/plain",
                                error + "\n");
+                return TRUE;
+            }
+        }
+
+        /* The Tax Schedule report's second output: the TXF file is plain
+         * text, not an HTML document, so it gets its own content type. */
+        if (request.tax_format == "txf")
+        {
+            std::string txf;
+            if (gnc::report::render_tax_export (name, g_server.root, request,
+                                                txf))
+            {
+                send_response (connection, "200 OK",
+                               "text/plain; charset=utf-8", txf);
                 return TRUE;
             }
         }

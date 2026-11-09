@@ -13,8 +13,8 @@
 # "Profit & Loss", "Transaction Report", "General Ledger", "Receivable Aging",
 # "Payable Aging", "Investment Lots", "Budget Report",
 # "Budget Income Statement", "Budget Profit & Loss", "Budget Balance Sheet",
-# "Budget Flow", "Printable Invoice", "Receipt", "Tax Invoice" and
-# "Australian Tax Invoice" are supported.
+# "Budget Flow", "Printable Invoice", "Receipt", "Tax Invoice",
+# "Australian Tax Invoice" and "Tax Schedule Report/TXF Export" are supported.
 # Each report has its own extractor (see extractor_for below), because the
 # reports do not agree on what a row is: the Trial Balance is (account, debit,
 # credit), the balance sheet and P&L are (label, amount) with section headings
@@ -97,6 +97,21 @@
 #   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
 #       /tmp/investment-book.gnucash "Investment Lots" 2026-01-01 2026-06-30
 #
+# The Tax Schedule report needs tax-related accounts with US TXF codes; no
+# book in the tree has any, so generate one and run it for its tax year:
+#
+#   python3 web/test/make-tax-book.py /tmp/tax-book.gnucash
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/tax-book.gnucash "Tax Schedule Report/TXF Export" \
+#       2026-01-01 2026-12-31
+#
+# Its extractor compares the schedule's form/schedule headings, line and
+# account rows, and every account/line/form total with its sign.  The
+# transaction detail rows are deliberately not compared: the native report
+# does not print them, and the claim this harness makes is the schedule table,
+# not the split listing.  web/test/tax-txf-parity.sh compares the report's TXF
+# export against the native ?format=txf output.
+#
 # Its account selection is not part of the native route: the report always
 # covers every stock and mutual fund account, which is the Scheme report's
 # default selection.
@@ -160,6 +175,7 @@ extractor_for() {
         "Printable Invoice") echo invoice ;;
         "Receipt") echo receipt ;;
         "Tax Invoice"|"Australian Tax Invoice") echo tax-invoice ;;
+        "Tax Schedule Report/TXF Export") echo tax-schedule ;;
         *) return 1 ;;
     esac
 }
@@ -184,6 +200,7 @@ report_guid() {
         "Receipt")                 echo "7eb3df21073d4c33920a0257da15fba5" ;;
         "Tax Invoice")             echo "0769e242be474010b4acf264a5512e6e" ;;
         "Australian Tax Invoice")  echo "3dbbc2584da64e7a8674355bc3fbfe3d" ;;
+        "Tax Schedule Report/TXF Export") echo "f8921f4e5c284d7caca81e239f468a68" ;;
         *) return 1 ;;
     esac
 }
@@ -210,6 +227,8 @@ scheme_start_option() {
         "Receivable Aging"|"Payable Aging") echo "" ;;
         # The lots report calls its dates "Start date"/"End date".
         "Investment Lots") echo "Start date" ;;
+        # The tax schedule's period options are the Scheme names "From"/"To".
+        "Tax Schedule Report/TXF Export") echo "From" ;;
         # The budget reports' periods are budget periods, not calendar dates;
         # Budget Report has no date option at all.
         "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
@@ -227,6 +246,7 @@ scheme_end_option() {
         "Balance Sheet") echo "Balance Sheet Date" ;;
         "Receivable Aging"|"Payable Aging") echo "To" ;;
         "Investment Lots") echo "End date" ;;
+        "Tax Schedule Report/TXF Export") echo "To" ;;
         "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo "" ;;
         "Printable Invoice"|"Receipt"|"Tax Invoice"|\
@@ -241,7 +261,8 @@ native_takes_accounts() {
     case "$1" in
         "Transaction Report"|"General Ledger"|"Budget Report"|\
         "Budget Income Statement"|"Budget Profit & Loss"|\
-        "Budget Balance Sheet"|"Budget Flow") return 0 ;;
+        "Budget Balance Sheet"|"Budget Flow"|\
+        "Tax Schedule Report/TXF Export") return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -252,12 +273,13 @@ native_takes_accounts() {
 scheme_account_option() {
     case "$1" in
         "Budget Report"|"Budget Flow") echo "Account" ;;
+        "Tax Schedule Report/TXF Export") echo "Select Accounts (none = all)" ;;
         *) echo "Accounts" ;;
     esac
 }
 
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Receipt, Tax Invoice, Australian Tax Invoice)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export)"
 
 case "$REPORT" in
     "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
@@ -557,7 +579,7 @@ class TableParser(HTMLParser):
     reads either document.
     """
 
-    def __init__(self, scope=None):
+    def __init__(self, scope=None, top_level=False):
         super().__init__(convert_charrefs=True)
         self.rows = []
         self.row = None
@@ -572,6 +594,12 @@ class TableParser(HTMLParser):
         self.in_scope = scope is None
         self.scope_tag = None
         self.scope_depth = 0
+        # The tax schedule's total cells contain a nested one-cell table
+        # (the Scheme renderer builds them that way).  top_level skips rows
+        # and cells inside a cell, so the outer row is not reset by it.
+        self.top_level = top_level
+        self.table_depth = 0
+        self.cell_depth = 0
 
     def _matches(self, tag, attrs):
         if self.scope is None:
@@ -594,6 +622,18 @@ class TableParser(HTMLParser):
                 return
             if tag == self.scope_tag:
                 self.scope_depth += 1
+        if self.top_level:
+            if tag == "table":
+                self.table_depth += 1
+            elif tag == "tr":
+                if self.table_depth == 1 and self.cell_depth == 0:
+                    self.row = []
+            elif tag in ("td", "th"):
+                self.cell_depth += 1
+                if self.cell_depth == 1 and self.row is not None:
+                    self.cell = []
+                    self.cell_class = attrs.get("class", "")
+            return
         if tag == "tr":
             self.row = []
         elif tag in ("td", "th") and self.row is not None:
@@ -609,6 +649,24 @@ class TableParser(HTMLParser):
                 if self.scope_depth == 0:
                     self.in_scope = False
                 return
+        if self.top_level:
+            if tag in ("td", "th") and self.cell_depth > 0:
+                self.cell_depth -= 1
+                if (self.cell_depth == 0 and self.cell is not None
+                        and self.row is not None):
+                    text = " ".join("".join(self.cell).split())
+                    self.row.append((text, self.cell_class))
+                    self.cell = None
+                    self.cell_class = ""
+            elif tag == "tr":
+                if (self.table_depth == 1 and self.row is not None
+                        and self.cell_depth == 0):
+                    if self.row:
+                        self.rows.append(self.row)
+                    self.row = None
+            elif tag == "table":
+                self.table_depth -= 1
+            return
         if tag in ("td", "th") and self.row is not None and self.cell is not None:
             text = " ".join("".join(self.cell).split())
             self.row.append((text, self.cell_class))
@@ -624,8 +682,8 @@ class TableParser(HTMLParser):
             self.cell.append(data)
 
 
-def parse(path, scope=None):
-    parser = TableParser(scope)
+def parse(path, scope=None, top_level=False):
+    parser = TableParser(scope, top_level)
     with open(path, encoding="utf-8", errors="replace") as handle:
         raw = handle.read()
     parser.feed(raw)
@@ -636,7 +694,7 @@ NO_ACCOUNTS = "No accounts selected"
 NO_BUDGET = "No budgets exist"
 
 
-def extract(extractor, path, scope=None):
+def extract(extractor, path, scope=None, top_level=False):
     """Run a report's extractor, and notice its warning page.
 
     The transaction report and the general ledger have no default account
@@ -645,7 +703,7 @@ def extract(extractor, path, scope=None):
     warnings are the reports' correct default output, so compare their wording
     rather than treating "no rows" as a match by accident.
     """
-    raw, rows = parse(path, scope)
+    raw, rows = parse(path, scope, top_level)
     extracted = extractor(rows)
     if not extracted and NO_ACCOUNTS in raw:
         return [("PLACEHOLDER", NO_ACCOUNTS)]
@@ -1063,6 +1121,39 @@ def tax_invoice(rows):
     return out
 
 
+def tax_schedule(rows):
+    """The US Tax Schedule: its headings and every subtotal, with signs.
+
+    The table is one block per form/schedule line: a "Form or Schedule / Line
+    (TXF Code) / Account Name" header, the form, the line, one heading per
+    account, and then the account, payer (for format-3 codes), line and
+    form-line totals.  The totals carry the class "column-heading-right" in
+    both documents, which is what marks them apart from the headings.  The
+    per-split transaction rows are not part of the claim (the native report
+    does not print them), so the parser is run top-level-only and the
+    date/number detail cells are ignored.  Numbers are compared as numbers,
+    which keeps the currency symbol out of the comparison but not the sign.
+    """
+    out = []
+    for cells in rows:
+        classes = [c.split() for _, c in cells]
+        if len(cells) == 1 and classes[0] and \
+                classes[0][0] in ("column-heading-left", "total-label-cell"):
+            text = cells[0][0]
+            if text == "Form or Schedule / Line (TXF Code) / Account Name":
+                continue
+            if text:
+                out.append(("HEADING", text))
+            continue
+        if any("column-heading-right" in tokens for tokens in classes):
+            label = next(t for t, c in cells
+                         if "column-heading-right" in c.split())
+            numbers = tuple(amount(t) for t, c in cells
+                            if is_number(c) and t.strip())
+            out.append(("TOTAL", label, numbers))
+    return out
+
+
 EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "transaction-report": transaction_report,
               "general-ledger": general_ledger, "aging": aging,
@@ -1070,7 +1161,7 @@ EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "budget-report": budget_report,
               "budget-statement": budget_statement,
               "invoice": invoice, "receipt": receipt,
-              "tax-invoice": tax_invoice}
+              "tax-invoice": tax_invoice, "tax-schedule": tax_schedule}
 
 extractor = EXTRACTORS[sys.argv[3]]
 report = sys.argv[4]
@@ -1081,8 +1172,11 @@ report = sys.argv[4]
 SCOPES = {"invoice": "entries-table", "receipt": "products",
           "tax-invoice": "entries"}
 scope = SCOPES.get(sys.argv[3])
-scheme = extract(extractor, sys.argv[1], scope)
-native = extract(extractor, sys.argv[2], scope)
+# The tax schedule's totals are built in nested tables, so that parser must
+# stay at the outer table's rows and treat the nested markup as cell text.
+top_level = sys.argv[3] == "tax-schedule"
+scheme = extract(extractor, sys.argv[1], scope, top_level)
+native = extract(extractor, sys.argv[2], scope, top_level)
 
 print(f"report: {report}")
 print(f"scheme rows: {len(scheme)}")

@@ -10,11 +10,14 @@ set (reports_SOURCES
   gnc-invoice-print.cpp
   gnc-invoice-receipt.cpp
   gnc-invoice-tax.cpp
+  gnc-tax-codes.cpp
+  gnc-tax.cpp
 )
 
 set (reports_HEADERS
   gnc-report.hpp
   gnc-invoice.hpp
+  gnc-tax-codes.hpp
 )
 
 add_library (gnc-reports STATIC

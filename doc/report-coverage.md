@@ -148,8 +148,8 @@ The classes are the task's, applied as follows:
 | 32 | Printable Invoice | `reports/standard/invoice.scm` | template | Same invoice document with the print layout. |
 | 33 | Receipt | `reports/standard/receipt.scm` | native | `native_report_names()`; a sibling renderer over `InvoiceDocument`, customer-only, with the paid-document rows. |
 | 34 | Tax Invoice | `reports/standard/taxinvoice.scm` | native | `native_report_names()`; a sibling renderer over `InvoiceDocument` with the tax-rate and tax-inclusive columns. |
-| 35 | Tax Report / TXF Export | `reports/locale-specific/de_DE/taxtxf.scm` | template | Locale tax-line table plus TXF/XML export; needs the German tax code table and writers. |
-| 36 | Tax Schedule Report/TXF Export | `reports/locale-specific/us/taxtxf.scm` | template | Same machinery for the US schedule; hand-built HTML, not eguile. |
+| 35 | Tax Report / TXF Export | `reports/locale-specific/de_DE/taxtxf.scm` | template | German USt report and **ELSTER XML** export. Not native: it needs the `libgnucash/tax/de_DE/txf.scm` code table (data that exists only as Scheme) and an ELSTER XML writer; see section 11. |
+| 36 | Tax Schedule Report/TXF Export | `reports/locale-specific/us/taxtxf.scm` | native | `native_report_names()`; `gnc-tax.cpp` renders the schedule from the generated `gnc-tax-codes.cpp` table and writes the TXF export. |
 | 37 | Assets | `reports/standard/account-piecharts.scm` | other | Pie chart of asset account balances. |
 | 38 | Assets Over Time | `reports/standard/category-barchart.scm` | other | Bar chart of asset balances by period. |
 | 39 | Average Balance | `reports/example/average-balance.scm` | other | Time-series average over a step size, with a chart; not a period sum. |
@@ -603,3 +603,55 @@ language was added.
   split: a template would produce `InvoiceDocument` or render from it, not
   replace the engine access.
 
+## 11. Update: the US tax schedule and TXF export
+
+Measured after `990d0ae379`, on the book `web/test/make-tax-book.py`
+generates.  **Native names: 19 of 66.**  `Tax Schedule Report/TXF Export`
+joined `native_report_names()`; it is native in both builds.
+
+- **The category table is data, generated from the Scheme source.**  The
+  Scheme report's form/description/format/payer-source/category-key and
+  per-tax-year line numbers live in `libgnucash/tax/us/txf.scm`; the four
+  tables (income, expense, asset, liability/equity), all four tax entity
+  types and the "Other" entity type are 950 codes.  `web/test/gen-tax-codes.py`
+  turns that file into `libgnucash/reports/gnc-tax-codes.cpp`, with the source
+  path and generation revision in its header; the native reader is
+  `gnc-tax-codes.hpp`.  No Scheme is needed at run time and no table is
+  hand-copied.
+- **The schedule rows match the Scheme report.**  `gnc-tax.cpp` scopes to the
+  tax-related accounts (all of them, or the caller's `accounts` selection),
+  looks each account's TXF code up for its account-type class and the book's
+  tax entity type, drops codes whose last valid year is older than the
+  report's tax year, and sorts by form/copy, line (numeric parts), code and
+  account name.  It prints the Scheme rows: the form/schedule and line
+  headings, one account heading per active account, the account total, the
+  per-payer "Item N" total for format-3 codes, the line total and the
+  form-line total.  Income/credit/payable/liability/equity splits are
+  sign-reversed and expenses/assets are not, exactly as `splt-rpt-amount`.
+  `report-parity.sh` gained a `tax-schedule` extractor which compares those
+  headings and totals (61 rows on the fixture), including a zero-activity
+  line, a report-only `N000` line, two payers of one interest code, and an
+  advertising refund that makes an expense negative.  It passes in both
+  `ext4-web` and `ext4-noguile`.
+- **The TXF file is byte-identical after CRLF canonicalisation.**
+  `web/test/tax-txf-parity.sh` runs the Scheme export and the native
+  `?format=txf` output on the same book and period and diffs them; the
+  fixture file is 2402 bytes in both, and the diff is empty.  The native
+  writer implements the Scheme formats 1, 3 and 6: the V042 header, TD
+  records (one per account, or one per split for the federal/state estimated
+  tax codes), the format-6 `D` line and blank/state `P` line, the fixed
+  31/7/82/15-column `X` line, and the TS summary records (one per payer for
+  format 3, one per code otherwise).  It deliberately emits no record for
+  formats 4 and 5 (capital gains), where the Scheme report uses sold/basis/
+  sale-description data the native model does not carry.
+- **Not reproduced, and documented rather than approximated.**  The
+  per-split transaction-detail rows, the beginning/ending balance rows the
+  Scheme report prints for asset, liability and equity accounts, the
+  N438/N440 paired IRA rows, and the transaction-detail display switches.
+  The report table it does render is the schedule the task claims.
+- **The German tax report is out of scope, precisely.**  It is a different
+  report (`Tax Report / TXF Export`, `libgnucash/tax/de_DE/txf.scm`) whose
+  export type is **ELSTER XML**, not TXF.  Its USt code table exists only as
+  Scheme data and the native layer has no ELSTER XML writer, so there is no
+  honest native version to build from the US work.  It stays a template-class
+  registration with that reason rather than an unexplained gap.

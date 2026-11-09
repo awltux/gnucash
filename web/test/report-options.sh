@@ -343,6 +343,35 @@ fetch "/report/Tax%20Invoice?invoice=yoyo1&invoice_number_next_to_title=true" \
     > /dev/null
 expect_body "the Tax Invoice number next to the title" "Invoice&nbsp;yoyo1"
 
+# The US tax schedule's own option surface: From/To, the Scheme "Alternate
+# Period" choice, the account selection, the two row-changing switches and
+# the TXF/report output choice.  sample1 has no tax-related accounts, so the
+# figures are exercised on the generated book by report-parity.sh; this block
+# pins the descriptors and the 400s.
+TAX="Tax%20Schedule%20Report/TXF%20Export"
+expect_status 200 "tax schedule options" "/api/report/$TAX/options"
+expect_body "tax schedule options" '"report":"Tax Schedule Report/TXF Export"'
+expect_body "tax schedule options" '"name":"start"'
+expect_body "tax schedule options" '"label":"From"'
+expect_body "tax schedule options" '"name":"end"'
+expect_body "tax schedule options" '"label":"To"'
+expect_body "tax schedule options" '"name":"alternate-period"'
+expect_body "tax schedule options" '"type":"choice"'
+expect_body "tax schedule options" '"default":"from-to"'
+expect_body "tax schedule options" '"choices":["from-to","1st-est","2nd-est","3rd-est","4th-est","last-year","1st-last","2nd-last","3rd-last","4th-last"]'
+expect_body "tax schedule options" '"name":"accounts"'
+expect_body "tax schedule options" '"type":"account-list"'
+expect_body "tax schedule options" '"name":"suppress-zero"'
+expect_body "tax schedule options" '"name":"format"'
+expect_body "tax schedule options" '"choices":["report","txf"]'
+expect_not_body "tax schedule has no period preset" '"name":"period"'
+expect_not_body "tax schedule has no currency option" '"name":"currency"'
+fetch "/report/$TAX" > /dev/null
+expect_body "tax schedule on a book without tax accounts" \
+    "No Tax Related accounts"
+fetch "/report/$TAX?format=txf" > /dev/null
+expect_body "tax schedule TXF header" "V042"
+
 echo "== the report list"
 expect_status 200 "plain list" "/api/reports"
 expect_body "plain list" '"Trial Balance"'
@@ -387,6 +416,24 @@ expect_body "period and dates conflict" "cannot be combined"
 expect_status 400 "accounts=all with GUIDs" \
     "/report/Transaction%20Report?accounts=all&accounts=00000000000000000000000000000000"
 expect_body "accounts=all with GUIDs" "cannot be combined with account GUIDs"
+
+# The tax schedule publishes no "period" preset (its Scheme option is the
+# different "Alternate Period" choice) and no currency option.
+expect_status 400 "period on the tax schedule" "/report/$TAX?period=all"
+expect_body "period on the tax schedule" "does not accept a 'period' option"
+expect_status 400 "currency on the tax schedule" "/report/$TAX?currency=USD"
+expect_body "currency on the tax schedule" "does not accept a 'currency' option"
+expect_status 400 "unknown alternate period" \
+    "/report/$TAX?alternate-period=bogus"
+expect_body "unknown alternate period" "invalid alternate-period 'bogus'"
+expect_status 400 "unknown tax output format" "/report/$TAX?format=xml"
+expect_body "unknown tax output format" "invalid format 'xml'"
+expect_status 400 "bad tax boolean" "/report/$TAX?suppress-zero=maybe"
+expect_body "bad tax boolean" "invalid boolean 'maybe'"
+expect_status 400 "unknown tax option" "/report/$TAX?bogus=1"
+expect_body "unknown tax option" "unknown option 'bogus'"
+expect_status 400 "bad GUID on the tax schedule" "/report/$TAX?accounts=deadbeef"
+expect_body "bad GUID on the tax schedule" "invalid account GUID 'deadbeef'"
 
 echo "== the options apply"
 fetch "/report/Trial%20Balance?end=2018-12-31" > /dev/null
@@ -527,6 +574,15 @@ PY
                 ok "$report has no budget in this book; the generated-book parity test covers it"
                 continue
             fi ;;
+        "Tax Schedule Report/TXF Export")
+            # sample1 has no tax-related accounts, so every switch renders the
+            # same "No Tax Related accounts" explanation.  The descriptor and
+            # 400 checks above cover the option surface; the generated tax book
+            # in report-parity.sh covers the effect of the dates and switches.
+            if grep -qF "No Tax Related accounts" "$OPTDIR/no-options.html"; then
+                ok "$report has no tax accounts in this book; the generated-book parity test covers it"
+                continue
+            fi ;;
     esac
 
     while IFS=$'\t' read -r opt otype odefault; do
@@ -548,6 +604,8 @@ PY
             choice)
                 case "$opt" in
                     period) probe="period=all" ;;
+                    alternate-period) probe="alternate-period=last-year" ;;
+                    format) probe="format=txf" ;;
                     *) bad "$report advertises choice option '$opt' with an unknown name"
                        continue ;;
                 esac ;;

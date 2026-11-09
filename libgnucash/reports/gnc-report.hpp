@@ -587,6 +587,69 @@ CellTable budget_flow (Account* root, GncBudget* budget,
  *  gnc:html-make-generic-budget-warning(). */
 std::string render_no_budget (const std::string& title);
 
+/* ------------------------------------------------------- tax schedule */
+
+/** Options for the US Tax Schedule report.  The Scheme report's own options
+ *  are From/To, an "Alternate Period" preset, an account selection and a
+ *  handful of display switches; the report reproduces the period and scope,
+ *  plus the switch that changes the rows (suppress zero values).
+ *  Transaction detail is not printed: the native report presents the
+ *  schedule rows and their totals, which is what the parity claim compares. */
+struct TaxScheduleOptions
+{
+    std::optional<time64> start;
+    std::optional<time64> end;
+    std::vector<Account*> accounts;
+    bool suppress_zero = false;
+    /** "from-to" (the default), or one of the Scheme report's estimated-tax
+     *  presets: 1st-est, 2nd-est, 3rd-est, 4th-est, last-year, 1st-last,
+     *  2nd-last, 3rd-last, 4th-last. */
+    std::string alternate_period = "from-to";
+    gnc_commodity* currency = nullptr;
+};
+
+struct TaxScheduleReport
+{
+    CellTable table;
+    std::string title;
+    /** The TXF export, with the Scheme report's CRLF line endings. */
+    std::string txf;
+    time64 from_date = 0;
+    time64 to_date = 0;
+    int tax_year = 0;
+    std::string entity;
+};
+
+/** The US Tax Schedule report ("Tax Schedule Report/TXF Export",
+ *  taxtxf.scm): one row block per form/schedule line, then per tax-related
+ *  account, with its amount for the period and the account/line/form
+ *  subtotals.  Income amounts are sign-reversed (a credit prints positive),
+ *  expenses keep their sign, exactly as the Scheme report's splt-rpt-amount
+ *  does.  The category data (form, description, TXF format, category key and
+ *  per-year line number) comes from gnc-tax-codes.cpp.
+ *
+ *  Deliberately not reproduced, because they are balance-sheet/TXF-detail
+ *  features rather than the schedule table this port proves: transaction
+ *  detail rows, the beginning/ending balance rows the Scheme report prints
+ *  for asset, liability and equity accounts, the N438/N440 paired rows, and
+ *  TXF formats 4 and 5 (capital gains, which need the sold/basis/sale
+ *  description data).  A code with one of those formats is omitted from the
+ *  TXF file rather than written with guessed fields. */
+TaxScheduleReport tax_schedule (Account* root,
+                                const TaxScheduleOptions& options);
+
+/** The TXF export for the same options, for a caller that wants the file
+ *  without the HTML table. */
+bool tax_txf (Account* root, const TaxScheduleOptions& options,
+              std::string& out);
+
+/** Render the Tax Schedule report's TXF export from a route request (the
+ *  same option surface render_report() uses).  False when `name` is not the
+ *  tax report. */
+struct ReportRequest;
+bool render_tax_export (const std::string& name, Account* root,
+                        const ReportRequest& request, std::string& out);
+
 /** Render an aging report as a standalone HTML document, including its
  *  explanation-instead-of-a-table case. */
 std::string render_aging (const AgingReport& report);
@@ -688,6 +751,14 @@ struct ReportRequest
      *  shares them and changes only the headings the renderer derives from
      *  its `australian` flag. */
     TaxInvoiceOptions tax_invoice_options;
+    /** The Tax Schedule report's "Alternate Period" choice.  Empty means the
+     *  report's "from-to" default. */
+    std::string tax_alternate_period;
+    /** The Tax Schedule report's output selection: "report" (the default)
+     *  or "txf". */
+    std::string tax_format;
+    /** The Tax Schedule report's "Suppress $0.00 values" switch. */
+    bool tax_suppress_zero = false;
 };
 
 bool render_report (const std::string& name, Account* root,

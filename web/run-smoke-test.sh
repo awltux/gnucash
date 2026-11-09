@@ -87,7 +87,8 @@ for native_report in "Balance Sheet" "Income Statement" "Profit & Loss" \
                      "Budget Report" "Budget Income Statement" \
                      "Budget Profit & Loss" "Budget Balance Sheet" \
                      "Budget Flow" "Printable Invoice" "Receipt" \
-                     "Tax Invoice" "Australian Tax Invoice"; do
+                     "Tax Invoice" "Australian Tax Invoice" \
+                     "Tax Schedule Report/TXF Export"; do
     echo "$reports" | grep -q "\"$native_report\"" \
         || fail "report list has no $native_report"
 done
@@ -243,6 +244,24 @@ invalid_tax_invoice=$(curl -sS -o /dev/null -w '%{http_code}' \
     "${URL}report/Tax%20Invoice?invoice=NO-SUCH-INVOICE")
 [ "$invalid_tax_invoice" = "400" ] \
     || fail "an unknown tax invoice answered $invalid_tax_invoice (expected 400)"
+
+# The US tax schedule is native too.  sample1 has no tax-related accounts, so
+# its correct output is the report's "No Tax Related accounts" explanation;
+# the schedule rows and the TXF export are covered by report-parity.sh and
+# tax-txf-parity.sh on the book make-tax-book.py generates.
+tax_schedule=$(curl -fsS "${URL}report/Tax%20Schedule%20Report/TXF%20Export") \
+    || { cat "$LOG" >&2; fail "GET Tax Schedule Report failed"; }
+echo "$tax_schedule" | grep -q "No Tax Related accounts" \
+    || fail "the tax schedule does not explain that there are no tax accounts"
+tax_txf=$(curl -fsS \
+    "${URL}report/Tax%20Schedule%20Report/TXF%20Export?format=txf") \
+    || { cat "$LOG" >&2; fail "GET Tax Schedule Report?format=txf failed"; }
+echo "$tax_txf" | grep -q '^V042' \
+    || fail "the tax TXF export has no V042 header"
+bad_tax_format=$(curl -sS -o /dev/null -w '%{http_code}' \
+    "${URL}report/Tax%20Schedule%20Report/TXF%20Export?format=xml")
+[ "$bad_tax_format" = "400" ] \
+    || fail "an unknown tax output format answered $bad_tax_format (expected 400)"
 
 if [ "$HAS_GUILE" = 1 ]; then
     # The Scheme engine is still the fallback for reports not ported yet.

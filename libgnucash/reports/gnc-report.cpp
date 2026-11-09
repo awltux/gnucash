@@ -4402,7 +4402,7 @@ native_report_names ()
             "Budget Report", "Budget Income Statement",
             "Budget Profit & Loss", "Budget Balance Sheet", "Budget Flow",
             "Printable Invoice", "Receipt", "Tax Invoice",
-            "Australian Tax Invoice"};
+            "Australian Tax Invoice", "Tax Schedule Report/TXF Export"};
 }
 
 /* --------------------------------------------------------------- options */
@@ -4544,6 +4544,22 @@ period_option ()
     option.default_value = "this-year";
     option.choices = period_presets ();
     return option;
+}
+
+TaxScheduleOptions
+tax_options (const ReportRequest& request)
+{
+    TaxScheduleOptions options;
+    if (!request.all_dates)
+    {
+        options.start = request.start;
+        options.end = request.end;
+    }
+    options.accounts = request.accounts;
+    options.suppress_zero = request.tax_suppress_zero;
+    options.alternate_period = request.tax_alternate_period;
+    options.currency = request.currency;
+    return options;
 }
 
 } // namespace
@@ -4746,6 +4762,66 @@ report_options (const std::string& name)
             option.default_value = item.default_value ? "true" : "false";
             options.push_back (option);
         }
+        return options;
+    }
+
+    if (name == "Tax Schedule Report/TXF Export")
+    {
+        /* The Scheme report's General page (From/To and the "Alternate
+         * Period" multi-choice), its account selection and the two display
+         * switches that change the rows.  The transaction-detail switches
+         * are not exposed because the native report does not print detail. */
+        options.push_back (date_option (
+            "start", "From",
+            "The first day of the period the schedule covers.  Its year is "
+            "the tax year whose form line numbers are printed.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "To",
+            "The last day of the period the schedule covers.",
+            default_end_date ()));
+
+        OptionDescriptor alternate;
+        alternate.name = "alternate-period";
+        alternate.type = OptionType::Choice;
+        alternate.label = "Alternate Period";
+        alternate.description =
+            "Override the From/To dates with one of the Scheme report's "
+            "estimated-tax periods.  \"from-to\" uses the dates as given.";
+        alternate.default_value = "from-to";
+        alternate.choices = {"from-to", "1st-est", "2nd-est", "3rd-est",
+                             "4th-est", "last-year", "1st-last", "2nd-last",
+                             "3rd-last", "4th-last"};
+        options.push_back (alternate);
+
+        OptionDescriptor accounts = accounts_option ();
+        accounts.description =
+            "Accounts to report on, as a comma-separated list of account "
+            "GUIDs; each GUID selects that account's subtree.  \"all\" selects "
+            "every account in the book.  Without the option the report's own "
+            "default applies: every tax-related account in the book.  "
+            "Accounts that are not tax-related are ignored.";
+        options.push_back (accounts);
+
+        OptionDescriptor suppress;
+        suppress.name = "suppress-zero";
+        suppress.type = OptionType::Bool;
+        suppress.label = "Suppress $0.00 values";
+        suppress.description =
+            "Do not print zero-valued tax code and account total rows.";
+        suppress.default_value = "false";
+        options.push_back (suppress);
+
+        OptionDescriptor format;
+        format.name = "format";
+        format.type = OptionType::Choice;
+        format.label = "Output";
+        format.description =
+            "Render the schedule table, or the TXF export the Scheme report "
+            "writes for TurboTax.";
+        format.default_value = "report";
+        format.choices = {"report", "txf"};
+        options.push_back (format);
         return options;
     }
 
@@ -5134,6 +5210,16 @@ render_report (const std::string& name, Account* root,
         return true;
     }
 
+    if (name == "Tax Schedule Report/TXF Export")
+    {
+        TaxScheduleReport report = tax_schedule (root, tax_options (request));
+        if (request.tax_format == "txf")
+            html = report.txf;
+        else
+            html = render_cell_table (report.table, report.title);
+        return true;
+    }
+
     /* The aging reports are anchored at one date (the Scheme "To" option),
      * whose default is today -- not the accounting period the balance
      * reports default their end date to.  Period=all means "no date bound"
@@ -5246,6 +5332,16 @@ bool
 render_report (const std::string& name, Account* root, std::string& html)
 {
     return render_report (name, root, ReportRequest {}, html);
+}
+
+bool
+render_tax_export (const std::string& name, Account* root,
+                   const ReportRequest& request, std::string& out)
+{
+    if (name != "Tax Schedule Report/TXF Export" || root == nullptr)
+        return false;
+    out = tax_schedule (root, tax_options (request)).txf;
+    return true;
 }
 
 } // namespace report
