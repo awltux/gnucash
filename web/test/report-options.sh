@@ -435,6 +435,133 @@ expect_body "unknown tax option" "unknown option 'bogus'"
 expect_status 400 "bad GUID on the tax schedule" "/report/$TAX?accounts=deadbeef"
 expect_body "bad GUID on the tax schedule" "invalid account GUID 'deadbeef'"
 
+# The owner reports: Customer/Vendor/Employee/Job Report are one option set
+# with an owner selector and the history display switches, and Customer
+# Summary has its own General/Display page.  The fixture book may carry an
+# owner of each kind; when it does, the selector's positive path is checked
+# too, otherwise only the descriptors and the 400s are.
+echo "== the owner reports"
+OWNER_IDS=$(python3 - "$BOOK" <<'PY'
+import re
+import sys
+
+raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+for kind, prefix, tag in (("customer", "cust", "GncCustomer"),
+                          ("vendor", "vendor", "GncVendor"),
+                          ("employee", "employee", "GncEmployee"),
+                          ("job", "job", "GncJob")):
+    match = re.search(
+        r'<gnc:' + tag + r' version="2.0.0">\s*'
+        r'<' + prefix + r':guid type="guid">([0-9a-fA-F]{32})</' + prefix +
+        r':guid>', raw)
+    if match:
+        print(f"{kind}={match.group(1)}")
+PY
+)
+owner_id() { printf '%s\n' "$OWNER_IDS" | sed -n "s/^$1=//p"; }
+CUSTOMER_GUID=$(owner_id customer)
+VENDOR_GUID=$(owner_id vendor)
+EMPLOYEE_GUID=$(owner_id employee)
+JOB_GUID=$(owner_id job)
+
+for entry in "Customer%20Report|Customer Report|Customer|$CUSTOMER_GUID" \
+             "Vendor%20Report|Vendor Report|Vendor|$VENDOR_GUID" \
+             "Employee%20Report|Employee Report|Employee|$EMPLOYEE_GUID" \
+             "Job%20Report|Job Report|Job|$JOB_GUID"
+do
+    enc=${entry%%|*}
+    rest=${entry#*|}
+    name=${rest%%|*}
+    rest=${rest#*|}
+    page=${rest%%|*}
+    guid=${rest#*|}
+    expect_status 200 "$name options" "/api/report/$enc/options"
+    expect_body "$name options" "\"report\":\"$name\""
+    expect_body "$name options" '"name":"owner"'
+    expect_body "$name options" '"type":"owner"'
+    expect_body "$name options" "\"label\":\"$page\""
+    expect_body "$name options" '"name":"start"'
+    expect_body "$name options" '"label":"From"'
+    expect_body "$name options" '"name":"end"'
+    expect_body "$name options" '"label":"To"'
+    expect_body "$name options" '"name":"show_balance"'
+    expect_body "$name options" '"name":"period"'
+    expect_not_body "$name options has no account selection" '"name":"accounts"'
+    expect_not_body "$name options has no currency" '"name":"currency"'
+    expect_status 400 "empty owner on the $name" "/report/$enc?owner="
+    expect_body "empty owner on the $name" "empty 'owner' value"
+    expect_status 400 "unknown owner on the $name" \
+        "/report/$enc?owner=00000000000000000000000000000000"
+    expect_body "unknown owner on the $name" "unknown owner"
+    expect_status 400 "accounts on the $name" "/report/$enc?accounts=all"
+    expect_body "accounts on the $name" "does not accept an 'accounts' option"
+    expect_status 400 "bad boolean on the $name" \
+        "/report/$enc?show_balance=maybe"
+    expect_body "bad boolean on the $name" "invalid boolean 'maybe'"
+    expect_status 400 "unknown option on the $name" "/report/$enc?bogus=1"
+    expect_body "unknown option on the $name" "unknown option 'bogus'"
+done
+
+# The Job Report has no Job column because its owner is the job.
+fetch "/api/report/Job%20Report/options" > /dev/null
+expect_not_body "Job Report options has no job column" '"name":"show_job"'
+fetch "/api/report/Customer%20Report/options" > /dev/null
+expect_body "Customer Report options has a job column" '"name":"show_job"'
+
+if [ -n "$CUSTOMER_GUID" ]; then
+    fetch "/report/Customer%20Report?owner=$CUSTOMER_GUID" > /dev/null
+    expect_body "the selected customer renders" "Acme Widgets Ltd"
+    expect_body "the selected customer renders its history" "Debits"
+    expect_body "the selected customer renders the aging buckets" "91+ days"
+    fetch "/report/Customer%20Report?owner=$CUSTOMER_GUID&show_date=false" \
+        > /dev/null
+    expect_not_body "show_date=false removes the date column" "<th>Date</th>"
+    fetch "/report/Customer%20Report?owner=$CUSTOMER_GUID&show_balance=false" \
+        > /dev/null
+    expect_not_body "show_balance=false removes the balance column" \
+        "<th>Balance</th>"
+fi
+for pair in "Vendor%20Report|$VENDOR_GUID" "Employee%20Report|$EMPLOYEE_GUID" \
+            "Job%20Report|$JOB_GUID"
+do
+    enc=${pair%%|*}
+    guid=${pair#*|}
+    if [ -n "$guid" ]; then
+        fetch "/report/$enc?owner=$guid" > /dev/null
+        expect_body "the selected ${enc%%%20*} renders a history table" \
+            "Period Totals"
+    fi
+done
+
+# Customer Summary: its own dates and display switches, and no owner.
+echo "== the customer summary"
+expect_status 200 "Customer Summary options" "/api/report/Customer%20Summary/options"
+expect_body "Customer Summary options" '"report":"Customer Summary"'
+expect_body "Customer Summary options" '"name":"start"'
+expect_body "Customer Summary options" '"label":"From"'
+expect_body "Customer Summary options" '"name":"end"'
+expect_body "Customer Summary options" '"label":"To"'
+expect_body "Customer Summary options" '"name":"show_expense"'
+expect_body "Customer Summary options" '"name":"show_zero_lines"'
+expect_body "Customer Summary options" '"name":"show_inactive"'
+expect_body "Customer Summary options" '"name":"period"'
+expect_not_body "Customer Summary has no owner" '"name":"owner"'
+expect_not_body "Customer Summary has no account selection" '"name":"accounts"'
+expect_not_body "Customer Summary has no currency" '"name":"currency"'
+expect_status 400 "owner on the Customer Summary" \
+    "/report/Customer%20Summary?owner=00000000000000000000000000000000"
+expect_body "owner on the Customer Summary" "unknown option 'owner'"
+expect_status 400 "accounts on the Customer Summary" \
+    "/report/Customer%20Summary?accounts=all"
+expect_body "accounts on the Customer Summary" \
+    "does not accept an 'accounts' option"
+expect_status 400 "bad boolean on the Customer Summary" \
+    "/report/Customer%20Summary?show_expense=maybe"
+expect_body "bad boolean on the Customer Summary" "invalid boolean 'maybe'"
+fetch "/report/Customer%20Summary" > /dev/null
+expect_body "the Customer Summary renders its headings" "Markup"
+expect_body "the Customer Summary renders a total" "Total"
+
 echo "== the options apply"
 fetch "/report/Trial%20Balance?end=2018-12-31" > /dev/null
 TB_2018=$(mktemp)
@@ -583,6 +710,20 @@ PY
                 ok "$report has no tax accounts in this book; the generated-book parity test covers it"
                 continue
             fi ;;
+        "Customer Report"|"Vendor Report"|"Employee Report"|"Job Report")
+            # The generic probe has no owner to select (sample1 has no
+            # customer at all), so every option would be compared against the
+            # "No valid owner selected" warning.  The descriptors and 400s are
+            # checked above; the owner fixture and report-parity.sh cover the
+            # selected-owner effects.
+            ok "$report needs an owner selection; the owner fixture and parity test cover it"
+            continue ;;
+        "Customer Summary")
+            # With no customers and (on the default no-schema run) a one-day
+            # period, the display switches have nothing to change.  The
+            # generated owner book and report-parity.sh cover them.
+            ok "$report has no customer activity in this book; the generated owner book covers it"
+            continue ;;
     esac
 
     while IFS=$'\t' read -r opt otype odefault; do

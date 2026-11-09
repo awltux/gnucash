@@ -10,6 +10,7 @@ set (reports_SOURCES
   gnc-invoice-print.cpp
   gnc-invoice-receipt.cpp
   gnc-invoice-tax.cpp
+  gnc-owner.cpp
   gnc-tax-codes.cpp
   gnc-tax.cpp
 )
@@ -17,6 +18,7 @@ set (reports_SOURCES
 set (reports_HEADERS
   gnc-report.hpp
   gnc-invoice.hpp
+  gnc-owner.hpp
   gnc-tax-codes.hpp
 )
 

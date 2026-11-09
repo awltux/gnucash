@@ -208,7 +208,8 @@ const widerChart = await page.evaluate(async (arg) => {
             const doc = frame.contentDocument;
             if (doc && doc.title === arg.title &&
                 doc.getElementById('report-chart-canvas') &&
-                doc.defaultView && doc.defaultView.__reportCharts.length > 0)
+                doc.defaultView &&
+                (doc.defaultView.__reportCharts || []).length > 0)
                 return doc;
             await new Promise((resolve) => setTimeout(resolve, 100));
         }

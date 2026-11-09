@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Write a GnuCash XML book with invoices, a tax table and a payment, for the
-invoice document report tests.
+invoice document report tests and the owner reports.
 
 The fixture books in the source tree carry at most one invoice (sample1 has a
 single, untaxed vendor bill and no customer), so they cannot exercise an
@@ -8,21 +8,30 @@ invoice document: entries with quantities and prices, a tax table applied to
 some entries, billing terms, or a payment applied to the document.  This
 script builds a book outside the repository with:
 
-  * one customer (Acme Widgets Ltd) and one vendor (Delta Supply), each with
-    an address and an id, and a company identity in the book's Business
-    options (name, address, phone, email, company id);
+  * two customers (Acme Widgets Ltd, Beta Corp), one vendor (Delta Supply),
+    one employee (Eve Employee) and one job (Website redesign, owned by
+    Acme), each with an address and an id, and a company identity in the
+    book's Business options (name, address, phone, email, company id);
   * a 10% sales-tax table posting to a Sales Tax liability account;
   * a Net 30 bill term;
   * a posted customer invoice INV-1001 with three entries -- two taxable at
     10% and one not, and a 10% discount on the third -- plus a partial
     payment, so the report has to print subtotal, tax, total, a payment row
     and the amount due;
-  * a posted vendor bill BILL-2001 with one untaxed entry, so the report's
-    vendor path is exercised too.
+  * a posted vendor bill BILL-2001 with one untaxed entry, plus a partial
+    payment, so the report's vendor path is exercised too;
+  * a second customer invoice INV-1002 for Beta Corp, so Customer Summary has
+    a second customer row and the Customer Report has a second owner to
+    select;
+  * an employee expense voucher EXP-3001 for Eve Employee, posted to
+    A/Payable, so the Employee Report has an owner and a document;
+  * a job invoice JOB-4001 owned by the Website redesign job, posted to
+    A/Receivable, so the Job Report has a document and the Customer Report
+    for Acme exercises the end-owner (job -> customer) query.
 
-The invoice id and GUID are printed at the end; the GUID is what a saved
-Scheme report needs to select the invoice, the id is what the native route
-takes.
+The invoice, owner and job ids and GUIDs are printed at the end; the GUID is
+what a saved Scheme report needs to select an object, the id is what the
+native route takes.
 
 Usage:
     make-invoice-book.py <output.gnucash>
@@ -57,6 +66,9 @@ import uuid
 
 INVOICE_ID = "INV-1001"
 BILL_ID = "BILL-2001"
+SECOND_INVOICE_ID = "INV-1002"
+EMPLOYEE_VOUCHER_ID = "EXP-3001"
+JOB_INVOICE_ID = "JOB-4001"
 
 
 def guid():
@@ -90,12 +102,28 @@ class Account:
 class Owner:
     def __init__(self, kind, name, owner_id, addr1, addr2, city):
         self.guid = guid()
-        self.kind = kind            # "customer" | "vendor"
+        self.kind = kind            # "customer" | "vendor" | "employee"
         self.name = name
         self.owner_id = owner_id
         self.addr1 = addr1
         self.addr2 = addr2
         self.city = city
+
+
+class Job:
+    def __init__(self, name, job_id, owner):
+        self.guid = guid()
+        self.name = name
+        self.job_id = job_id
+        self.owner = owner          # the customer the job belongs to
+
+
+def owner_tag(owner):
+    """The XML owner:type for an Owner or Job."""
+    if isinstance(owner, Job):
+        return "gncJob"
+    return {"customer": "gncCustomer", "vendor": "gncVendor",
+            "employee": "gncEmployee"}[owner.kind]
 
 
 class Lot:
@@ -124,13 +152,15 @@ class Invoice:
     def __init__(self, owner, number, posted, due, account, counter_account,
                  kind, entries, terms=None, billing_id="", notes=""):
         self.guid = guid()
-        self.owner = owner
+        self.owner = owner                  # Owner or Job
         self.number = number
         self.posted = posted
         self.due = due
         self.account = account              # A/Receivable or A/Payable
         self.counter_account = counter_account
-        self.kind = kind                    # "customer" or "vendor"
+        # "customer"/"job" documents use the customer entry fields (i-*);
+        # "vendor"/"employee" documents use the bill fields (b-*).
+        self.kind = kind
         self.entries = entries
         self.terms = terms
         self.billing_id = billing_id
@@ -174,16 +204,26 @@ def main(argv):
     licences = Account("Licence Income", "INCOME", income)
     support = Account("Support Income", "INCOME", income)
     office = Account("Office Supplies", "EXPENSE", expenses)
+    travel = Account("Travel", "EXPENSE", expenses)
     accounts = [root, assets, liabilities, income, expenses, checking,
                 receivable, payable, sales_tax, consulting, licences, support,
-                office]
+                office, travel]
 
     # --------------------------------------------------------------- owners
     acme = Owner("customer", "Acme Widgets Ltd", "C001", "12 Acme Way",
                  "Springfield", "IL 62701")
+    beta = Owner("customer", "Beta Corp", "C002", "8 Beta Boulevard",
+                 "Capital City", "IL 62702")
     delta = Owner("vendor", "Delta Supply", "V001", "3 Delta Road",
                   "Shelbyville", "IL 62565")
-    owners = [acme, delta]
+    eve = Owner("employee", "Eve Employee", "E001", "5 Eve Lane",
+                "Ogdenville", "IL 62703")
+    owners = [acme, beta, delta, eve]
+
+    # The job belongs to Acme, so Acme's Customer Report also covers the job's
+    # invoice: the Scheme query matches the invoice owner's *end* owner.
+    website = Job("Website redesign", "JOB-001", acme)
+    jobs = [website]
 
     # -------------------------------------------------------------- the tax
     # 10% of the taxable line, posted to the Sales Tax liability account.
@@ -212,10 +252,32 @@ def main(argv):
     vendor_bill = Invoice(
         delta, BILL_ID, "2026-03-05", "2026-04-04", payable, office, "vendor",
         [Entry("Office chairs", "Material", 4_000_000, 12000, office)])
-    invoices = [customer_invoice, vendor_bill]
+    # A second customer, so Customer Summary has two customer rows and the
+    # Customer Report has an owner that is not the first one in the book.
+    beta_invoice = Invoice(
+        beta, SECOND_INVOICE_ID, "2026-03-10", "2026-04-09", receivable,
+        consulting, "customer",
+        [Entry("Consulting", "Service", 1_000_000, 15000, consulting)])
+    # An employee expense voucher: an A/Payable document with bill entries.
+    employee_voucher = Invoice(
+        eve, EMPLOYEE_VOUCHER_ID, "2026-03-12", "2026-04-11", payable,
+        travel, "employee",
+        [Entry("Client visit travel", "Material", 2_000_000, 9000, travel)])
+    # A job invoice: a customer document whose owner is the job.
+    job_invoice = Invoice(
+        website, JOB_INVOICE_ID, "2026-03-15", "2026-04-14", receivable,
+        consulting, "job",
+        [Entry("Website design", "Service", 1_000_000, 26000, consulting)])
+    invoices = [customer_invoice, vendor_bill, beta_invoice, employee_voucher,
+                job_invoice]
 
     payment = Payment(customer_invoice, "PMT-1001", "2026-03-20", 20000,
                       receivable, checking, memo="Partial payment INV-1001")
+    # A vendor payment, so the Vendor Report has a payment row too.
+    vendor_payment = Payment(vendor_bill, "PMT-2001", "2026-03-25", 10000,
+                             payable, checking,
+                             memo="Partial payment BILL-2001")
+    payments = [payment, vendor_payment]
 
     invoice_total_cents = 48939
     invoice_subtotal_cents = 45399
@@ -278,13 +340,15 @@ def main(argv):
     w('<gnc:count-data cd:type="commodity">1</gnc:count-data>')
     w(f'<gnc:count-data cd:type="account">{len(accounts)}</gnc:count-data>')
     w(f'<gnc:count-data cd:type="transaction">'
-      f'{len(invoices) + 1}</gnc:count-data>')
+      f'{len(invoices) + len(payments)}</gnc:count-data>')
     w(f'<gnc:count-data cd:type="gnc:GncEntry">'
       f'{sum(len(i.entries) for i in invoices)}</gnc:count-data>')
     w(f'<gnc:count-data cd:type="gnc:GncInvoice">{len(invoices)}'
       '</gnc:count-data>')
-    w('<gnc:count-data cd:type="gnc:GncCustomer">1</gnc:count-data>')
+    w('<gnc:count-data cd:type="gnc:GncCustomer">2</gnc:count-data>')
     w('<gnc:count-data cd:type="gnc:GncVendor">1</gnc:count-data>')
+    w('<gnc:count-data cd:type="gnc:GncEmployee">1</gnc:count-data>')
+    w('<gnc:count-data cd:type="gnc:GncJob">1</gnc:count-data>')
     w('<gnc:count-data cd:type="gnc:GncTaxTable">1</gnc:count-data>')
     w('<gnc:count-data cd:type="gnc:GncBillTerm">1</gnc:count-data>')
 
@@ -450,14 +514,44 @@ def main(argv):
                   "Bill", vendor_bill.lot),
                  (guid(), 48000, office, "Office chairs", "Bill", None)],
                 invoice_guid=vendor_bill.guid)
-    # Payment: the A/R split carries the invoice lot, so it is an applied
-    # payment rather than a prepayment.
+    # Second customer invoice.
+    transaction(beta_invoice.txn_guid, beta_invoice.number,
+                beta_invoice.posted, beta.name, "I", beta_invoice.due,
+                [(beta_invoice.split_guid, 15000, receivable,
+                  beta_invoice.number, "Invoice", beta_invoice.lot),
+                 (guid(), -15000, consulting, "Consulting", "Invoice", None)],
+                invoice_guid=beta_invoice.guid)
+    # Employee expense voucher: credit A/P, debit the expense.
+    transaction(employee_voucher.txn_guid, employee_voucher.number,
+                employee_voucher.posted, eve.name, "I", employee_voucher.due,
+                [(employee_voucher.split_guid, -18000, payable,
+                  employee_voucher.number, "Expense",
+                  employee_voucher.lot),
+                 (guid(), 18000, travel, "Client visit travel", "Expense",
+                  None)],
+                invoice_guid=employee_voucher.guid)
+    # Job invoice: debit A/R, credit income.
+    transaction(job_invoice.txn_guid, job_invoice.number,
+                job_invoice.posted, website.name, "I", job_invoice.due,
+                [(job_invoice.split_guid, 26000, receivable,
+                  job_invoice.number, "Invoice", job_invoice.lot),
+                 (guid(), -26000, consulting, "Website design", "Invoice",
+                  None)],
+                invoice_guid=job_invoice.guid)
+    # Payments: the A/R or A/P split carries the invoice lot, so it is an
+    # applied payment rather than a prepayment.
     transaction(payment.txn_guid, payment.number, payment.posted, acme.name,
                 "P", None,
                 [(payment.owner_split_guid, -payment.cents, receivable,
                   payment.memo, "Payment", customer_invoice.lot),
                  (payment.counter_split_guid, payment.cents, checking,
                   payment.memo, "Payment", None)])
+    transaction(vendor_payment.txn_guid, vendor_payment.number,
+                vendor_payment.posted, delta.name, "P", None,
+                [(vendor_payment.owner_split_guid, vendor_payment.cents,
+                  payable, vendor_payment.memo, "Payment", vendor_bill.lot),
+                 (vendor_payment.counter_split_guid, -vendor_payment.cents,
+                  checking, vendor_payment.memo, "Payment", None)])
 
     for invoice in invoices:
         for entry in invoice.entries:
@@ -472,7 +566,7 @@ def main(argv):
             w(f'  <entry:description>{entry.description}</entry:description>')
             w(f'  <entry:action>{entry.action}</entry:action>')
             w(f'  <entry:qty>{entry.quantity}/1000000</entry:qty>')
-            if invoice.kind == "customer":
+            if invoice.kind in ("customer", "job"):
                 w(f'  <entry:i-acct type="guid">{entry.account.guid}'
                   '</entry:i-acct>')
                 w(f'  <entry:i-price>{price(entry.unit_price_cents)}'
@@ -506,9 +600,7 @@ def main(argv):
         w(f'  <invoice:guid type="guid">{invoice.guid}</invoice:guid>')
         w(f'  <invoice:id>{invoice.number}</invoice:id>')
         w('  <invoice:owner version="2.0.0">')
-        w('    <owner:type>gncCustomer</owner:type>'
-          if invoice.kind == "customer" else
-          '    <owner:type>gncVendor</owner:type>')
+        w(f'    <owner:type>{owner_tag(invoice.owner)}</owner:type>')
         w(f'    <owner:id type="guid">{invoice.owner.guid}</owner:id>')
         w('  </invoice:owner>')
         w('  <invoice:opened>')
@@ -545,11 +637,21 @@ def main(argv):
         w('</gnc:GncInvoice>')
 
     for owner in owners:
-        tag = "GncCustomer" if owner.kind == "customer" else "GncVendor"
-        prefix = "cust" if owner.kind == "customer" else "vendor"
+        if owner.kind == "employee":
+            tag = "GncEmployee"
+            prefix = "employee"
+        elif owner.kind == "customer":
+            tag = "GncCustomer"
+            prefix = "cust"
+        else:
+            tag = "GncVendor"
+            prefix = "vendor"
         w(f'<gnc:{tag} version="2.0.0">')
         w(f'  <{prefix}:guid type="guid">{owner.guid}</{prefix}:guid>')
-        w(f'  <{prefix}:name>{owner.name}</{prefix}:name>')
+        if owner.kind == "employee":
+            w(f'  <employee:username>{owner.name}</employee:username>')
+        else:
+            w(f'  <{prefix}:name>{owner.name}</{prefix}:name>')
         w(f'  <{prefix}:id>{owner.owner_id}</{prefix}:id>')
         w(f'  <{prefix}:addr version="2.0.0">')
         w(f'    <addr:name>{owner.name}</addr:name>')
@@ -568,7 +670,11 @@ def main(argv):
             w('  </cust:shipaddr>')
             w('  <cust:discount>0/100</cust:discount>')
             w('  <cust:credit>0/100</cust:credit>')
-        w(f'  <{prefix}:taxincluded>USEGLOBAL</{prefix}:taxincluded>')
+        if owner.kind == "employee":
+            w('  <employee:workday>8/1</employee:workday>')
+            w('  <employee:rate>0/100</employee:rate>')
+        else:
+            w(f'  <{prefix}:taxincluded>USEGLOBAL</{prefix}:taxincluded>')
         w(f'  <{prefix}:active>1</{prefix}:active>')
         w(f'  <{prefix}:currency>')
         w('    <cmdty:space>CURRENCY</cmdty:space>')
@@ -578,6 +684,18 @@ def main(argv):
             w('  <vendor:use-tt>0</vendor:use-tt>')
         w(f'</gnc:{tag}>')
 
+    for job in jobs:
+        w('<gnc:GncJob version="2.0.0">')
+        w(f'  <job:guid type="guid">{job.guid}</job:guid>')
+        w(f'  <job:id>{job.job_id}</job:id>')
+        w(f'  <job:name>{job.name}</job:name>')
+        w('  <job:owner version="2.0.0">')
+        w(f'    <owner:type>{owner_tag(job.owner)}</owner:type>')
+        w(f'    <owner:id type="guid">{job.owner.guid}</owner:id>')
+        w('  </job:owner>')
+        w('  <job:active>1</job:active>')
+        w('</gnc:GncJob>')
+
     w('</gnc:book>')
     w('</gnc-v2>')
 
@@ -585,11 +703,38 @@ def main(argv):
         handle.write("\n".join(out) + "\n")
     print(f"wrote {out_path}: {len(invoices)} invoices, "
           f"{sum(len(i.entries) for i in invoices)} entries, "
-          f"1 tax table ({tax_table_name}), 1 bill term, 1 payment")
+          f"1 tax table ({tax_table_name}), 1 bill term, "
+          f"{len(payments)} payments")
     print(f"invoice {INVOICE_ID} guid {customer_invoice.guid}")
     print(f"invoice {BILL_ID} guid {vendor_bill.guid}")
+    print(f"invoice {SECOND_INVOICE_ID} guid {beta_invoice.guid}")
+    print(f"invoice {EMPLOYEE_VOUCHER_ID} guid {employee_voucher.guid}")
+    print(f"invoice {JOB_INVOICE_ID} guid {job_invoice.guid}")
+    print(f"customer {acme.name} guid {acme.guid}")
+    print(f"customer {beta.name} guid {beta.guid}")
+    print(f"vendor {delta.name} guid {delta.guid}")
+    print(f"employee {eve.name} guid {eve.guid}")
+    print(f"job {website.name} guid {website.guid}")
     print(f"amounts: subtotal {invoice_subtotal_cents}/100, "
           f"tax {invoice_tax_cents}/100, total {invoice_total_cents}/100")
+
+    # A machine-readable companion so a test can select an owner without
+    # parsing the human-readable lines above.  One "kind name guid" per row.
+    identifiers = [
+        ("invoice", INVOICE_ID, customer_invoice.guid),
+        ("invoice", BILL_ID, vendor_bill.guid),
+        ("invoice", SECOND_INVOICE_ID, beta_invoice.guid),
+        ("invoice", EMPLOYEE_VOUCHER_ID, employee_voucher.guid),
+        ("invoice", JOB_INVOICE_ID, job_invoice.guid),
+        ("customer", acme.name, acme.guid),
+        ("customer", beta.name, beta.guid),
+        ("vendor", delta.name, delta.guid),
+        ("employee", eve.name, eve.guid),
+        ("job", website.name, website.guid),
+    ]
+    with open(out_path + ".ids", "w", encoding="utf-8") as handle:
+        for kind, name, value in identifiers:
+            handle.write(f"{kind}\t{name}\t{value}\n")
 
 
 if __name__ == "__main__":

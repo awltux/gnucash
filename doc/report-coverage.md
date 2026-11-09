@@ -2,18 +2,20 @@
 
 Status: measurement for `doc/report-engine-migration.md`
 Branch: `webui/engine-server`
-Measured at: `8b3433c46a` (working tree clean before this edit)
+Measured at: `4826c2e262` plus the owner-report work (working tree clean at
+`4826c2e262` before this edit)
 Scope: registry enumeration, classification, coverage and cost. No code, tests
 or report behaviour were changed; the only edited file is this one.
 
 > **What changed since the first measurement.**  The first version of this
 > document was measured at `a639555722`, when nine Scheme report names rendered
 > natively, and its verdict was "the majority is not covered".  At
-> `8b3433c46a` the native layer names **19** of the **66** source names (19 of
-> the 65 a US build loads; 18 in a German build), and the document has been
-> re-derived rather than patched.  The registry itself has not changed: no file
-> under `gnucash/report/reports/` changed between
-> `a639555722` and `8b3433c46a`.  All the movement is in the native layer.
+> `4826c2e262` plus the owner-report work the native layer names **24** of the
+> **66** source names (24 of the 65 a US build loads; 23 in a German build),
+> and the document has been re-derived rather than patched.  The registry
+> itself has not changed: no file under `gnucash/report/reports/` changed
+> between `a639555722` and this measurement.  All the movement is in the native
+> layer.
 
 ## Summary
 
@@ -23,37 +25,38 @@ or report behaviour were changed; the only edited file is this one.
   `55 + 5 + 4 + 2 = 66`.  A build loads **65** because the locale loader picks
   one of the two `taxtxf` reports.  The count is unchanged from the earlier
   measurement; the plan's "63 report definitions" is still stale.
-- **Native: 19 names in 15 implementations.**  The six original core reports,
-  aging and lots, the five budget layouts, the four native documents, and the
-  US tax schedule with TXF export.
+- **Native: 24 names in 17 implementations.**  The six original core reports,
+  aging and lots, the five budget layouts, the four native documents, the US
+  tax schedule with TXF export, and the five owner reports (four registrations
+  of one owner-history renderer plus Customer Summary).
 - **Spec: 5 names** are expressible in the designer as it stands today
   (Account Summary, Income/Expense Chart, Income & Expense Linechart, Net Worth
   Barchart, Net Worth Linechart).  The **4 built-in specs** are extra reports,
   not registry names; they are listed separately below and do not change the
-  19/66 numerator.
-- **Logic: 21 names**, about eight engines.  **Template: 2 names** (the two
+  24/66 numerator.
+- **Logic: 16 names**, about seven engines.  **Template: 2 names** (the two
   remaining invoice layouts).  **Closed: 19 names**, deliberately out of scope
   with the reason recorded.
-- **By name: 19/66 = 28.8% native.**  Native plus spec-expressible is
-  **24/66 = 36.4%**.  Native plus spec plus closed is **43/66 = 65.2%**
-  done-or-decided; the genuinely unported remainder is **23/66 = 34.8%**
-  (21 logic + 2 template).
+- **By name: 24/66 = 36.4% native.**  Native plus spec-expressible is
+  **29/66 = 43.9%**.  Native plus spec plus closed is **48/66 = 72.7%**
+  done-or-decided; the genuinely unported remainder is **18/66 = 27.3%**
+  (16 logic + 2 template).
 - **Accounting core: 6/6 = 100%** on the six names the earlier document called
   the accounting core (Trial Balance, Balance Sheet, Income Statement,
   Profit & Loss, Transaction Report, General Ledger); 6/7 = 86% if the General
   Journal is added, and 6/11 = 55% if the equity, cash-flow and multicolumn
   statements are added too.  The definition is stated with each number.
 - **Verdict:** the web tier can be Guile-free for a real user, but not for
-  every real user.  A personal-finance user can run the reporting side of the
-  bookkeeping loop natively; a business that needs owner statements,
+  every real user.  A small business can run the reporting side of the
+  bookkeeping loop, including owner statements, natively; a business that needs
   equity/cash-flow/multicolumn statements, GST, portfolios or the two styled
   invoice layouts cannot.  The unported gap is **weeks (order 2-4 at the
   observed pace), not months**; full parity including the deliberately closed
   chart families and ELSTER would be months, because those are new subsystems.
-- **Basis:** counts are derived from sources at `8b3433c46a`.  There is no
-  Guile build in this checkout, so the registry is the static one the loader
-  would build, and there is **no telemetry in the tree**, so every usage claim
-  below is an argument from function, not a measurement.
+- **Basis:** counts are derived from sources at `4826c2e262` plus the owner
+  work.  There is no Guile build in this checkout, so the registry is the
+  static one the loader would build, and there is **no telemetry in the tree**,
+  so every usage claim below is an argument from function, not a measurement.
 
 ## 1. How the registry was counted
 
@@ -95,7 +98,7 @@ each register one name, either as a literal (`(N_ "Trial Balance")`) or through
 a file-local `reportname` variable.  A parser that reads every
 `(gnc:define-report ...)` block, resolves the `'name` expression (literal,
 `N_`/`G_`, or file-local define) and expands those three loops returns
-`66` names, none duplicated, and all 19 native names are members of that set.
+`66` names, none duplicated, and all 24 native names are members of that set.
 The exact output is in section 8.
 
 Two names need care, as before:
@@ -121,23 +124,23 @@ Three different numbers are easy to confuse.  They answer different questions:
 | List | Guile build | Guile-free build | What it is |
 |---|---:|---:|---|
 | Scheme registry | 66 (65 loaded) | 0 | Names registered by `gnucash/report/reports/**` |
-| `GET /api/reports` | 69 | 23 | The report list the server actually offers |
-| Native names | 19 | 19 | Names `render_report()` handles without Guile |
+| `GET /api/reports` | 69 | 28 | The report list the server actually offers |
+| Native names | 24 | 24 | Names `render_report()` handles without Guile |
 
 In a Guile build, `/api/reports` enumerates the Scheme templates that build
 actually loaded (`65`, one locale `taxtxf`) and then appends the four built-in
 designer specs (`+4 = 69`).  In a Guile-free build it enumerates
-`native_report_names()` (`19`) and appends the same four (`+4 = 23`).  The four
+`native_report_names()` (`24`) and appends the same four (`+4 = 28`).  The four
 built-ins are not Scheme names and are not counted in the 66.  A Guile-free
-build therefore offers **23 report-list entries**, but the by-name coverage of
-the Scheme registry is **19/66**, not 23/66.  The task's "designer with four
+build therefore offers **28 report-list entries**, but the by-name coverage of
+the Scheme registry is **24/66**, not 28/66.  The task's "designer with four
 built-in chart specs" is the `+4`, not four more registry names.
 
 The 65-name build is not identical across locales: a US build loads `Tax
 Schedule Report/TXF Export` (native), a German build loads `Tax Report / TXF
 Export` (closed).  Both builds have 65 Scheme names; the intersection of the
-native names with the loaded Scheme names is 19 in the US build and 18 in the
-German one.  The Guile-free list is locale-independent: it is always the 19
+native names with the loaded Scheme names is 24 in the US build and 23 in the
+German one.  The Guile-free list is locale-independent: it is always the 24
 native names, including the US schedule, so a German-locale Guile-free build
 still does not offer the German report.
 
@@ -154,13 +157,17 @@ return {"Trial Balance", "Balance Sheet", "Income Statement",
         "Budget Report", "Budget Income Statement",
         "Budget Profit & Loss", "Budget Balance Sheet", "Budget Flow",
         "Printable Invoice", "Receipt", "Tax Invoice",
-        "Australian Tax Invoice", "Tax Schedule Report/TXF Export"};
+        "Australian Tax Invoice", "Tax Schedule Report/TXF Export",
+        "Customer Report", "Vendor Report", "Employee Report",
+        "Job Report", "Customer Summary"};
 ```
 
-That is 19 names in 15 implementations.  Income Statement and Profit & Loss
+That is 24 names in 17 implementations.  Income Statement and Profit & Loss
 share one renderer; Budget Income Statement and Budget Profit & Loss share one;
 Tax Invoice and Australian Tax Invoice share one; Receivable and Payable Aging
-share one.  Counting "reports ported" as 19 overstates the engine work by four.
+share one; and Customer Report, Vendor Report, Employee Report and Job Report
+share one.  Counting "reports ported" as 24 overstates the engine work by
+seven.
 
 Native is a *rendering* fact, not an option-completeness claim.  The
 statements and listings expose four descriptors each (start, end, currency or
@@ -179,7 +186,7 @@ The practical consequence for "Guile-free" is that a **saved Scheme report
 with a non-default option set cannot always be replayed**.  The name renders;
 the depth, zero/parent, price-source, rules, foreign-currency or trep-column
 options may be refused.  That is a real limitation of the web tier and is not
-hidden by the 19/66 number.
+hidden by the 24/66 number.
 
 ## 3. Classification
 
@@ -201,7 +208,7 @@ The classes are the task's:
   **not** a synonym for unported: a closed name is not on the backlog, while a
   logic or template name is.
 
-### 3.1 Native (19 names, 15 implementations)
+### 3.1 Native (19 names in this table, 5 more in 3.1a; 17 implementations)
 
 All source paths in this section are relative to `gnucash/report/reports/`.
 
@@ -226,6 +233,29 @@ All source paths in this section are relative to `gnucash/report/reports/`.
 | 17 | Tax Invoice | `standard/taxinvoice.scm` | `render_tax_invoice()` over the same model: per-line tax rate, tax amount, tax-inclusive Total Price, optional discount/units/date columns. |
 | 18 | Australian Tax Invoice | `standard/taxinvoice.scm` | The same renderer with the Australian headings and default title; `taxinvoice.scm` registers it as a second option set, not a second engine. |
 | 19 | Tax Schedule Report/TXF Export | `locale-specific/us/taxtxf.scm` | `tax_schedule()`: schedule from the generated `gnc-tax-codes.cpp` table, plus the `?format=txf` writer.  Parity is tested by `report-parity.sh` and `tax-txf-parity.sh`. |
+
+#### 3.1a The five owner reports (also native; registry numbers 29-31, 38, 42)
+
+They are one engine with several registrations, so they keep the registry
+numbers the Owner cluster had in the logic table rather than taking new ones.
+`libgnucash/reports/gnc-owner.cpp` holds the model; the report names are the
+four `new-owner-report.scm` registrations and `customer-summary.scm`.
+
+| # | Report | Source | Native implementation / evidence |
+|---:|---|---|---|
+| 29 | Customer Report | `standard/new-owner-report.scm` | `owner_report()`: one owner's invoice/payment history on the A/Receivable accounts, running balance, period and closing totals, lot-based aging row.  The owner matches invoice owner's *end* owner, so a customer's report includes its jobs' invoices. |
+| 30 | Customer Summary | `standard/customer-summary.scm` | `customer_summary()`: profit/markup/sales/expense per customer over the income and expense accounts, the "No Customer" row and per-commodity totals. |
+| 31 | Employee Report | `standard/new-owner-report.scm` | The same owner-history engine with `GNC-OWNER-EMPLOYEE`, on the A/Payable accounts. |
+| 38 | Job Report | `standard/new-owner-report.scm` | The same engine with `GNC-OWNER-JOB`; it matches the invoice's own job GUID and reads A/Receivable (a job's end owner is its customer). |
+| 42 | Vendor Report | `standard/new-owner-report.scm` | The same engine with `GNC-OWNER-VENDOR`, on the A/Payable accounts. |
+
+The owner fixture is `web/test/make-invoice-book.py`: its customer invoice,
+vendor bill, second customer invoice, employee expense voucher and job invoice
+give every owner type a document.  `report-parity.sh` gained the
+`owner-report` and `customer-summary` extractors and compares all five names in
+`ext4-web` and `ext4-noguile`; the extracts include the history rows, the
+brought-forward and period totals, the aging row and the summary's customer
+rows.  See section 11.
 
 ### 3.2 Spec (5 names expressible today)
 
@@ -263,7 +293,7 @@ the only Scheme chart names whose data is a 1-2-series bar/line over period
 rows the spec can compute without another engine; Average Balance, Cash Flow
 Barchart and Budget Chart all need a computation the spec does not have.
 
-### 3.3 Logic (21 names, about eight engines)
+### 3.3 Logic (16 names, about seven engines)
 
 | # | Report | Source | Cluster | Why it needs custom native code |
 |---:|---|---|---|---|
@@ -271,29 +301,25 @@ Barchart and Budget Chart all need a computation the spec does not have.
 | 26 | Balance Sheet (Multicolumn) | `standard/balsheet-pnl.scm` | cross-tab | Account-tree rows × period columns; the spec has one grouping axis, not a row-and-column cross-tab. |
 | 27 | Cash Flow | `standard/cash-flow.scm` | cash flow | Classifies counterpart splits into "money in"/"money out" (`cash-flow-calc.scm`); not a debit/credit balance table. |
 | 28 | Cash Flow Barchart | `standard/cashflow-barchart.scm` | cash flow | Reuses the same money-in/out classification; the chart type is supported, the data engine is not. |
-| 29 | Customer Report | `standard/new-owner-report.scm` | owner documents | Owner report over `gncOwner` documents (invoices, payments), not splits alone. |
-| 30 | Customer Summary | `standard/customer-summary.scm` | owner documents | Walks `gncOwner` customers and their posted documents; owner objects and invoice links. |
-| 31 | Employee Report | `standard/new-owner-report.scm` | owner documents | Same owner-report engine with `GNC-OWNER-EMPLOYEE`. |
 | 32 | Equity Statement | `standard/equity-statement.scm` | cross-tab | Start/change/end columns, unrealised gains, closing-entry handling — derived balances, not a query sum. |
 | 33 | General Journal | `standard/general-journal.scm` | entry listings | Transaction listing (date, num, description, transfer, debit, credit) delegated to the register renderer; the native layer has no register renderer. |
 | 34 | IFRS weighted-average cost basis report | `standard/ifrs-cost-basis.scm` | portfolios/lots | Lot-by-lot weighted-average cost accumulation with commission capitalisation and gains. |
 | 35 | Income and GST Statement | `standard/income-gst-statement.scm` | tax/GST | Builds trep columns per tax code from the tax table; multi-pass tax aggregation. |
 | 36 | Income Statement (Multicolumn) | `standard/balsheet-pnl.scm` | cross-tab | Same account-tree × period cross-tab as the multicolumn balance sheet. |
 | 37 | Investment Portfolio | `standard/portfolio.scm` | portfolios/lots | Per-account share/price/value valuation at a date. |
-| 38 | Job Report | `standard/new-owner-report.scm` | owner documents | Owner report with `GNC-OWNER-JOB`. |
 | 39 | Lot Viewer | `standard/lot-viewer.scm` | portfolios/lots | Browses `gncLot` objects and their split/lot links; a UI over the lot model, not a table of balances. |
 | 40 | Reconciliation Report | `standard/reconcile-report.scm` | entry listings | Trep renderer with a reconcile-date predicate instead of the posted-date range. |
 | 41 | Transaction Breakdown Report | `standard/txn-columns.scm` | entry listings | One generated column per split/account per transaction; custom cell layout. |
-| 42 | Vendor Report | `standard/new-owner-report.scm` | owner documents | Owner report with `GNC-OWNER-VENDOR`. |
 | 43 | Average Balance | `example/average-balance.scm` | analytics | Time-series average over a step size, with a chart; not a period sum and not a cumulative balance. |
 | 44 | Balance Forecast | `standard/balance-forecast.scm` | scheduled transactions | Projects balances from scheduled transactions and historical averages, then charts them. |
 | 45 | Future Scheduled Transactions Summary | `standard/account-summary.scm` | scheduled transactions | Instantiates scheduled transactions into the future; no splits exist yet. |
 
-The clusters matter more than the count: five owner reports share one
-`gncOwner`/document engine, four portfolio names share one lot/price valuation
-engine, three cross-tab names share a period-column engine, three listings
-share custom renderers, and the two cash-flow names share the money-in/out
-classification.  This is not 21 independent reports.
+The clusters matter more than the count: five portfolio names share one
+lot/price valuation engine, three cross-tab names share a period-column engine,
+three listings share custom renderers, and the two cash-flow names share the
+money-in/out classification.  This is not 16 independent reports.  The five
+owner reports, which this table used to hold, now share `gnc-owner.cpp` and are
+listed in 3.1a.
 
 ### 3.4 Template (2 names)
 
@@ -343,16 +369,16 @@ subsystem or a changed report, not a report port.
 
 | Class | Names | Share of 66 | Notes |
 |---|---:|---:|---|
-| native | 19 | 28.8% | 15 implementations; four pairs share a renderer. |
+| native | 24 | 36.4% | 17 implementations; seven names share a renderer. |
 | spec | 5 | 7.6% | 4 built-in specs cover four of them; Account Summary has no built-in. |
-| logic | 21 | 31.8% | About eight engines; see section 3.3. |
+| logic | 16 | 24.2% | About seven engines; see section 3.3. |
 | template | 2 | 3.0% | Easy and Fancy Invoice layouts. |
 | closed | 19 | 28.8% | 13 chart-model (including Budget Chart), 2 demos, 4 other decisions. |
 | **total** | **66** | **100%** | 65 loaded per build because of the locale `taxtxf`. |
 
-Native + spec = **24/66 = 36.4%**.  Native + spec + closed = **43/66 =
-65.2%** done-or-decided.  The unported remainder is logic + template =
-**23/66 = 34.8%**.
+Native + spec = **29/66 = 43.9%**.  Native + spec + closed = **48/66 =
+72.7%** done-or-decided.  The unported remainder is logic + template =
+**18/66 = 27.3%**.
 
 Separate from the 66: **4 built-in designer specs** (Income vs Expenses by
 Month, Expenses by Account, Income by Account, Net Worth by Month).  They are
@@ -365,28 +391,28 @@ They are the `+4` in the `/api/reports` counts in section 1.1.
 
 The headline is deliberately simple:
 
-- **19 of 66 source names render natively: 19/66 = 28.8%.**  That is the
+- **24 of 66 source names render natively: 24/66 = 36.4%.**  That is the
   number to use for "how much of the Scheme registry does the native layer
   replace".  Because the locale loader swaps the two tax reports, the per-build
-  number is **19/65 = 29.2% in a US build** and **18/65 = 27.7% in a German
+  number is **24/65 = 36.9% in a US build** and **23/65 = 35.4% in a German
   build**: the German `Tax Report / TXF Export` replaces the US schedule, and
-  the German report is closed.  The 19/66 source count includes both tax names,
+  the German report is closed.  The 24/66 source count includes both tax names,
   only one of which a build loads.
-- **24 of 66 can be produced without new native code: 24/66 = 36.4%.**  Five
+- **29 of 66 can be produced without new native code: 29/66 = 43.9%.**  Five
   more are spec-expressible.  Four of those five correspond to patterns the
   built-in specs already exercise, but the built-ins are separate names, not
   registrations of the Scheme names; Account Summary has no built-in.
   A user who wants the Scheme name itself still needs it registered.
 - **19 of 66 are closed: 19/66 = 28.8%.**  If closed decisions count as
-  "covered", 43/66 = 65.2% is done-or-decided.
-- **23 of 66 are unported: 23/66 = 34.8%.**  This is the only number that is a
+  "covered", 48/66 = 72.7% is done-or-decided.
+- **18 of 66 are unported: 18/66 = 27.3%.**  This is the only number that is a
   backlog.
 
-A Guile-free build's `/api/reports` has 23 entries (19 native + 4 built-in
-specs).  That is a different numerator from "19/66 Scheme names": the four
+A Guile-free build's `/api/reports` has 28 entries (24 native + 4 built-in
+specs).  That is a different numerator from "24/66 Scheme names": the four
 built-ins are extra reports, not four more Scheme names.  A Guile build's
 `/api/reports` has 69 entries (65 loaded Scheme names + 4 built-in specs).  Do
-not quote 23, 69 or 66 as if they were the same count.
+not quote 28, 69 or 66 as if they were the same count.
 
 ### 4.2 By report class
 
@@ -400,7 +426,7 @@ not quote 23, 69 or 66 as if they were the same count.
 | Budgets | 6 | 5 | 0 | 0 | 0 | 1 | **Full/decided** (5/6 native; Budget Chart closed). |
 | Documents and eguile pages | 7 | 4 | 0 | 0 | 2 | 1 | **Partial** (4/7 native; 2 template remain; eguile duplicate closed). |
 | Tax | 2 | 1 | 0 | 0 | 0 | 1 | **Full/decided** (US native, German closed). |
-| Owner reports | 5 | 0 | 0 | 5 | 0 | 0 | **None** (0/5). |
+| Owner reports | 5 | 5 | 0 | 0 | 0 | 0 | **Full** (5/5). |
 | Investments and lots | 5 | 1 | 0 | 4 | 0 | 0 | **Partial** (1/5 = 20%). |
 | Charts | 16 | 0 | 4 | 0 | 0 | 12 | **Spec/decided** (4 spec, 12 closed). |
 | Account summary | 1 | 0 | 1 | 0 | 0 | 0 | **Spec** (designer only). |
@@ -411,7 +437,7 @@ not quote 23, 69 or 66 as if they were the same count.
 | Register | 1 | 0 | 0 | 0 | 0 | 1 | **Decided** (web route). |
 | Multicolumn View container | 1 | 0 | 0 | 0 | 0 | 1 | **Decided** (loss: composite dashboards). |
 | Demos | 2 | 0 | 0 | 0 | 0 | 2 | **Decided** (no accounting content). |
-| **Total** | **66** | **19** | **5** | **21** | **2** | **19** | |
+| **Total** | **66** | **24** | **5** | **16** | **2** | **19** | |
 
 "Full" means every name in the class renders natively.  "Full/decided" means
 the unported name is closed, so there is no backlog in that class.
@@ -419,11 +445,12 @@ the unported name is closed, so there is no backlog in that class.
 rest are closed.  "Partial" means a real backlog remains.  "None" means every
 name in the class is unported logic or template.
 
-The pattern is clear: **the core statements, aging and budgets are fully
-covered; the primary listings are partly covered; the classes that need an
-owner/document model, a cross-tab, a lot/price valuation, or a scheduled-
-transaction engine are not.**  Charts are mostly closed rather than ported,
-and the two remaining document layouts are the smallest outstanding class.
+The pattern is clear: **the core statements, aging, budgets, the tax schedule
+and the owner reports are fully covered; the primary listings are partly
+covered; the classes that need a cross-tab, a lot/price valuation, or a
+scheduled-transaction engine are not.**  Charts are mostly closed rather than
+ported, and the two remaining document layouts are the smallest outstanding
+class.
 
 ### 4.3 The accounting core
 
@@ -483,6 +510,8 @@ over a book maintained in the desktop application:
 - Transaction Report and General Ledger;
 - the five budget layouts;
 - Receivable and Payable Aging, if they track money owed;
+- Customer Report, Vendor Report, Employee Report, Job Report and Customer
+  Summary, if they invoice customers or track a job;
 - Investment Lots for a brokerage account;
 - the four built-in chart specs (income vs expenses by month, expenses by
   account, income by account, net worth by month);
@@ -499,7 +528,6 @@ What that user **cannot** do natively:
   price scatterplot and the sample graphs;
 - Average Balance, Balance Forecast and the Future Scheduled Transactions
   Summary;
-- the customer/vendor/employee/job reports and Customer Summary;
 - Equity Statement, Cash Flow and the multicolumn Balance Sheet/Income
   Statement;
 - General Journal, Reconciliation Report and Transaction Breakdown Report;
@@ -510,25 +538,23 @@ What that user **cannot** do natively:
 - the German tax report/ELSTER export.
 
 For a personal user who mostly reads balances and income/expenses, the missing
-items are analytics and owner/portfolio reports, not the bookkeeping loop.
-That is a defensible Guile-free tier.  It is not full parity: the report list
-is 23 entries instead of 69, and a saved Scheme report with non-default options
-may not replay.
+items are analytics and portfolio reports, not the bookkeeping loop.  That is a
+defensible Guile-free tier.  It is not full parity: the report list is 28
+entries instead of 69, and a saved Scheme report with non-default options may
+not replay.
 
 ### 5.2 A business user
 
 A business user is a different answer.  A **US small business** that uses the
-native Printable Invoice (and, where applicable, the Receipt or Tax Invoice)
-and files the US tax schedule with TXF can be Guile-free **for reporting and
-document printing** today: those documents and Tax Schedule Report/TXF Export
-are native, and the statements, listings, aging, budgets and lots are native.
-The Australian Tax Invoice is native as well, for books in that locale.
+native Printable Invoice (and, where applicable, the Receipt or Tax Invoice),
+prints owner statements and files the US tax schedule with TXF can be
+Guile-free **for reporting and document printing** today: those documents and
+Tax Schedule Report/TXF Export are native, and the statements, listings, aging,
+budgets, lots and owner reports are native.  The Australian Tax Invoice is
+native as well, for books in that locale.
 
 A business that needs any of the following **cannot**:
 
-- **Owner documents:** Customer Report, Vendor Report, Employee Report, Job
-  Report, Customer Summary.  Aging answers "how old", not "what does this
-  customer owe" or "what is this job's position".
 - **Statements:** Equity Statement; Cash Flow; Balance Sheet (Multicolumn);
   Income Statement (Multicolumn).  The single-column Balance Sheet and P&L are
   native; the variants are not.
@@ -550,15 +576,15 @@ report equity/cash flow, bill with a custom layout, or file non-US tax.
 
 ### 5.3 How far is the gap?
 
-The unported logic/template gap is **weeks, not months**.  The last five report
-stages added 13 names (from the six core reports to 19) in about seven hours of
-commit-to-commit time (section 6); the 23 remaining names are less than twice
-that count, and several of them share engines.  At the observed pace, with a 2-3x
-allowance for the harder engines (IFRS, scheduled transactions, owner
-documents), the unported work is **order 2-4 weeks**, not the "months in total"
-of the earlier document.
+The unported logic/template gap is **weeks, not months**.  The last six report
+stages added 18 names (from the six core reports to 24) in about nine hours of
+commit-to-commit time (section 6); the 18 remaining names are the same count,
+and several of them share engines.  At the observed pace, with a 2-3x
+allowance for the harder engines (IFRS, scheduled transactions), the unported
+work is **order 2-4 weeks**, not the "months in total" of the earlier
+document.
 
-**Full parity is months**, but not because of the 23 unported report names.
+**Full parity is months**, but not because of the 18 unported report names.
 It is months because the 19 closed names include new subsystems: pie, scatter,
 stacked multi-series and per-account period-index charts for 13 names
 (including Budget Chart); an ELSTER XML writer and German tax table for one; an
@@ -585,7 +611,8 @@ duration evidence in the tree, and they are better than a guess.
 | Budgets | `912af4ea21`, `72723595d2` | 5 | 1,118 | 569 | 1 h 39 | 224 source/name; ~20 min/name |
 | Documents | `714946dad4`, `990d0ae379` | 4 | 2,619 | 1,221 | 2 h 05 | 655 source/name; ~31 min/name |
 | Tax | `8b3433c46a` | 1 | 1,185 (+5,988 generated) | 901 | 1 h 25 | 1,185 source/name; 85 min/name |
-| **Five stages** | | **13** | **6,688** | **3,781** | **~6 h 55** | **~515 source/name; ~32 min/name** |
+| Owners | this stage | 5 | 1,785 | 503 | ~1 h | ~357 source/name; ~12 min/name |
+| **Six stages** | | **18** | **8,473** | **4,284** | **~7 h 55** | **~471 source/name; ~26 min/name** |
 | (Charts/specs, for context) | `114073782b` | 4 built-ins | 918 | 489 | 1 h 19 | 230 source/spec; ~20 min/spec |
 
 \*Source = `libgnucash/reports/*.cpp|hpp`, `web/server/*.cpp|hpp` and
@@ -608,14 +635,15 @@ budgets (five layouts in 1 h 39) and documents (four renderers from one
 | Budgets: "**weeks**" | 5 names, 1,118 source, 1 h 39 | **Cheaper by an order of magnitude.**  The budget model already existed; the reports are layouts over `GncBudget`. |
 | Documents: "**weeks to months**" | 4 names, 2,619 source, 2 h 05 | **Cheaper by an order of magnitude.**  One invoice model served four renderers; the second and third documents reused the first. |
 | Tax: "**weeks to months**, the least like anything native" | 1 name, 1,185 hand-written + 5,988 generated, 1 h 25 | **Cheaper**, because the code table was generated from Scheme and the TXF writer is a bounded format.  German ELSTER remains closed; the US work does not generalize. |
+| Owners: "2,500-3,500 lines, 2-3 h" | 5 names, 1,785 source, ~1 h | **Cheaper.**  One owner-history walk served four registrations; the aging row reused the aging model, and only Customer Summary is a second engine.  The fixture extension was a large share of the work. |
 | Charts: "days each, maybe two weeks for the set" | Chart model + 4 built-ins, 918 source, 1 h 19 | **Cheaper for bar/line.**  Pie, scatter and stacked multi-series are still closed and would be new chart families. |
 
 The correction is not that every remaining class is cheap.  It is that the
 earlier document priced **report layouts** as if they were **new engines**.  A
-layout over an existing model is hours; a new model (owner documents, IFRS cost
-basis, scheduled transactions, ELSTER) is days.
+layout over an existing model is hours; a new model (IFRS cost basis,
+scheduled transactions, ELSTER) is days.
 
-### 6.3 What the unported 23 names should cost
+### 6.3 What the unported 18 names should cost
 
 This is an extrapolation from the observed lines-per-name and minutes-per-name,
 not a measurement of the remaining work.  The ranges widen where there is no
@@ -623,7 +651,6 @@ close precedent.
 
 | Remaining cluster | Names | Closest precedent | Projected source lines | Projected commit-time |
 |---|---:|---|---:|---:|
-| Owner documents (Customer, Vendor, Employee, Job, Customer Summary) | 5 | aging + documents | 2,500-3,500 | 2-3 h |
 | Portfolios/cost basis (Advanced, Investment Portfolio, IFRS, Lot Viewer) | 4 | lots | 3,200-4,800 | 4-6 h |
 | Cross-tab statements (BS Multicolumn, IS Multicolumn, Equity) | 3 | budgets + documents | 1,500-2,100 | 2-3 h |
 | Entry listings (General Journal, Transaction Breakdown, Reconciliation) | 3 | listings + aging | 1,500-2,100 | 2-3 h |
@@ -632,22 +659,22 @@ close precedent.
 | Average Balance | 1 | table/chart | 400-600 | 1 h |
 | Scheduled transactions (Future SX Summary, Balance Forecast) | 2 | SX | 1,600-2,400 | 2-3 h |
 | Easy/Fancy Invoice layouts | 2 | documents | 1,000-1,400 | 1-2 h |
-| **Total** | **23** | | **14,000-20,000** | **16-25 h** |
+| **Total** | **18** | | **11,500-16,500** | **14-22 h** |
 
 At the observed 650-1,350 hand-written source lines per commit-hour, the
-14k-20k lines are 10-31 h; the per-cluster sums above are narrower (16-25 h).
-Doubling the wider range for the engines with no close precedent gives 20-62 h,
-which is 1-3 working weeks at 4-6 focused hours a day.  With the unknowns in
-the harder engines, the honest range is **2-4 weeks**, not months.  The 19
-closed names are not in this table; reopening them is the months-scale work
-described in 5.3.
+11.5k-16.5k lines are 9-25 h; the per-cluster sums above are narrower
+(14-22 h).  Doubling the wider range for the engines with no close precedent
+gives 18-50 h, which is 1-3 working weeks at 4-6 focused hours a day.  With the
+unknowns in the harder engines, the honest range is **2-4 weeks**, not months.
+The 19 closed names are not in this table; reopening them is the months-scale
+work described in 5.3.
 
 ### 6.4 What the cost table is not
 
 - It is not a schedule.  Commit wall clock is not effort; a commit can sit
   behind a review, a build or an unrelated fix.
 - It is not option parity.  The native reports deliberately expose a subset;
-  matching the Scheme option pages for the 19 native names is additional work
+  matching the Scheme option pages for the 24 native names is additional work
   not counted here.
 - It is not a usage forecast.  No telemetry exists; the order of work should be
   set by which reports a real user needs, not by the line count.
@@ -658,8 +685,13 @@ described in 5.3.
   numerator, not the denominator.  `git diff a639555722..8b3433c46a --
   gnucash/report/reports` is empty; every change is native-layer, web, test or
   doc.  The count is 66 at both ends.
-- **19 names, 15 implementations.**  Four pairs share a renderer.  "Nineteen
-  native reports" is true by name and overstated by engine count.
+- **24 names, 17 implementations.**  Seven names share a renderer.  "Twenty-
+  four native reports" is true by name and overstated by engine count.
+- **The owner cluster was cheap in the end.**  Four registrations share one
+  history walk, the aging row reuses the aging model, and Customer Summary is
+  the only second engine.  The fixture extension (a second customer, an
+  employee, a job, their documents and a vendor payment) was the larger share
+  of the stage.
 - **Budgets and documents were cheap, not expensive.**  Five budget layouts in
   1 h 39 and four document renderers in 2 h 05, because the budget model and
   the invoice model already existed.  The earlier "weeks to months" estimate
@@ -674,8 +706,8 @@ described in 5.3.
   pie, scatter or stacked multi-series.  A "we have charts" claim is true for
   net worth and income/expense lines, not for the chart class.
 - **"Closed" is 29% of the registry.**  That is a large number to leave out of
-  a coverage claim.  If closed decisions count, 65% is done-or-decided; if they
-  do not, 35% is backlog and 29% is native.  The same registry supports three
+  a coverage claim.  If closed decisions count, 73% is done-or-decided; if they
+  do not, 27% is backlog and 36% is native.  The same registry supports three
   very different headlines, and the document must say which one it is using.
 - **The previous document contradicted itself.**  Its top summary still said
   9/66 and "the majority is not covered", while its last update claimed 19/66
@@ -687,9 +719,9 @@ described in 5.3.
   checks the read-only API).  A Guile-free report tier still needs a writer for
   the book, normally the desktop application.  The verdict in section 5 is
   about reports and documents, not about replacing data entry.
-- **`/api/reports` is 69 in a Guile build and 23 in a Guile-free build.**
+- **`/api/reports` is 69 in a Guile build and 28 in a Guile-free build.**
   Neither is 66.  The 66 is the source registry; a build loads 65 of those, and
-  the 4 built-ins are extra; the 19 native names are a subset of the 66.
+  the 4 built-ins are extra; the 24 native names are a subset of the 66.
   Quoting any of these as "the number of reports" without the list is a
   category error.
 
@@ -759,7 +791,7 @@ builtins = re.findall(r'builtin_base \(\s*"builtin-[^"]+",\s*"([^"]+)"', spec)
 print('built-ins:', len(builtins), builtins)
 PY
 names: 66 duplicates: none
-native: 19 not in registry: none
+native: 24 not in registry: none
 built-ins: 4 ['Income vs Expenses by Month', 'Expenses by Account', 'Income by Account', 'Net Worth by Month']
 ```
 
@@ -782,8 +814,8 @@ change is needed; this file is the only edited file.
 
 ## 10. What this document does not claim
 
-- It does not claim that 19/66 is a majority; it is not.  It does not present
-  43/66 as "coverage" without saying that 19 of those are closed decisions.
+- It does not claim that 24/66 is a majority; it is not.  It does not present
+  48/66 as "coverage" without saying that 19 of those are closed decisions.
 - It does not claim that native reports are option-complete.  They are not;
   section 2 lists the gap and the 400 behaviour.
 - It does not claim that closed names are easy or impossible.  It records the
@@ -792,3 +824,70 @@ change is needed; this file is the only edited file.
 - It does not claim to know which reports users actually run.  The tree has no
   telemetry.  The personal-versus-business split in section 5 is an argument
   from function, not a measurement.
+
+## 11. Update: the owner reports
+
+Measured after `4826c2e262`, on the book `web/test/make-invoice-book.py`
+generates.  **Native names: 24 of 66.**  Customer Report, Vendor Report,
+Employee Report, Job Report and Customer Summary joined
+`native_report_names()`; they are native in both builds.
+
+- **One engine, five registrations.**  `new-owner-report.scm` is one renderer
+  registered for the four owner types; `customer-summary.scm` is a different
+  question (profit per customer) and has its own model.  The native side keeps
+  that split: `gnc-owner.cpp` has one owner-history walk and one summary.  The
+  four registrations differ in the account type and the matching GUID only:
+  customers and jobs read A/Receivable, vendors and employees A/Payable; the
+  party reports match the invoice owner's *end* owner, while the Job Report
+  matches the invoice's own job GUID.  That is why a customer's report includes
+  its jobs' invoices.
+- **The history columns match the Scheme defaults.**  Date, Due Date,
+  Reference, Type, Description, Debits, Credits and Balance; the optional Job,
+  Sale and Tax columns exist with their Scheme defaults (Job off except as an
+  option on the party reports, Sale and Tax off).  The running balance is the
+  A/R or A/P account amount accumulated by transaction date, with transactions
+  before the From date as the balance brought forward.  The closing row is
+  "Total Due" or "Total Credit", and the aging row is the same lot-based bucket
+  walk the aging reports use.  The "Due or Post Date" choice, the
+  linked-transactions column and the document-link column are not reproduced;
+  their defaults are what is rendered.
+- **Customer Summary is a different table.**  Customer, Profit, Markup, Sales
+  and (optionally) Expense, one row per customer per commodity, the "No
+  Customer" row for income/expense splits no customer owns, and a Total row per
+  commodity.  Profit is sales minus expense; markup is profit over sales as a
+  rounded percentage.  The default scope is every INCOME and EXPENSE account,
+  and the default sort is customer name ascending with "No Customer" last.  The
+  income/expense account selection and the sort key/order options are not
+  exposed; their defaults are rendered.
+- **The fixture grew, rather than a second book.**  `make-invoice-book.py` now
+  adds: a second customer (Beta Corp) with invoice INV-1002; an employee (Eve
+  Employee) with expense voucher EXP-3001 on A/Payable; a job (Website
+  redesign, owned by Acme) with invoice JOB-4001 on A/Receivable; a Travel
+  expense account; and a vendor payment PMT-2001 on BILL-2001.  It also writes
+  `<book>.ids`, one `kind name guid` row per owner and document, so a test can
+  select an owner without parsing the human-readable output.  The existing
+  invoice fixtures are unchanged (INV-1001, BILL-2001, the tax table and Net
+  30), so the document tests still run on the same book.
+- **Parity in both builds.**  `report-parity.sh` gained the `owner-report` and
+  `customer-summary` extractors and an `owner=` key in its `[options]` string;
+  it sets the Scheme owner option as the `(type . guid)` pair the option system
+  deserialises.  On the generated book the five extracts match the Scheme report
+  in `ext4-web` and `ext4-noguile`: Customer Report 7 rows, Vendor Report 6,
+  Employee Report 5, Job Report 5, Customer Summary 4.  The b/f case (From
+  after every transaction) matches too (5 rows).  The extracts compare the
+  history rows, the brought-forward and period totals, the closing total, the
+  aging header and row, and the summary's customer/profit/markup/sales/expense
+  rows.
+- **Options and tests.**  The owner reports publish `owner` (type `owner`),
+  From/To and the display switches; the Job Report does not publish `show_job`.
+  Customer Summary publishes From/To, `show_expense`, `show_zero_lines`,
+  `show_inactive` and the period preset.  `report-options.sh` checks those
+  descriptors, the unknown-owner and empty-owner 400s, the per-report boolean
+  probes, and the positive vendor path on `sample1`.  The generic
+  "every option changes the report" probe skips the owner reports (it has no
+  owner to select) and Customer Summary (it has no customer activity); the
+  generated-book parity test covers the effects.
+- **Build hygiene.**  New files are `libgnucash/reports/gnc-owner.cpp` and
+  `.hpp`, listed in `reports_SOURCES`/`reports_HEADERS` and therefore in
+  `set_dist_list`.  Both builds compile with `-Werror`; `ldd` on `gnc-webd` is
+  still free of libguile, libgtk and libwebkit.

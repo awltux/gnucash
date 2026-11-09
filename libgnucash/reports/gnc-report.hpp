@@ -679,6 +679,9 @@ enum class OptionType
     Bool,
     /** The id of an invoice in the book (or its GUID). */
     Invoice,
+    /** An owner selection: the GUID of a customer, vendor, employee or job,
+     *  which the report name decides. */
+    Owner,
 };
 
 struct OptionDescriptor
@@ -722,6 +725,47 @@ std::vector<std::string> period_presets ();
  *  unknown preset. */
 bool resolve_period (const std::string& preset, DateRange& range);
 
+/** How the owner reports display their history table.  The defaults are the
+ *  Scheme report's: date, due date, reference, type, description, debits,
+ *  credits and balance on; the job column only for the non-job reports, sale
+ *  and tax off.  The "Due or Post Date" choice, the linked-transactions
+ *  column and the document-link column are not reproduced. */
+struct OwnerReportOptions
+{
+    OwnerKind kind = OwnerKind::Customer;
+    /** The selected owner's GUID.  Empty is "no owner selected". */
+    std::string owner_guid;
+    /** The report's From/To bounds.  Unset means no bound. */
+    std::optional<time64> start;
+    std::optional<time64> end;
+    bool show_date = true;
+    bool show_due_date = true;
+    bool show_reference = true;
+    bool show_type = true;
+    bool show_description = true;
+    /** The associated job column.  The Job Report has no such option, which
+     *  its descriptors express by not publishing the name. */
+    bool show_job = false;
+    bool show_sale = false;
+    bool show_tax = false;
+    bool show_debits = true;
+    bool show_credits = true;
+    bool show_balance = true;
+};
+
+/** The Customer Summary display switches.  Sort key and sort order stay at
+ *  the Scheme defaults (customer name, ascending); income/expense account
+ *  selection stays at the Scheme default (every such account in the book). */
+struct CustomerSummaryOptions
+{
+    /** The report's From/To bounds.  Unset means no bound. */
+    std::optional<time64> start;
+    std::optional<time64> end;
+    bool show_expense = true;
+    bool show_zero_lines = false;
+    bool show_inactive = false;
+};
+
 /** Dates and account selection a caller may pin instead of the report's own
  *  defaults.  Stage 3 (options over HTTP) builds on this; the parity harness
  *  is its first user, because the Scheme reports can only be asked for a
@@ -740,6 +784,14 @@ struct ReportRequest
     std::vector<Account*> accounts;
     gnc_commodity* currency = nullptr;
     bool all_dates = false;
+    /** The owner reports' owner selection: the GUID of a customer, vendor,
+     *  employee or job (the report name decides which). */
+    std::string owner;
+    /** The owner reports' display switches; the defaults are the Scheme
+     *  report's defaults. */
+    OwnerReportOptions owner_options;
+    /** The Customer Summary's display switches. */
+    CustomerSummaryOptions customer_summary_options;
     /** The invoice report's "Invoice Number": the document id (or GUID) of
      *  the invoice to print.  Empty is the engine's "no invoice selected"
      *  case and renders the warning, not an error. */

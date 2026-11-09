@@ -51,6 +51,7 @@ extern "C" {
 }
 
 #include <gnc-report.hpp>
+#include <gnc-owner.hpp>
 
 #include "json.hpp"
 #include "report-spec.hpp"
@@ -287,6 +288,7 @@ option_type_name (gnc::report::OptionType type)
     case gnc::report::OptionType::Text:        return "text";
     case gnc::report::OptionType::Bool:        return "bool";
     case gnc::report::OptionType::Invoice:     return "invoice";
+    case gnc::report::OptionType::Owner:       return "owner";
     }
     return "";
 }
@@ -1145,6 +1147,12 @@ build_report_request (const std::string& report, const std::string& query,
                      report == "Australian Tax Invoice")
                 accepted = gnc::report::set_tax_invoice_option (
                     request.tax_invoice_options, param.name, value);
+            else if (gnc::report::is_owner_report (report))
+                accepted = gnc::report::set_owner_report_option (
+                    request.owner_options, param.name, value);
+            else if (report == "Customer Summary")
+                accepted = gnc::report::set_customer_summary_option (
+                    request.customer_summary_options, param.name, value);
             else
                 accepted = gnc::report::set_invoice_print_option (
                     request.invoice_options, param.name, value);
@@ -1173,6 +1181,38 @@ build_report_request (const std::string& report, const std::string& query,
             }
             have_invoice = true;
             request.invoice = param.value;
+            break;
+        }
+
+        case gnc::report::OptionType::Owner:
+        {
+            if (param.name != "owner")
+            {
+                error = "report '" + report + "' has no owner option '" +
+                        param.name + "'";
+                return false;
+            }
+            if (param.value.empty ())
+            {
+                error = "empty 'owner' value (expected an owner GUID)";
+                return false;
+            }
+            gnc::report::OwnerKind kind;
+            if (!gnc::report::owner_report_kind (report, kind))
+            {
+                error = "report '" + report +
+                        "' has no owner selection";
+                return false;
+            }
+            GncOwner owner;
+            if (!gnc::report::owner_lookup (g_server.root, kind, param.value,
+                                            owner))
+            {
+                error = "unknown owner '" + param.value + "' for report '" +
+                        report + "'";
+                return false;
+            }
+            request.owner = param.value;
             break;
         }
         }

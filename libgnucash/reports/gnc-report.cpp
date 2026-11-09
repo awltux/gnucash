@@ -26,6 +26,7 @@
 #include <glib.h>
 
 #include "gnc-report.hpp"
+#include "gnc-owner.hpp"
 
 extern "C"
 {
@@ -4402,7 +4403,9 @@ native_report_names ()
             "Budget Report", "Budget Income Statement",
             "Budget Profit & Loss", "Budget Balance Sheet", "Budget Flow",
             "Printable Invoice", "Receipt", "Tax Invoice",
-            "Australian Tax Invoice", "Tax Schedule Report/TXF Export"};
+            "Australian Tax Invoice", "Tax Schedule Report/TXF Export",
+            "Customer Report", "Vendor Report", "Employee Report",
+            "Job Report", "Customer Summary"};
 }
 
 /* --------------------------------------------------------------- options */
@@ -4568,6 +4571,125 @@ std::vector<OptionDescriptor>
 report_options (const std::string& name)
 {
     std::vector<OptionDescriptor> options;
+
+    OwnerKind owner_kind;
+    if (owner_report_kind (name, owner_kind))
+    {
+        /* new-owner-report.scm: one option page per owner type, the same
+         * three date/display pages otherwise.  The owner option serialises as
+         * the owner's GUID, which is what the route takes; the linked-
+         * transactions and document-link columns and the "Due or Post Date"
+         * choice are not reproduced. */
+        OptionDescriptor owner;
+        owner.name = "owner";
+        owner.type = OptionType::Owner;
+        owner.label = owner_kind_name (owner_kind);
+        owner.description =
+            "The " + std::string (owner_kind_name (owner_kind)) +
+            " whose documents and payments the report covers, by GUID.  "
+            "Without it the report renders the Scheme \"No valid owner "
+            "selected\" warning.";
+        options.push_back (owner);
+
+        options.push_back (date_option (
+            "start", "From",
+            "The first day of the period whose rows are printed.  "
+            "Transactions before it are the balance brought forward.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "To",
+            "The last day of the period whose rows are printed.  It is also "
+            "the date the aging buckets are measured from.  It defaults to "
+            "today, as the Scheme report's does.",
+            default_aging_date ()));
+
+        struct DisplayOption
+        {
+            const char* name;
+            const char* label;
+            const char* description;
+            bool default_value;
+        };
+        static const DisplayOption displays[] = {
+            {"show_date", "Date", "Display the transaction date?", true},
+            {"show_due_date", "Due Date", "Display the invoice due date?", true},
+            {"show_reference", "Reference",
+             "Display the transaction reference?", true},
+            {"show_type", "Type", "Display the transaction type?", true},
+            {"show_description", "Description",
+             "Display the transaction description?", true},
+            {"show_job", "Job", "Display the associated job?", false},
+            {"show_sale", "Sale", "Display the sale amount column?", false},
+            {"show_tax", "Tax", "Display the tax column?", false},
+            {"show_debits", "Debits", "Display the period debits column?",
+             true},
+            {"show_credits", "Credits", "Display the period credits column?",
+             true},
+            {"show_balance", "Balance", "Display a running balance?", true},
+        };
+        for (const DisplayOption& display : displays)
+        {
+            /* The Job Report has no job column option at all, as the Scheme
+             * options-generator omits it for GNC-OWNER-JOB. */
+            if (owner_kind == OwnerKind::Job &&
+                std::string (display.name) == "show_job")
+                continue;
+            OptionDescriptor option;
+            option.name = display.name;
+            option.type = OptionType::Bool;
+            option.label = display.label;
+            option.description = display.description;
+            option.default_value = display.default_value ? "true" : "false";
+            options.push_back (option);
+        }
+        options.push_back (period_option ());
+        return options;
+    }
+
+    if (name == "Customer Summary")
+    {
+        /* customer-summary.scm's General page and the display switches that
+         * change the rows.  The income/expense account selections default to
+         * every such account and the sort key/order to customer name
+         * ascending, which is what the native report renders; those options
+         * are not exposed because the route's single "accounts" name cannot
+         * stand for two selections. */
+        options.push_back (date_option (
+            "start", "From",
+            "The first day of the period the summary covers.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "To", "The last day of the period the summary covers.",
+            default_end_date ()));
+
+        struct DisplayOption
+        {
+            const char* name;
+            const char* label;
+            const char* description;
+            bool default_value;
+        };
+        static const DisplayOption displays[] = {
+            {"show_expense", "Show Expense Column",
+             "Show the column with the expenses per customer.", true},
+            {"show_zero_lines", "Show Lines with All Zeros",
+             "Show customer lines with no activity in the period.", false},
+            {"show_inactive", "Show Inactive Customers",
+             "Include customers that have been marked inactive.", false},
+        };
+        for (const DisplayOption& display : displays)
+        {
+            OptionDescriptor option;
+            option.name = display.name;
+            option.type = OptionType::Bool;
+            option.label = display.label;
+            option.description = display.description;
+            option.default_value = display.default_value ? "true" : "false";
+            options.push_back (option);
+        }
+        options.push_back (period_option ());
+        return options;
+    }
 
     if (name == "Printable Invoice")
     {
@@ -5142,6 +5264,50 @@ render_report (const std::string& name, Account* root,
         html = render_cell_table (budget_flow (root, budget, request.accounts,
                                                request.currency),
                                   title);
+        return true;
+    }
+
+    OwnerKind owner_kind;
+    if (owner_report_kind (name, owner_kind))
+    {
+        /* The four Scheme registrations differ only by the owner kind: the
+         * account type (A/Payable for vendors and employees, A/Receivable for
+         * customers and jobs) and the matching GUID both follow from it. */
+        OwnerReportOptions options = request.owner_options;
+        options.kind = owner_kind;
+        options.owner_guid = request.owner;
+        if (request.all_dates)
+        {
+            options.start.reset ();
+            options.end.reset ();
+        }
+        else
+        {
+            options.start = request.start.value_or (default_start_date ());
+            options.end = request.end.value_or (default_aging_date ());
+        }
+        html = render_owner_report (owner_report (root, options));
+        return true;
+    }
+
+    if (name == "Customer Summary")
+    {
+        CustomerSummaryOptions options = request.customer_summary_options;
+        if (request.all_dates)
+        {
+            options.start.reset ();
+            options.end.reset ();
+        }
+        else
+        {
+            options.start = request.start.value_or (default_start_date ());
+            options.end = request.end.value_or (default_end_date ());
+        }
+        CustomerSummary summary = customer_summary (root, options);
+        if (summary.warning == "No accounts selected")
+            html = render_no_accounts ("Customer Summary", false);
+        else
+            html = render_cell_table (summary.table, summary.title);
         return true;
     }
 
