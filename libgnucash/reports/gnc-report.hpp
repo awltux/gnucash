@@ -99,6 +99,10 @@ struct Row
     std::string guid;
     int depth = 0;
     gnc_numeric amount = gnc_numeric_zero ();
+    /** One amount per Table::column_headings entry, in the same order, for a
+     *  table with a grouped column axis.  Empty means the row is a
+     *  single-amount row and `amount` is what it prints. */
+    std::vector<gnc_numeric> values;
     /** A period row is the net of its accounts' activity, but the two sides
      *  are not recoverable from the net: keep them so the Debit/Credit
      *  columns and a multi-series chart can print the activity separately.
@@ -146,6 +150,17 @@ struct Table
     bool has_totals = false;
     gnc_numeric debit_total = gnc_numeric_zero ();
     gnc_numeric credit_total = gnc_numeric_zero ();
+    /** A grouped column axis: one heading per amount column, in display
+     *  order.  A report whose rows carry a value per period (the multicolumn
+     *  statements) sets this, and its rows carry one Row::values entry per
+     *  heading; the renderer emits one amount cell per heading instead of the
+     *  single amount column `columns` describes.  Empty for the ordinary
+     *  table. */
+    std::vector<std::string> column_headings;
+    /** The heading of the row axis when `column_headings` is set: the Scheme
+     *  multicolumn reports head it "Date" (balance sheet) or "Period"
+     *  (profit & loss).  Empty prints an empty corner cell. */
+    std::string row_heading;
     /** An optional chart section rendered below the table. */
     std::optional<Chart> chart;
 };
@@ -274,6 +289,140 @@ Table balance_sheet (Account* root, std::optional<time64> as_of,
 Table income_statement (Account* root, std::optional<time64> start,
                         std::optional<time64> end,
                         gnc_commodity* currency = nullptr);
+
+/* ---------------------------------------------- multicolumn statements */
+
+/** The period a multicolumn statement's columns cover: the Scheme
+ *  balsheet-pnl.scm report's "Period duration" option.  Disabled is the
+ *  single-column form, which is the option's default. */
+enum class ColumnPeriod
+{
+    Disabled,
+    Year,
+    HalfYear,
+    Quarter,
+    Month,
+    TwoWeeks,
+    Week,
+};
+
+/** The route's name for a period: "disabled", "year", "half-year",
+ *  "quarter", "month", "two-weeks", "week". */
+const char* column_period_name (ColumnPeriod period);
+
+/** Resolve a period name.  False for a name outside the vocabulary; the
+ *  caller reports it as a bad option. */
+bool column_period_from_name (const std::string& name, ColumnPeriod& period);
+
+/** What the two multicolumn statements let a caller set.  The Scheme report
+ *  has more switches; the ones here are the ones the native table can honour
+ *  (see balance_sheet_multicolumn()). */
+struct MulticolumnOptions
+{
+    std::optional<time64> start;
+    std::optional<time64> end;
+    /** One column per period (newest first when `reverse_chrono`), or the
+     *  single-column form when Disabled. */
+    ColumnPeriod period = ColumnPeriod::Disabled;
+    /** The Scheme report's "Period order is most recent first": the default,
+     *  and it reverses the amount columns only. */
+    bool reverse_chrono = true;
+    /** "Include accounts with zero total balances": off drops the accounts
+     *  whose every column is zero. */
+    bool show_zero_accounts = true;
+    /** "Account full name instead of indenting". */
+    bool account_full_name = false;
+    /** "Label sections" and "Include totals". */
+    bool label_sections = true;
+    bool total_sections = true;
+    /** "If more than 1 period column, include overall period?": the profit &
+     *  loss adds a column covering the whole range. */
+    bool include_overall_period = false;
+    gnc_commodity* currency = nullptr;
+};
+
+/** The Balance Sheet (Multicolumn) ("Balance Sheet (Multicolumn)",
+ *  balsheet-pnl.scm) with the Scheme report's default options, which are the
+ *  single-column form as of the end date: one row per account in the report's
+ *  own sorted order, a parent's row showing its subtree's balance (the
+ *  report's "Parent account amounts include children" default) and its own
+ *  balance on a second row when it has one, the section titles "Asset",
+ *  "Liability", "Equity" and the totals "Total For Asset", "Total For
+ *  Liability", "Total For Equity", "Total For Liability and Equity".
+ *  Liabilities and equity are sign-reversed, and the income and expense
+ *  balances print as one "Retained Earnings" row inside equity, also
+ *  reversed.
+ *
+ *  With a period set the report shows one column per period end ("Date"
+ *  headed), in reverse chronological order by default, each holding the
+ *  account's balance as of that date including closing entries, exactly as
+ *  the Scheme report's gnc:account-accumulate-at-dates does.
+ *
+ *  Deliberately not reproduced: the "Common Currency" page (the native table
+ *  converts every amount into the report currency, which is the same page on
+ *  a book whose accounts share a commodity), the exchange-rate rows, the
+ *  chart, the dual-column layout (a presentation of the same rows, which the
+ *  native renderer emits as one table), and the hyperlinks. */
+Table balance_sheet_multicolumn (Account* root,
+                                 const MulticolumnOptions& options);
+
+/** The Income Statement (Multicolumn) ("Income Statement (Multicolumn)",
+ *  balsheet-pnl.scm): the same account table with the income and expense
+ *  accounts, one column per period, each column the account's activity
+ *  between two period ends (the Scheme report's balance difference, with
+ *  closing entries left out), income sign-reversed, the section titles
+ *  "Income" and "Expense", the totals "Total For Income", "Total For
+ *  Expense", and the "Net Income" block, which is forced on: "Total For Net
+ *  Income" is revenue minus expenses.
+ *
+ *  The row order follows the Scheme report's own panel order, which depends
+ *  on the form: the single-column form prints Income, the Net Income block,
+ *  then Expense (the Scheme report's two side-by-side panels read left to
+ *  right), while a period-column run prints Income, Expense, then Net
+ *  Income.
+ *
+ *  Not reproduced: as for balance_sheet_multicolumn(), plus the optional
+ *  overall-period column is available ("include_overall_period") and the
+ *  chart is not. */
+Table income_statement_multicolumn (Account* root,
+                                    const MulticolumnOptions& options);
+
+/** Options for the Equity Statement.  The Scheme report's own period is a
+ *  range of dates; its closing-entry pattern, currency page and display
+ *  switches are not reproduced (see equity_statement()). */
+struct EquityStatementOptions
+{
+    std::optional<time64> start;
+    std::optional<time64> end;
+    gnc_commodity* currency = nullptr;
+};
+
+/** The Equity Statement ("Equity Statement", equity-statement.scm): the
+ *  owner's equity roll-forward, "Capital, <start date>" (the opening equity,
+ *  i.e. the equity accounts plus retained earnings as of the end of the day
+ *  before the start date), the period's "Net income"/"Net loss",
+ *  "Investments", "Withdrawals", "Increase in capital"/"Decrease in capital"
+ *  and "Capital, <end date>".  Income is sign-reversed (a credit is a
+ *  positive net income), withdrawals are the positive splits of the equity
+ *  accounts and investments the change in equity that the withdrawals do not
+ *  explain, exactly as the Scheme report derives them.
+ *
+ *  Closing entries are recognised the way the Scheme report's own option
+ *  does (its "Closing Entries pattern", a case-insensitive substring of the
+ *  description, "Closing Entries") or by the transaction's closing flag.
+ *
+ *  Deliberately not reproduced, because they need the price database's
+ *  average-cost source rather than a query: the "Unrealized Gains/Losses for
+ *  Period" row.  On a book whose assets, liabilities and equity share the
+ *  report commodity the Scheme report's own calculation is identically zero
+ *  and the row is omitted, which is what this renders; a book with
+ *  foreign-currency holdings would need it.  Also not reproduced: the
+ *  currency page ("Show Foreign Currencies" is always off, "Show Exchange
+ *  Rates" is always off), the accounting-style rules (a presentation of the
+ *  same rows) and the "Report Title" option, which the route sets through
+ *  the document title. */
+Table equity_statement (Account* root,
+                        const EquityStatementOptions& options);
 
 /** The end date the Scheme report's date option defaults to. */
 time64 default_end_date ();

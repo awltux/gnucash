@@ -265,11 +265,13 @@ bad_tax_format=$(curl -sS -o /dev/null -w '%{http_code}' \
 
 if [ "$HAS_GUILE" = 1 ]; then
     # The Scheme engine is still the fallback for reports not ported yet.
-    curl -fsS "${URL}report/Income%20Statement%20(Multicolumn)" | grep -q "<html" \
-        || fail "Scheme fallback did not render Income Statement (Multicolumn)"
+    # Cash Flow is one of them; the multicolumn statements used to be the
+    # example here and are native now.
+    curl -fsS "${URL}report/Cash%20Flow" | grep -q "<html" \
+        || fail "Scheme fallback did not render Cash Flow"
 else
     unknown_code=$(curl -sS -o /dev/null -w '%{http_code}' \
-        "${URL}report/Income%20Statement%20(Multicolumn)")
+        "${URL}report/Cash%20Flow")
     [ "$unknown_code" = "501" ] \
         || fail "a non-native report answered $unknown_code without Guile (expected 501)"
 fi

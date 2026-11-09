@@ -2414,6 +2414,835 @@ income_statement (Account* root, std::optional<time64> start,
     return table;
 }
 
+/* ------------------------------------------------ multicolumn statements */
+
+const char*
+column_period_name (ColumnPeriod period)
+{
+    switch (period)
+    {
+    case ColumnPeriod::Disabled:  return "disabled";
+    case ColumnPeriod::Year:      return "year";
+    case ColumnPeriod::HalfYear:  return "half-year";
+    case ColumnPeriod::Quarter:   return "quarter";
+    case ColumnPeriod::Month:     return "month";
+    case ColumnPeriod::TwoWeeks:  return "two-weeks";
+    case ColumnPeriod::Week:      return "week";
+    }
+    return "";
+}
+
+bool
+column_period_from_name (const std::string& name, ColumnPeriod& period)
+{
+    for (const ColumnPeriod candidate :
+         {ColumnPeriod::Disabled, ColumnPeriod::Year, ColumnPeriod::HalfYear,
+          ColumnPeriod::Quarter, ColumnPeriod::Month, ColumnPeriod::TwoWeeks,
+          ColumnPeriod::Week})
+    {
+        if (name == column_period_name (candidate))
+        {
+            period = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+namespace
+{
+
+/* ---------------------------------------------- date axis of the columns */
+
+/* gnc:end-month?(): adding one day changes the month. */
+bool
+date_is_month_end (const GDate& date)
+{
+    GDate next = date;
+    g_date_add_days (&next, 1);
+    return g_date_get_month (&next) != g_date_get_month (&date);
+}
+
+/* incdate-months from the report engine's date utilities: add whole months,
+ * clamp the day to the target month, and keep a month-end date at the month
+ * end (31 January + one month is 28 or 29 February, never 3 March). */
+GDate
+add_months (const GDate& date, int months)
+{
+    const bool month_end = date_is_month_end (date);
+    GDate result = date;
+    g_date_add_months (&result, months);
+    if (month_end)
+    {
+        while (!date_is_month_end (result))
+            g_date_add_days (&result, 1);
+    }
+    return result;
+}
+
+/* gnc:make-date-list(): `start`, `start + n*step`, ... while the result is
+ * before `end`, then `end` itself.  The step keeps the start date's time of
+ * day, which is what makes a balance-sheet column the end of its day and a
+ * profit & loss column the start of its day. */
+std::vector<time64>
+make_date_list (time64 start, time64 end, ColumnPeriod period)
+{
+    std::vector<time64> dates;
+    if (end < start)
+        std::swap (start, end);
+    if (start >= end || period == ColumnPeriod::Disabled)
+    {
+        dates.push_back (end);
+        return dates;
+    }
+
+    GDate start_date = time64_to_gdate (start);
+    /* The start date's time of day: the Scheme report steps with incdate(),
+     * which keeps the wall-clock time, so a balance-sheet column stays the
+     * end of its day and a profit & loss column the start of its day. */
+    struct tm clock;
+    gnc_localtime_r (&start, &clock);
+
+    auto at = [&clock] (GDate date)
+    {
+        struct tm target = clock;
+        target.tm_year = g_date_get_year (&date) - 1900;
+        target.tm_mon = g_date_get_month (&date) - 1;
+        target.tm_mday = g_date_get_day (&date);
+        target.tm_isdst = -1;
+        return gnc_mktime (&target);
+    };
+
+    int months = 0;
+    int days = 0;
+    switch (period)
+    {
+    case ColumnPeriod::Year:     months = 12; break;
+    case ColumnPeriod::HalfYear: months = 6;  break;
+    case ColumnPeriod::Quarter:  months = 3;  break;
+    case ColumnPeriod::Month:    months = 1;  break;
+    case ColumnPeriod::TwoWeeks: days = 14;   break;
+    case ColumnPeriod::Week:     days = 7;    break;
+    case ColumnPeriod::Disabled: break;
+    }
+
+    for (int index = 0; ; ++index)
+    {
+        GDate date = months > 0 ? add_months (start_date, months * index)
+                                : start_date;
+        if (days > 0)
+            g_date_add_days (&date, days * index);
+        const time64 when = at (date);
+        if (when >= end)
+            break;
+        dates.push_back (when);
+    }
+    dates.push_back (end);
+    return dates;
+}
+
+/* qof-print-date(): the heading the Scheme report's column headers print. */
+std::string
+print_date (time64 when)
+{
+    char date[32] = {0};
+    qof_print_date_buff (date, sizeof date, when);
+    return std::string (date);
+}
+
+/* "12/01/18 to 12/31/18": the Scheme profit & loss column heading. */
+std::string
+print_interval (time64 from, time64 to)
+{
+    return print_date (from) + " to " + print_date (to);
+}
+
+/* ------------------------------------------------------- amount series */
+
+/* One amount per column, in display order, for one account. */
+using Series = std::vector<gnc_numeric>;
+
+std::vector<gnc_numeric>
+zero_series (size_t columns)
+{
+    return std::vector<gnc_numeric> (columns, gnc_numeric_zero ());
+}
+
+bool
+series_all_zero (const Series& series)
+{
+    for (const gnc_numeric value : series)
+    {
+        if (!gnc_numeric_zero_p (value))
+            return false;
+    }
+    return true;
+}
+
+/* The Scheme report's gnc:account-accumulate-at-dates() reads the running
+ * balance of the last split posted on or before the report date, which is
+ * the sum of every split up to and including that date.  Closing entries are
+ * part of a balance-sheet balance (xaccSplitGetBalance) and are left out of
+ * a profit & loss balance (xaccSplitGetNoclosingBalance). */
+gnc_numeric
+raw_balance_at (Account* account, time64 when, bool with_closing)
+{
+    gnc_numeric total = gnc_numeric_zero ();
+    gnc_account_foreach_split_between_dates (
+        account, std::nullopt, when, false,
+        [&] (Split* split)
+        {
+            if (!with_closing &&
+                xaccTransGetIsClosingTxn (xaccSplitGetParent (split)))
+                return;
+            total = numeric_add (total, xaccSplitGetAmount (split));
+        });
+    return total;
+}
+
+/* Convert an amount into the report currency at the price date the Scheme
+ * report uses for the column.  A null currency, or an account already in it,
+ * leaves the amount alone (the report's "Common Currency" default). */
+gnc_numeric
+converted_at (Account* account, gnc_numeric amount,
+              gnc_commodity* currency, time64 when)
+{
+    gnc_commodity* account_currency = xaccAccountGetCommodity (account);
+    if (currency == nullptr || account_currency == nullptr ||
+        account_currency == currency)
+        return amount;
+    return xaccAccountConvertBalanceToCurrencyAsOfDate (
+        account, amount, account_currency, currency, when);
+}
+
+/* gnc:decompose-accountlist(): the report's account list split into the
+ * buckets the statements print, in the list's own order. */
+struct BucketAccounts
+{
+    std::vector<Account*> assets;
+    std::vector<Account*> liabilities;
+    std::vector<Account*> equity;
+    std::vector<Account*> income;
+    std::vector<Account*> expenses;
+};
+
+BucketAccounts
+split_accounts (const std::vector<Account*>& accounts)
+{
+    BucketAccounts split;
+    for (Account* account : accounts)
+    {
+        switch (bucket_of (account))
+        {
+        case Bucket::Asset:     split.assets.push_back (account); break;
+        case Bucket::Liability: split.liabilities.push_back (account); break;
+        case Bucket::Equity:    split.equity.push_back (account); break;
+        case Bucket::Income:    split.income.push_back (account); break;
+        case Bucket::Expense:   split.expenses.push_back (account); break;
+        default: break;
+        }
+    }
+    return split;
+}
+
+std::vector<Account*>
+income_expense_accounts (const BucketAccounts& split)
+{
+    std::vector<Account*> accounts;
+    accounts.insert (accounts.end (), split.income.begin (), split.income.end ());
+    accounts.insert (accounts.end (), split.expenses.begin (),
+                     split.expenses.end ());
+    return accounts;
+}
+
+/* The account's descendants that are themselves in the report's account list,
+ * which is what the Scheme report's (account-and-descendants) is. */
+void
+collect_descendants_in (Account* account, const std::vector<Account*>& list,
+                        std::vector<Account*>& out)
+{
+    GList* children = gnc_account_get_children_sorted (account);
+    for (GList* node = children; node != nullptr; node = node->next)
+    {
+        auto* child = static_cast<Account*> (node->data);
+        if (std::find (list.begin (), list.end (), child) != list.end ())
+            out.push_back (child);
+        collect_descendants_in (child, list, out);
+    }
+    g_list_free (children);
+}
+
+std::vector<Account*>
+descendants_in (Account* account, const std::vector<Account*>& list)
+{
+    std::vector<Account*> out;
+    collect_descendants_in (account, list, out);
+    return out;
+}
+
+/* Row label: the account's own name, or its full name when the report's
+ * "Account full name instead of indenting" option asks for it. */
+std::string
+statement_account_name (const Account* account, bool full_name)
+{
+    return full_name ? account_full_name (account) : account_name (account);
+}
+
+} // namespace
+
+Table
+balance_sheet_multicolumn (Account* root, const MulticolumnOptions& options)
+{
+    gnc_commodity* currency = report_currency (root, options.currency);
+    const time64 start = options.start.value_or (default_start_date ());
+    const time64 end = options.end.value_or (default_end_date ());
+
+    /* The balance sheet's columns are dates at the end of their day, and the
+     * single-column form has one: the report date. */
+    std::vector<time64> dates;
+    if (options.period == ColumnPeriod::Disabled)
+        dates.push_back (gnc_time64_get_day_end (end));
+    else
+        dates = make_date_list (gnc_time64_get_day_end (start),
+                                gnc_time64_get_day_end (end), options.period);
+    if (options.reverse_chrono)
+        std::reverse (dates.begin (), dates.end ());
+
+    Table table;
+    table.columns = {Column::AccountName};
+    table.currency = currency;
+    const bool grouped = options.period != ColumnPeriod::Disabled;
+    if (grouped)
+    {
+        table.row_heading = "Date";
+        for (const time64 date : dates)
+            table.column_headings.push_back (print_date (date));
+    }
+    else
+        table.columns.push_back (Column::Balance);
+
+    std::vector<Account*> accounts;
+    if (root != nullptr)
+        collect_accounts (root, accounts);
+    const BucketAccounts split = split_accounts (accounts);
+
+    /* Each account's own balance at every column date. */
+    std::map<Account*, Series> balances;
+    for (Account* account : accounts)
+    {
+        Series series;
+        for (const time64 date : dates)
+            series.push_back (converted_at (
+                account, raw_balance_at (account, date, true), currency, date));
+        balances[account] = std::move (series);
+    }
+
+    const std::vector<Account*> income_expense = income_expense_accounts (split);
+    /* The income and expense balances print as one "Retained Earnings" row
+     * inside equity, which is why the row is a virtual account. */
+    Series retained = zero_series (dates.size ());
+    for (size_t column = 0; column < dates.size (); ++column)
+    {
+        for (Account* account : income_expense)
+            retained[column] = numeric_add (retained[column],
+                                            balances[account][column]);
+    }
+
+    const size_t columns = dates.size ();
+    auto series_sum = [&balances, columns] (const std::vector<Account*>& list)
+    {
+        Series total = zero_series (columns);
+        for (Account* account : list)
+        {
+            const auto found = balances.find (account);
+            if (found == balances.end ())
+                continue;
+            for (size_t column = 0; column < columns; ++column)
+                total[column] = numeric_add (total[column],
+                                             found->second[column]);
+        }
+        return total;
+    };
+
+    auto add_row = [&table, grouped] (const std::string& label, RowType type,
+                                      const Series& values, bool negate)
+    {
+        Row row;
+        row.type = type;
+        row.label = label;
+        if (type == RowType::Section)
+            row.blank = true;
+        for (const gnc_numeric value : values)
+            row.values.push_back (negate ? gnc_numeric_neg (value) : value);
+        if (!grouped && !row.values.empty ())
+            row.amount = row.values.front ();
+        table.rows.push_back (std::move (row));
+    };
+
+    /* One section: its title, one row per account (a parent's row is its
+     * subtree, and its own balance follows on a second row when it has one),
+     * and its total. */
+    auto add_section = [&] (const std::string& title,
+                            const std::vector<Account*>& list, bool negate)
+    {
+        if (list.empty ())
+            return;
+        if (options.label_sections)
+            add_row (title, RowType::Section, zero_series (columns), false);
+        for (Account* account : list)
+        {
+            const std::vector<Account*> subtree = descendants_in (account, list);
+            if (!subtree.empty ())
+            {
+                const Series total = series_sum (subtree);
+                if (options.show_zero_accounts || !series_all_zero (total))
+                    add_row (statement_account_name (account,
+                                                     options.account_full_name),
+                             RowType::Account, total, negate);
+                if (!series_all_zero (balances[account]))
+                    add_row (statement_account_name (account,
+                                                     options.account_full_name),
+                             RowType::Account, balances[account], negate);
+            }
+            else if (options.show_zero_accounts ||
+                     !series_all_zero (balances[account]))
+                add_row (statement_account_name (account,
+                                                 options.account_full_name),
+                         RowType::Account, balances[account], negate);
+        }
+        if (options.total_sections)
+            add_row ("Total For " + title, RowType::Total, series_sum (list),
+                     negate);
+    };
+
+    add_section ("Asset", split.assets, false);
+    add_section ("Liability", split.liabilities, true);
+
+    /* Equity, with the retained-earnings row appended. */
+    if (!split.equity.empty () || !income_expense.empty ())
+    {
+        if (options.label_sections)
+            add_row ("Equity", RowType::Section, zero_series (columns), false);
+        for (Account* account : split.equity)
+        {
+            const std::vector<Account*> subtree =
+                descendants_in (account, split.equity);
+            if (!subtree.empty ())
+            {
+                const Series total = series_sum (subtree);
+                if (options.show_zero_accounts || !series_all_zero (total))
+                    add_row (statement_account_name (account,
+                                                     options.account_full_name),
+                             RowType::Account, total, true);
+                if (!series_all_zero (balances[account]))
+                    add_row (statement_account_name (account,
+                                                     options.account_full_name),
+                             RowType::Account, balances[account], true);
+            }
+            else if (options.show_zero_accounts ||
+                     !series_all_zero (balances[account]))
+                add_row (statement_account_name (account,
+                                                 options.account_full_name),
+                         RowType::Account, balances[account], true);
+        }
+        if (!income_expense.empty ())
+            add_row ("Retained Earnings", RowType::Account, retained, true);
+        if (options.total_sections)
+        {
+            Series total = series_sum (split.equity);
+            for (size_t column = 0; column < columns; ++column)
+                total[column] = numeric_add (total[column], retained[column]);
+            add_row ("Total For Equity", RowType::Total, total, true);
+        }
+    }
+
+    if (options.total_sections)
+    {
+        Series total = series_sum (split.liabilities);
+        for (Account* account : split.equity)
+        {
+            for (size_t column = 0; column < columns; ++column)
+                total[column] = numeric_add (total[column],
+                                             balances[account][column]);
+        }
+        for (size_t column = 0; column < columns; ++column)
+            total[column] = numeric_add (total[column], retained[column]);
+        add_row ("Total For Liability and Equity", RowType::Total, total, true);
+    }
+
+    return table;
+}
+
+Table
+income_statement_multicolumn (Account* root, const MulticolumnOptions& options)
+{
+    gnc_commodity* currency = report_currency (root, options.currency);
+    const time64 start =
+        gnc_time64_get_day_start (options.start.value_or (default_start_date ()));
+    const time64 end =
+        gnc_time64_get_day_end (options.end.value_or (default_end_date ()));
+
+    /* The profit & loss columns are periods: the report's dates are the
+     * period boundaries, and a column is the activity between two of them. */
+    std::vector<time64> dates;
+    if (options.period == ColumnPeriod::Disabled)
+    {
+        dates.push_back (start);
+        dates.push_back (end);
+    }
+    else
+        dates = make_date_list (start, end, options.period);
+
+    struct Interval
+    {
+        time64 from;
+        time64 to;
+        /* The price date the Scheme report converts this column at. */
+        time64 price_date;
+        std::string heading;
+    };
+    std::vector<Interval> intervals;
+    for (size_t index = 0; index + 1 < dates.size (); ++index)
+    {
+        /* The Scheme report's col-idx->datepair(): the last interval ends on
+         * the report date, every earlier one on the day before the next
+         * period starts. */
+        const bool last = index + 2 >= dates.size ();
+        const time64 printed_end =
+            last ? dates.back () : dates[index + 1] - 86400;
+        intervals.push_back ({dates[index], dates[index + 1], printed_end,
+                              print_interval (dates[index], printed_end)});
+    }
+    if (options.include_overall_period && dates.size () > 2)
+    {
+        /* The overall column's heading reads to the report date itself, not
+         * to the day before the next period, which is the Scheme report's
+         * special case for this column. */
+        intervals.push_back ({dates.front (), dates.back (), dates.back (),
+                              print_interval (dates.front (), dates.back ())});
+    }
+    if (options.reverse_chrono)
+        std::reverse (intervals.begin (), intervals.end ());
+
+    Table table;
+    table.columns = {Column::AccountName};
+    table.currency = currency;
+    const bool grouped = options.period != ColumnPeriod::Disabled;
+    if (grouped)
+    {
+        table.row_heading = "Period";
+        for (const Interval& interval : intervals)
+            table.column_headings.push_back (interval.heading);
+    }
+    else
+        table.columns.push_back (Column::Balance);
+
+    std::vector<Account*> accounts;
+    if (root != nullptr)
+        collect_accounts (root, accounts);
+    const BucketAccounts split = split_accounts (accounts);
+
+    /* Each account's own activity per column: the balance at the end of the
+     * period minus the balance at its start, closing entries left out, which
+     * is the Scheme report's no-closing balance difference. */
+    std::map<Account*, Series> activity;
+    for (Account* account : accounts)
+    {
+        Series series;
+        for (const Interval& interval : intervals)
+        {
+            const gnc_numeric opening =
+                raw_balance_at (account, interval.from, false);
+            const gnc_numeric closing =
+                raw_balance_at (account, interval.to, false);
+            series.push_back (converted_at (
+                account,
+                gnc_numeric_sub (closing, opening, GNC_DENOM_AUTO,
+                                 GNC_HOW_DENOM_LCD),
+                currency, interval.price_date));
+        }
+        activity[account] = std::move (series);
+    }
+
+    const size_t columns = intervals.size ();
+    auto series_sum = [&activity, columns] (const std::vector<Account*>& list)
+    {
+        Series total = zero_series (columns);
+        for (Account* account : list)
+        {
+            const auto found = activity.find (account);
+            if (found == activity.end ())
+                continue;
+            for (size_t column = 0; column < columns; ++column)
+                total[column] = numeric_add (total[column],
+                                             found->second[column]);
+        }
+        return total;
+    };
+
+    auto add_row = [&table, grouped] (const std::string& label, RowType type,
+                                      const Series& values, bool negate)
+    {
+        Row row;
+        row.type = type;
+        row.label = label;
+        if (type == RowType::Section)
+            row.blank = true;
+        for (const gnc_numeric value : values)
+            row.values.push_back (negate ? gnc_numeric_neg (value) : value);
+        if (!grouped && !row.values.empty ())
+            row.amount = row.values.front ();
+        table.rows.push_back (std::move (row));
+    };
+
+    auto add_section = [&] (const std::string& title,
+                            const std::vector<Account*>& list, bool negate)
+    {
+        if (list.empty ())
+            return;
+        if (options.label_sections)
+            add_row (title, RowType::Section, zero_series (columns), false);
+        for (Account* account : list)
+        {
+            const std::vector<Account*> subtree = descendants_in (account, list);
+            if (!subtree.empty ())
+            {
+                const Series total = series_sum (subtree);
+                if (options.show_zero_accounts || !series_all_zero (total))
+                    add_row (statement_account_name (account,
+                                                     options.account_full_name),
+                             RowType::Account, total, negate);
+                if (!series_all_zero (activity[account]))
+                    add_row (statement_account_name (account,
+                                                     options.account_full_name),
+                             RowType::Account, activity[account], negate);
+            }
+            else if (options.show_zero_accounts ||
+                     !series_all_zero (activity[account]))
+                add_row (statement_account_name (account,
+                                                 options.account_full_name),
+                         RowType::Account, activity[account], negate);
+        }
+        if (options.total_sections)
+            add_row ("Total For " + title, RowType::Total, series_sum (list),
+                     negate);
+    };
+
+    const bool income_and_expense =
+        !split.income.empty () && !split.expenses.empty ();
+    /* The Scheme report puts the Net Income block in its left panel and the
+     * Expense section in its right one, and only splits the report into those
+     * panels in the single-column form; a period-column run prints Income,
+     * Expense and then Net Income.  The row order follows the panels, so the
+     * two forms differ here. */
+    const bool panels = options.period == ColumnPeriod::Disabled;
+
+    auto add_net_income = [&]
+    {
+        if (options.label_sections)
+            add_row ("Net Income", RowType::Section, zero_series (columns),
+                     false);
+        add_row ("Total For Net Income", RowType::Total,
+                 series_sum (income_expense_accounts (split)), true);
+    };
+
+    add_section ("Income", split.income, true);
+    if (panels)
+        add_net_income ();
+    add_section ("Expense", split.expenses, false);
+    if (income_and_expense && !panels)
+        add_net_income ();
+
+    return table;
+}
+
+Table
+equity_statement (Account* root, const EquityStatementOptions& options)
+{
+    gnc_commodity* currency = report_currency (root, options.currency);
+    const time64 start_printable =
+        options.start.value_or (default_start_date ());
+    const time64 end =
+        gnc_time64_get_day_end (options.end.value_or (default_end_date ()));
+
+    /* The report's opening balance is taken at the end of the day before the
+     * date it prints in the "Capital, ..." heading. */
+    GDate opening = time64_to_gdate (start_printable);
+    g_date_subtract_days (&opening, 1);
+    const time64 start = gnc_time64_get_day_end_gdate (&opening);
+
+    Table table;
+    table.columns = {Column::AccountName, Column::Balance};
+    table.currency = currency;
+
+    std::vector<Account*> accounts;
+    if (root != nullptr)
+        collect_accounts (root, accounts);
+    const BucketAccounts split = split_accounts (accounts);
+
+    /* The Scheme report's closing-entry pattern: a case-insensitive substring
+     * of the description, or the transaction's closing flag. */
+    auto closing_entry = [] (Split* item)
+    {
+        if (xaccTransGetIsClosingTxn (xaccSplitGetParent (item)))
+            return true;
+        const char* description =
+            xaccTransGetDescription (xaccSplitGetParent (item));
+        if (description == nullptr || description[0] == '\0')
+            return false;
+        gchar* haystack = g_ascii_strdown (description, -1);
+        const bool found = std::strstr (haystack, "closing entries") != nullptr;
+        g_free (haystack);
+        return found;
+    };
+
+    /* A balance at a date over an account list, voided splits left out (the
+     * Scheme report's query matches on the cleared state) and converted into
+     * the report currency at that date. */
+    auto balances_at = [&currency] (const std::vector<Account*>& list,
+                                    time64 when)
+    {
+        gnc_numeric total = gnc_numeric_zero ();
+        for (Account* account : list)
+        {
+            gnc_numeric balance = gnc_numeric_zero ();
+            gnc_account_foreach_split_between_dates (
+                account, std::nullopt, when, false,
+                [&] (Split* item)
+                {
+                    if (xaccTransGetVoidStatus (xaccSplitGetParent (item)))
+                        return;
+                    balance = numeric_add (balance,
+                                           xaccSplitGetAmount (item));
+                });
+            total = numeric_add (total,
+                                 converted_at (account, balance, currency,
+                                               when));
+        }
+        return total;
+    };
+
+    /* The splits of a period, optionally only those the report calls closing
+     * entries, summed per account and converted at the period end.  `what`
+     * selects which splits count: all of them, the closing ones, or the
+     * positive (withdrawal) ones. */
+    enum class Flow
+    {
+        All,
+        Closing,
+        Positive,
+    };
+    auto flow_at = [&closing_entry, &currency] (
+        const std::vector<Account*>& list, time64 from, time64 to, Flow what)
+    {
+        gnc_numeric total = gnc_numeric_zero ();
+        for (Account* account : list)
+        {
+            gnc_numeric sum = gnc_numeric_zero ();
+            gnc_account_foreach_split_between_dates (
+                account, std::optional<time64> (from), to, false,
+                [&] (Split* item)
+                {
+                    if (xaccTransGetVoidStatus (xaccSplitGetParent (item)))
+                        return;
+                    const gnc_numeric value = xaccSplitGetAmount (item);
+                    switch (what)
+                    {
+                    case Flow::All:
+                        break;
+                    case Flow::Closing:
+                        if (!closing_entry (item))
+                            return;
+                        break;
+                    case Flow::Positive:
+                        if (!gnc_numeric_positive_p (value))
+                            return;
+                        break;
+                    }
+                    sum = numeric_add (sum, value);
+                });
+            total = numeric_add (total,
+                                 converted_at (account, sum, currency, to));
+        }
+        return total;
+    };
+
+    const std::vector<Account*> income_expense = income_expense_accounts (split);
+
+    /* The opening capital: equity plus the retained earnings the income and
+     * expense accounts hold at the opening date, sign-reversed. */
+    const gnc_numeric opening_equity = balances_at (split.equity, start);
+    const gnc_numeric opening_retained = balances_at (income_expense, start);
+    const gnc_numeric opening_capital =
+        gnc_numeric_sub (gnc_numeric_neg (opening_equity), opening_retained,
+                         GNC_DENOM_AUTO, GNC_HOW_DENOM_LCD);
+
+    /* Net income: the period's income and expense activity, closing entries
+     * taken back out, sign-reversed. */
+    const gnc_numeric nonclosing = flow_at (income_expense, start, end,
+                                            Flow::All);
+    const gnc_numeric closing = flow_at (income_expense, start, end,
+                                         Flow::Closing);
+    const gnc_numeric net_income =
+        gnc_numeric_sub (closing, nonclosing, GNC_DENOM_AUTO,
+                         GNC_HOW_DENOM_LCD);
+
+    /* Investments and withdrawals: the change in the equity accounts the
+     * withdrawals do not explain.  The Scheme report's "neg-" variables hold
+     * the raw balances (gnc:accounts-get-comm-total-assets() does not reverse
+     * them), so the arithmetic below is the Scheme report's own. */
+    const gnc_numeric ending_equity = balances_at (split.equity, end);
+    const gnc_numeric equity_closing = flow_at (split.equity, start, end,
+                                                Flow::Closing);
+    const gnc_numeric pre_closing_equity =
+        gnc_numeric_sub (ending_equity, equity_closing, GNC_DENOM_AUTO,
+                         GNC_HOW_DENOM_LCD);
+    const gnc_numeric net_investment =
+        gnc_numeric_sub (opening_equity, pre_closing_equity, GNC_DENOM_AUTO,
+                         GNC_HOW_DENOM_LCD);
+    const gnc_numeric withdrawals = flow_at (split.equity, start, end,
+                                             Flow::Positive);
+    /* The Scheme report's capital-increase line is the period's net income
+     * plus the investments it shows, less the withdrawals, which cancels the
+     * withdrawals the investments line added: it is the net income plus the
+     * net investment.  Transcribed rather than simplified so the two lines
+     * read as the Scheme report's own arithmetic. */
+    const gnc_numeric investments = numeric_add (net_investment, withdrawals);
+    const gnc_numeric capital_increase = numeric_add (net_income, investments);
+    const gnc_numeric capital_increase_net =
+        gnc_numeric_sub (capital_increase, withdrawals, GNC_DENOM_AUTO,
+                         GNC_HOW_DENOM_LCD);
+
+    /* The closing capital is the opening one plus the increase. */
+    const gnc_numeric ending_capital =
+        numeric_add (opening_capital, capital_increase_net);
+
+    auto add_amount = [&table] (const std::string& positive,
+                                const char* negative, gnc_numeric amount,
+                                bool subheading)
+    {
+        Row row;
+        row.type = subheading ? RowType::Total : RowType::Account;
+        const bool flip = negative != nullptr &&
+                          gnc_numeric_negative_p (amount);
+        row.label = flip ? negative : positive;
+        row.amount = flip ? gnc_numeric_neg (amount) : amount;
+        table.rows.push_back (std::move (row));
+    };
+
+    add_amount ("Capital, " + print_date (start_printable), nullptr,
+                opening_capital, true);
+    add_amount ("Net income for Period", "Net loss for Period", net_income,
+                false);
+    add_amount ("Investments for Period", nullptr, investments, false);
+    add_amount ("Withdrawals for Period", nullptr, withdrawals, false);
+    add_amount ("Increase in capital", "Decrease in capital",
+                capital_increase_net, false);
+    add_amount ("Capital, " + print_date (end), nullptr, ending_capital, true);
+
+    return table;
+}
+
 /* ---------------------------------------------------------- aging reports */
 
 namespace
@@ -6646,14 +7475,72 @@ render_html (const Table& table, const std::string& title)
         << "</style></head><body><h3>" << html_escape (title) << "</h3>\n"
         << "<table cellspacing='0' cellpadding='4' border='0'><thead><tr>";
 
-    for (const Column column : table.columns)
-        out << "<th>" << column_heading (column) << "</th>";
+    const bool grouped = !table.column_headings.empty ();
+    if (grouped)
+    {
+        /* A grouped column axis: the row-axis heading, then one heading per
+         * amount column.  The Scheme multicolumn reports print the row axis
+         * heading ("Date"/"Period") in the same row, in "total-label-cell"
+         * cells; use the same class so a reader of the document sees the
+         * heading row as the report's own row and not as the renderer's
+         * column legend. */
+        out << "<th class='total-label-cell'>" << html_escape (table.row_heading)
+            << "</th>";
+        for (const std::string& heading : table.column_headings)
+            out << "<th class='total-label-cell'>" << html_escape (heading)
+                << "</th>";
+    }
+    else
+    {
+        for (const Column column : table.columns)
+            out << "<th>" << column_heading (column) << "</th>";
+    }
     out << "</tr></thead><tbody>\n";
 
     for (const Row& row : table.rows)
     {
         const bool is_account = row.type == RowType::Account;
         out << "<tr>";
+        if (grouped)
+        {
+            /* The label column, then one amount per column heading.  A
+             * section heading carries no amounts at all, so its cells are
+             * blank. */
+            if (is_account)
+            {
+                out << "<td class='text-cell'>";
+                if (!row.guid.empty ())
+                    out << "<a href='gnc-register:acct-guid=" << row.guid
+                        << "#'>";
+                out << html_escape (row.label);
+                if (!row.guid.empty ())
+                    out << "</a>";
+                out << "</td>";
+            }
+            else
+                out << "<td class='total-label-cell'>"
+                    << html_escape (row.label) << "</td>";
+
+            for (size_t index = 0; index < table.column_headings.size ();
+                 ++index)
+            {
+                const gnc_numeric value =
+                    index < row.values.size () ? row.values[index]
+                                               : gnc_numeric_zero ();
+                if (row.blank)
+                    out << "<td class='total-number-cell'> </td>";
+                else if (is_account)
+                    out << "<td class='number-cell'>"
+                        << html_escape (format_amount (value, table.currency))
+                        << "</td>";
+                else
+                    out << "<td class='total-number-cell'>"
+                        << html_escape (format_amount (value, table.currency))
+                        << "</td>";
+            }
+            out << "</tr>\n";
+            continue;
+        }
         for (const Column column : table.columns)
         {
             switch (column)
@@ -6873,7 +7760,9 @@ std::vector<std::string>
 native_report_names ()
 {
     return {"Trial Balance", "Balance Sheet", "Income Statement",
-            "Profit & Loss", "Transaction Report", "General Ledger",
+            "Profit & Loss", "Balance Sheet (Multicolumn)",
+            "Income Statement (Multicolumn)", "Equity Statement",
+            "Transaction Report", "General Ledger",
             "General Journal", "Transaction Breakdown Report",
             "Reconciliation Report",
             "Receivable Aging", "Payable Aging", "Investment Lots",
@@ -7568,6 +8457,124 @@ report_options (const std::string& name)
             "The last day of the period the report covers.",
             default_end_date ()));
         options.push_back (currency_option ());
+    }
+    else if (name == "Balance Sheet (Multicolumn)" ||
+             name == "Income Statement (Multicolumn)")
+    {
+        /* balsheet-pnl.scm's option page.  The two reports share it; the
+         * profit & loss adds "include overall period".  Published are the
+         * options the native table honours; the account selection (the Scheme
+         * default is every account in the book, which is what the native
+         * report covers), the dual-column layout (a presentation of the same
+         * rows), the amount indenting and omit-zero-balances switches, the
+         * non-recursive parent-balance mode, the "Common Currency" page, the
+         * chart and the links are not, and the descriptors below say so where
+         * a caller could otherwise expect them. */
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the report's period.  With a column period the "
+            "first column is this date's period end; without one the balance "
+            "sheet ignores the start date, as the Scheme report does, while "
+            "the profit & loss's single column is the whole range.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the report's period, and the date the last "
+            "column's balance is drawn at.",
+            default_end_date ()));
+
+        OptionDescriptor duration;
+        duration.name = "period-duration";
+        duration.type = OptionType::Choice;
+        duration.label = "Period duration";
+        duration.description =
+            "The duration between time periods.  \"disabled\" (the default) "
+            "is the single-column form; every other choice adds one column "
+            "per period.";
+        duration.default_value = "disabled";
+        duration.choices = {"disabled", "year", "half-year", "quarter",
+                            "month", "two-weeks", "week"};
+        options.push_back (duration);
+
+        struct Switch
+        {
+            const char* name;
+            const char* label;
+            const char* description;
+            bool default_value;
+        };
+        static const Switch switches[] = {
+            {"reverse-chrono", "Period order is most recent first",
+             "Print the amount columns most recent first, as the Scheme "
+             "report's default does; off prints them oldest first.",
+             true},
+            {"show-zb-accts", "Include accounts with zero total balances",
+             "Include accounts whose every column is zero; off drops them.",
+             true},
+            {"account-full-name", "Account full name instead of indenting",
+             "Print the account's full name instead of its own name; the "
+             "native table does not indent, so the default prints the names "
+             "the Scheme report indents.", false},
+            {"label-sections", "Label sections",
+             "Print the section titles (Asset, Liability, Equity, ...).", true},
+            {"total-sections", "Include totals",
+             "Print each section's \"Total For\" row.", true},
+        };
+        for (const Switch& item : switches)
+        {
+            OptionDescriptor option;
+            option.name = item.name;
+            option.type = OptionType::Bool;
+            option.label = item.label;
+            option.description = item.description;
+            option.default_value = item.default_value ? "true" : "false";
+            options.push_back (option);
+        }
+
+        if (name == "Income Statement (Multicolumn)")
+        {
+            OptionDescriptor overall;
+            overall.name = "include-overall-period";
+            overall.type = OptionType::Bool;
+            overall.label =
+                "If more than 1 period column, include overall period?";
+            overall.description =
+                "Add a column covering the whole range after the period "
+                "columns.  It has no effect on the single-column form.";
+            overall.default_value = "false";
+            options.push_back (overall);
+        }
+        return options;
+    }
+    else if (name == "Equity Statement")
+    {
+        /* equity-statement.scm's options.  The date range and the report
+         * title are published; the currency page, the accounting-style rules
+         * and the closing-entry pattern are not, because the native report
+         * converts into the report currency, prints no rules and matches the
+         * Scheme defaults' description pattern. */
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the period the statement covers.  The opening "
+            "capital is drawn at the end of the day before it.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the period the statement covers.",
+            default_end_date ()));
+
+        OptionDescriptor title;
+        title.name = "report-title";
+        title.type = OptionType::Text;
+        title.label = "Report Title";
+        title.description =
+            "The document's title.  The Scheme option defaults to the report "
+            "name and so does this.";
+        title.default_value = "Equity Statement";
+        options.push_back (title);
+        /* No accounting-period preset: the statement runs from an opening
+         * balance date to a closing one, so "all dates" has no meaning. */
+        return options;
     }
     else if (name == "Transaction Report" || name == "General Ledger")
     {
@@ -8311,6 +9318,75 @@ render_report (const std::string& name, Account* root,
         title += interval;
         html = render_html (
             income_statement (root, start, end, request.currency), title);
+        return true;
+    }
+    if (name == "Balance Sheet (Multicolumn)" ||
+        name == "Income Statement (Multicolumn)")
+    {
+        MulticolumnOptions options;
+        options.start = start;
+        options.end = end;
+        ColumnPeriod period = ColumnPeriod::Disabled;
+        const std::string period_name =
+            request.choice_option ("period-duration", "disabled");
+        if (!column_period_from_name (period_name, period))
+        {
+            /* The route rejects an unknown choice against the descriptor, so
+             * this can only be a value the descriptor published and the
+             * report cannot resolve; keep the default rather than guessing. */
+            period = ColumnPeriod::Disabled;
+        }
+        options.period = period;
+        options.reverse_chrono = request.boolean_option ("reverse-chrono", true);
+        options.show_zero_accounts =
+            request.boolean_option ("show-zb-accts", true);
+        options.account_full_name =
+            request.boolean_option ("account-full-name", false);
+        options.label_sections =
+            request.boolean_option ("label-sections", true);
+        options.total_sections =
+            request.boolean_option ("total-sections", true);
+        options.include_overall_period =
+            request.boolean_option ("include-overall-period", false);
+        options.currency = request.currency;
+
+        const bool balance_sheet = name == "Balance Sheet (Multicolumn)";
+        std::string title = name;
+        title += " ";
+        if (balance_sheet && options.period == ColumnPeriod::Disabled)
+            title += date_text (end);
+        else
+            title += interval;
+
+        const bool no_accounts =
+            root == nullptr || gnc_account_n_children (root) == 0;
+        if (no_accounts)
+        {
+            html = render_no_accounts (name, false);
+            return true;
+        }
+        html = render_html (balance_sheet
+                                ? balance_sheet_multicolumn (root, options)
+                                : income_statement_multicolumn (root, options),
+                            title);
+        return true;
+    }
+    if (name == "Equity Statement")
+    {
+        EquityStatementOptions options;
+        options.start = start;
+        options.end = end;
+        options.currency = request.currency;
+        const std::string title =
+            request.text_option ("report-title", "Equity Statement");
+        /* The Scheme report's own empty-selection page: a book with no
+         * accounts at all cannot have an equity roll-forward to print. */
+        if (root == nullptr || gnc_account_n_children (root) == 0)
+        {
+            html = render_no_accounts (title, false);
+            return true;
+        }
+        html = render_html (equity_statement (root, options), title);
         return true;
     }
     if (name == "Transaction Report")

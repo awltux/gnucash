@@ -824,6 +824,64 @@ else
     bad "the report currency $DEFAULT_CURRENCY answered $CURRENCY_CODE"
 fi
 
+# The multicolumn statements and the equity statement.  Their descriptors, the
+# 400s that name the problem, and the period-column form, which is the part of
+# their option surface that is not a plain date or boolean.
+for entry in \
+    "Balance%20Sheet%20(Multicolumn)|Balance Sheet (Multicolumn)" \
+    "Income%20Statement%20(Multicolumn)|Income Statement (Multicolumn)"
+do
+    enc=${entry%%|*}
+    name=${entry#*|}
+    fetch "/api/report/$enc/options" > /dev/null
+    expect_body "$name publishes its period duration" '"name":"period-duration"'
+    expect_body "$name publishes the column order" '"name":"reverse-chrono"'
+    expect_body "$name publishes the section switches" '"name":"label-sections"'
+    expect_body "$name publishes the zero-account switch" '"name":"show-zb-accts"'
+    expect_body "$name publishes the full-name switch" '"name":"account-full-name"'
+
+    expect_status 400 "an unknown period duration on $name" \
+        "/report/$enc?period-duration=fortnight"
+    expect_body "an unknown period duration on $name" \
+        "invalid period-duration 'fortnight'"
+    expect_status 400 "accounts on $name" "/report/$enc?accounts=all"
+    expect_body "accounts on $name" "does not accept an 'accounts' option"
+    expect_status 400 "a bad boolean on $name" "/report/$enc?reverse-chrono=maybe"
+    expect_body "a bad boolean on $name" "invalid boolean 'maybe'"
+
+    # The default page is the single-column form: it has no column heading row.
+    fetch "/report/$enc" > /dev/null
+    expect_not_body "$name default is single-column" ">Date<"
+    expect_not_body "$name default is single-column" ">Period<"
+    fetch "/report/$enc?period-duration=month&start=2018-01-01&end=2018-12-31" > /dev/null
+    expect_body "$name heads its period columns" "12/31/18"
+    expect_body "$name prints the 2018 columns" "01/01/18"
+done
+
+# The profit & loss's overall-period switch needs more than one period column.
+fetch "/report/Income%20Statement%20(Multicolumn)?period-duration=month&start=2018-01-01&end=2018-12-31" > /dev/null
+MC_MONTH=$(mktemp)
+cp "$BODY" "$MC_MONTH"
+fetch "/report/Income%20Statement%20(Multicolumn)?period-duration=month&start=2018-01-01&end=2018-12-31&include-overall-period=true" > /dev/null
+if cmp -s "$MC_MONTH" "$BODY"; then
+    bad "the overall-period column does not change the profit & loss"
+else
+    ok "the overall-period column changes the profit & loss"
+fi
+rm -f "$MC_MONTH"
+
+fetch "/api/report/Equity%20Statement/options" > /dev/null
+expect_body "the equity statement publishes its title" '"name":"report-title"'
+expect_body "the equity statement publishes a start date" '"name":"start"'
+fetch "/report/Equity%20Statement?start=2018-01-01&end=2018-12-31" > /dev/null
+expect_body "the equity statement prints its opening capital" "Capital, 01/01/18"
+expect_body "the equity statement prints its closing capital" "Capital, 12/31/18"
+expect_status 400 "an unknown option on the equity statement" \
+    "/report/Equity%20Statement?window=2018"
+expect_body "an unknown option on the equity statement" "unknown option 'window'"
+fetch "/report/Equity%20Statement?report-title=Statement" > /dev/null
+expect_body "the equity statement takes a title" "<h3>Statement</h3>"
+
 echo "== every advertised option is effective or rejected"
 # The descriptors are the contract.  For every native report and every option
 # its descriptor publishes, sending the option must either change the rendered
@@ -875,6 +933,14 @@ PY
         # Account over 2018 is that selection.
         base="account=$BREAKDOWN_ACCOUNT&start=2018-01-01&end=2018-12-31"
     fi
+    case "$report" in
+        "Balance Sheet (Multicolumn)"|"Income Statement (Multicolumn)")
+            # Their switches act on the column axis, so the baseline is a
+            # monthly run over 2018: it has columns to reorder, to hide and to
+            # add an overall period to.  The default (single-column) page has
+            # one column and would make the column switches look inert.
+            base="period-duration=month&start=2018-01-01&end=2018-12-31" ;;
+    esac
     fetch "/report/$enc" > /dev/null
     cp "$BODY" "$OPTDIR/no-options.html"
     fetch "/report/$enc${base:+?$base}" > /dev/null
@@ -949,12 +1015,14 @@ PY
                     period) probe="period=all" ;;
                     alternate-period) probe="alternate-period=last-year" ;;
                     format) probe="format=txf" ;;
+                    period-duration) probe="period-duration=year" ;;
                     *) bad "$report advertises choice option '$opt' with an unknown name"
                        continue ;;
                 esac ;;
             text)
                 case "$opt" in
                     title) probe="title=Statement" ;;
+                    report-title) probe="report-title=Statement" ;;
                     description-filter) probe="description-filter=zzz" ;;
                     *) bad "$report advertises text option '$opt' with no probe"
                        continue ;;

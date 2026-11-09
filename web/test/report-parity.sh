@@ -225,6 +225,8 @@ extractor_for() {
         "Trial Balance")    echo trial-balance ;;
         "Balance Sheet")    echo balance-sheet ;;
         "Income Statement"|"Profit & Loss") echo balance-sheet ;;
+        "Balance Sheet (Multicolumn)"|"Income Statement (Multicolumn)"|\
+        "Equity Statement") echo multicolumn ;;
         "Transaction Report") echo transaction-report ;;
         "General Ledger")   echo general-ledger ;;
         "General Journal")  echo general-journal ;;
@@ -257,6 +259,9 @@ report_guid() {
         "Balance Sheet")    echo "c4173ac99b2b448289bf4d11c731af13" ;;
         "Income Statement") echo "0b81a3bdfd504aff849ec2e8630524bc" ;;
         "Profit & Loss")    echo "8758ba23984c40dea5527f5f0ca2779e" ;;
+        "Balance Sheet (Multicolumn)") echo "065d5d5a77ba11e8b31e83ada73c5eea" ;;
+        "Income Statement (Multicolumn)") echo "0e94fd0277ba11e8825d43e27232c9d4" ;;
+        "Equity Statement") echo "c2a996c8970f43448654ca84f17dda24" ;;
         "Transaction Report") echo "2fe3b9833af044abb929a88d5a59620f" ;;
         "General Ledger")   echo "2e22929e5c5b4b769f615a815ef0c20f" ;;
         "General Journal")  echo "25455562bd234dd0b048ecc5a8af9e43" ;;
@@ -723,6 +728,44 @@ PY
                             continue ;;
                         *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
                     esac ;;
+                "Balance Sheet (Multicolumn)"|"Income Statement (Multicolumn)")
+                    # balsheet-pnl.scm's option page.  "Period duration" is a
+                    # multichoice whose value is one of the report engine's
+                    # delta symbols, so the route's name is translated here.
+                    case "$key" in
+                        period-duration)
+                            case "$value" in
+                                disabled)   delta="'disabled" ;;
+                                year)       delta="'YearDelta" ;;
+                                half-year)  delta="'HalfYearDelta" ;;
+                                quarter)    delta="'QuarterDelta" ;;
+                                month)      delta="'MonthDelta" ;;
+                                two-weeks)  delta="'TwoWeekDelta" ;;
+                                week)       delta="'WeekDelta" ;;
+                                *) fail "no Scheme period for '$value'" ;;
+                            esac
+                            EXTRA_SCHEME="$EXTRA_SCHEME
+      (gnc-set-option (gnc:optiondb options) \"General\" \"Period duration\" $delta)"
+                            continue ;;
+                        reverse-chrono)
+                            page="General"; name="Period order is most recent first" ;;
+                        show-zb-accts)
+                            page="Display"; name="Include accounts with zero total balances" ;;
+                        account-full-name)
+                            page="Display"; name="Account full name instead of indenting" ;;
+                        label-sections)
+                            page="Display"; name="Label sections" ;;
+                        total-sections)
+                            page="Display"; name="Include totals" ;;
+                        include-overall-period)
+                            page="General"; name="If more than 1 period column, include overall period?" ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
+                "Equity Statement")
+                    case "$key" in
+                        report-title) page="General"; name="Report Title" ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
                 *)
                     case "$key" in
                         title)                 page="Headings 1"; name="Report Title" ;;
@@ -1121,6 +1164,55 @@ def balance_sheet(rows):
             continue
         values = [amount(t) for t, c in cells[1:] if c in NUMERIC and t.strip()]
         out.append((label, tuple(values)))
+    return out
+
+
+def cell_amount(text):
+    """The amount a cell prints, or the cell's text when it prints several.
+
+    The Scheme multicolumn reports print one amount per commodity inside a
+    cell when the accounts it sums are not all in the report currency.  The
+    comparison carries no commodity, so such a cell stays text: the
+    difference is then reported as a difference rather than as a parse error.
+    """
+    try:
+        return amount(text)
+    except SystemExit:
+        return text
+
+
+def multicolumn(rows):
+    """(label, then every non-empty cell) for the multicolumn statements.
+
+    The label is the row's first cell with text; every following non-empty
+    cell is compared as a number when its class marks an amount and as text
+    otherwise.  That keeps the "Date"/"Period" heading row in the comparison
+    -- the column headings are the dates or the date ranges, so a column or
+    period mismatch shows up there and not only in the figures -- while the
+    amount columns compare as numbers.
+
+    The Scheme report lays its two panels out as nested tables (the
+    "Enable dual columns" default) and the parser walks them in document
+    order, which is the order the native table uses.  A section heading has
+    a label and no amounts; a blank separator row has neither and is dropped.
+    """
+    out = []
+    for cells in rows:
+        kept = [(text, cell_class) for text, cell_class in cells
+                if text.strip()]
+        if not kept:
+            continue
+        # A row whose cells carry no class at all is the renderer's own column
+        # legend, not a report row: the Scheme balance sheet and equity
+        # statement print no heading row, and the ones that do (the
+        # multicolumn statements' "Date"/"Period" row) carry the report's
+        # "total-label-cell" class.
+        if not any(cell_class for _, cell_class in kept):
+            continue
+        values = []
+        for text, cell_class in kept[1:]:
+            values.append(cell_amount(text) if is_number(cell_class) else text)
+        out.append((kept[0][0],) + tuple(values))
     return out
 
 
@@ -1757,6 +1849,7 @@ def chart_extract(path, scheme):
 
 
 EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
+              "multicolumn": multicolumn,
               "transaction-report": transaction_report,
               "general-ledger": general_ledger,
               "general-journal": general_journal, "breakdown": breakdown,
