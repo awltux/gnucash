@@ -92,19 +92,151 @@ const firstRow = (await page.locator('#tree li').first().innerText()).replace(/\
 check('balances are formatted', /\$[\d,]+\.\d\d/.test(firstRow), firstRow);
 
 // A Guile build lists the Scheme report templates in addition to the native
-// ones; the no-Guile build lists the native six.  Assert the strong count only
-// where the full list exists, and the native set everywhere.
+// ones; the no-Guile build lists the native nine plus the built-in specs.
+// The built-ins are named in /api/reports too, so exclude them before asking
+// whether any Scheme-only report is present, and assert the strong count only
+// where the full Scheme list exists.
 const reportNames = await page.evaluate(() =>
     [...document.querySelectorAll('#report-list a')].map((a) => a.textContent));
 const nativeDescriptors =
     await (await fetch(new URL('api/reports?options=1', url))).json();
 const nativeNames = new Set(nativeDescriptors.map((entry) => entry.report));
-const hasSchemeReports = reportNames.some((name) => !nativeNames.has(name));
+const specList = await (await fetch(new URL('api/specs', url))).json();
+const builtinNames = new Set((specList.builtin || []).map((spec) => spec.name));
+const hasSchemeReports =
+    reportNames.some((name) => !nativeNames.has(name) && !builtinNames.has(name));
 check('reports are listed',
-      reportNames.length >= nativeNames.size &&
+      reportNames.length >= nativeNames.size + builtinNames.size &&
       (hasSchemeReports ? reportNames.length > 20 : reportNames.length > 0),
-      `${reportNames.length} reports (${nativeNames.size} native` +
+      `${reportNames.length} reports (${nativeNames.size} native, ` +
+      `${builtinNames.size} built-in` +
       `${hasSchemeReports ? ' + Scheme' : ''})`);
+
+/* ------------------------------------------------- built-in chart specs */
+
+// The built-ins are designer specs, not hard-coded reports: the list entry
+// must link to the spec route, say what it is scoped to, and offer no delete
+// control.  The income/expenses one carries two chart series.
+const builtinLinks = await page.locator('#report-list a.builtin-report-link').count();
+check('the built-in specs are listed', builtinLinks === builtinNames.size,
+      `${builtinLinks} built-in links for ${builtinNames.size} specs`);
+const builtinDeletes = await page.locator(
+    '#report-list li.builtin-report button.delete-spec').count();
+check('built-in reports have no delete control', builtinDeletes === 0,
+      `${builtinDeletes} delete buttons`);
+
+await page.locator('#report-list a.builtin-report-link',
+                  { hasText: 'Income vs Expenses by Month' }).first().click();
+await page.waitForFunction(() => {
+    const frame = document.getElementById('view');
+    const doc = frame && frame.contentDocument;
+    return doc && doc.getElementById('report-chart-canvas') &&
+        doc.defaultView && (doc.defaultView.__reportCharts || []).length > 0;
+}, null, { timeout: 15000 });
+const builtinChart = await page.evaluate(() => {
+    const doc = document.getElementById('view').contentDocument;
+    const canvas = doc.getElementById('report-chart-canvas');
+    const dataNode = doc.getElementById('report-chart-data');
+    let data = null;
+    try { data = JSON.parse(dataNode.textContent); } catch (err) { data = null; }
+    const pixels = canvas.getContext('2d')
+        .getImageData(0, 0, canvas.width, canvas.height).data;
+    let drawn = 0;
+    for (let index = 3; index < pixels.length; index += 4)
+        if (pixels[index] !== 0) drawn++;
+    return {
+        data,
+        drawn,
+        image: canvas.toDataURL(),
+        note: document.getElementById('options-note').textContent,
+        charts: (doc.defaultView.__reportCharts || []).length,
+    };
+});
+check('a built-in spec renders its own chart',
+      builtinChart.data && builtinChart.data.type === 'line' &&
+      builtinChart.data.series.length === 2 &&
+      builtinChart.data.series.map((series) => series.label).join(',') ===
+          'Credit,Debit' &&
+      builtinChart.data.labels.length > 0,
+      builtinChart.data
+        ? `${builtinChart.data.type}, ${builtinChart.data.labels.length} labels, ` +
+          builtinChart.data.series.map((series) =>
+            `${series.label}=${series.values.join('/')}`).join(' ')
+        : 'no chart data');
+check('the built-in chart canvas drew content',
+      builtinChart.charts === 1 && builtinChart.drawn > 1000,
+      `${builtinChart.drawn} non-blank pixels`);
+check('the UI says the built-in is scoped',
+      /scoped to Income and Expense accounts/.test(builtinChart.note),
+      builtinChart.note);
+
+// The chart has to come from the spec's own rows, not a stored image: build
+// the same spec with an explicit period that moves the numbers, preview it
+// through the server, and require both the data and the pixels to change.
+const widerSpec = {
+    name: 'Wider income and expenses',
+    columns: ['account-name', 'debit', 'credit'],
+    grouping: 'period',
+    period_unit: 'month',
+    start: '2026-01-01',
+    end: '2026-12-31',
+    account_types: ['INCOME', 'EXPENSE'],
+    chart: 'line',
+    chart_series: ['credit', 'debit'],
+};
+const widerHtml = await page.evaluate(async (spec) => {
+    const response = await fetch(new URL('api/spec/preview', location.href), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spec),
+    });
+    return { status: response.status, text: await response.text() };
+}, widerSpec);
+check('a hand-built period chart previews', widerHtml.status === 200,
+      `HTTP ${widerHtml.status}`);
+
+const widerChart = await page.evaluate(async (arg) => {
+    const frame = document.getElementById('view');
+    // The frame's previous document still has a chart; drop it so the wait
+    // below cannot mistake the old report for the new one.
+    if (frame.contentDocument && frame.contentDocument.defaultView)
+        frame.contentDocument.defaultView.__reportCharts = [];
+    frame.removeAttribute('src');
+    frame.srcdoc = arg.html;
+    const ready = async () => {
+        for (let attempt = 0; attempt < 150; attempt++) {
+            const doc = frame.contentDocument;
+            if (doc && doc.title === arg.title &&
+                doc.getElementById('report-chart-canvas') &&
+                doc.defaultView && doc.defaultView.__reportCharts.length > 0)
+                return doc;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return null;
+    };
+    const doc = await ready();
+    if (!doc) return null;
+    const canvas = doc.getElementById('report-chart-canvas');
+    const data = JSON.parse(
+        doc.getElementById('report-chart-data').textContent);
+    const pixels = canvas.getContext('2d')
+        .getImageData(0, 0, canvas.width, canvas.height).data;
+    let drawn = 0;
+    for (let index = 3; index < pixels.length; index += 4)
+        if (pixels[index] !== 0) drawn++;
+    return { data, drawn, image: canvas.toDataURL() };
+}, { html: widerHtml.text, title: widerSpec.name });
+check('the chart changes when the period and numbers change',
+      widerChart && widerChart.data.labels.length === 12 &&
+      widerChart.data.series.every((series) =>
+          series.values.every((value) => value === 0)) &&
+      widerChart.drawn > 1000 &&
+      widerChart.image !== builtinChart.image,
+      widerChart
+        ? `${widerChart.data.labels.length} labels, ` +
+          `drawn=${widerChart.drawn}, ` +
+          `image ${widerChart.image === builtinChart.image ? 'same' : 'different'}`
+        : 'no chart');
 
 /* --------------------------------------------------------- stage 4 chart */
 
@@ -115,7 +247,8 @@ await page.locator('#report-list a', { hasText: 'Balance Sheet' }).first().click
 await page.waitForFunction(() => {
     const frame = document.getElementById('view');
     const doc = frame && frame.contentDocument;
-    return doc && doc.getElementById('report-chart-canvas') &&
+    return doc && doc.title.indexOf('Balance Sheet') === 0 &&
+        doc.getElementById('report-chart-canvas') &&
         doc.defaultView && (doc.defaultView.__reportCharts || []).length > 0;
 }, null, { timeout: 15000 });
 
@@ -143,7 +276,8 @@ check('the report HTML has a canvas and its data',
       chart.width === 640 && chart.height === 320 &&
       chart.data && Array.isArray(chart.data.labels) &&
       chart.data.labels.length === 3 &&
-      chart.data.values.length === 3,
+      chart.data.series.length === 1 &&
+      chart.data.series[0].values.length === 3,
       `${chart.width}x${chart.height}, ` +
       `${chart.data ? chart.data.labels.join('/') : 'no data'}`);
 check('the chart canvas actually drew content',

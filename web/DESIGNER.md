@@ -27,15 +27,19 @@ is never silently discarded.
       "id": "8c3a…",
       "name": "Expenses by month",
       "title": "Expenses by month",
-      "columns": ["account-name", "balance"],
+      "description": "Scoped to Expense accounts; one bar per month.",
+      "columns": ["account-name", "debit"],
       "grouping": "period",
       "period_unit": "month",
+      "period_mode": "activity",
       "start": "2018-01-01",
       "end": "2018-12-31",
       "date_preset": "",
       "currency": "USD",
+      "account_types": ["EXPENSE"],
       "accounts": [],
-      "chart": "bar"
+      "chart": "bar",
+      "chart_series": ["debit"]
     }
   ]
 }
@@ -47,17 +51,65 @@ is never silently discarded.
 |---|---|
 | `name` | required, unique, at most 80 characters; this is the report-list label |
 | `title` | optional, at most 120 characters; defaults to `name` |
+| `description` | optional, at most 240 characters; shown in the report list and when a built-in is opened |
 | `columns` | required non-empty array from `account-name`, `debit`, `credit`, `balance`, `subtotal`; no duplicates |
 | `grouping` | `none` (one flat row per account), `account-tree` (rollups plus a subtotal per parent) or `period` (one row per year or month) |
 | `period_unit` | `year` or `month`; used by `grouping: "period"` |
+| `period_mode` | `activity` (the default: the period's debits and credits) or `cumulative` (the balance at the period's end, accumulated from the start of the book); `cumulative` needs `grouping: "period"` |
 | `start`, `end` | optional `YYYY-MM-DD`; blank means unbounded on that side |
 | `date_preset` | `this-year`, `last-year` or `all`; mutually exclusive with `start`/`end` |
 | `currency` | optional commodity mnemonic; blank means the report default |
 | `accounts` | array of account GUIDs; each means that account and its subtree; empty means the whole book |
-| `chart` | `""`/absent, or `bar`; the chart section is rendered below the table, and the data is embedded in the HTML |
+| `account_types` | array of `BANK`, `CASH`, `CREDIT`, `ASSET`, `LIABILITY`, `STOCK`, `MUTUAL`, `CURRENCY`, `INCOME`, `EXPENSE`, `EQUITY`, `RECEIVABLE`, `PAYABLE` or `TRADING`; empty means every type. This is what makes a spec portable between books: a GUID means one book, a type means every book. When both are set, an account must match both. |
+| `chart` | `""`/absent, `bar` or `line`; the chart section is rendered below the table, and the data is embedded in the HTML |
+| `chart_series` | one or two of `debit`, `credit` and `balance`, in series order; each must also appear in `columns`. Absent means the columns decide: `debit` and `credit` when both are shown, otherwise `balance` or the one amount column. |
 
-A `period`-grouped report needs concrete bounds: either literal `start` and
-`end`, or a `date_preset` other than `all`.
+A `period`-grouped report needs concrete bounds: literal `start` and `end`,
+a preset that resolves to them (`this-year` or `last-year`), or
+`date_preset: "all"`. With `all` the renderer takes the range from the scoped
+transactions, so a built-in period report needs no dates that fit only one
+book.
+
+## How a chart consumes the table
+
+The labels are the table's own rows: the periods of a `period` report, the
+top-level section subtotals of an `account-tree` report, or the non-zero
+accounts of a flat report (at most twelve). A chart series is an amount
+column of those rows: `balance` is the row's signed amount, `debit` its
+positive side and `credit` its negative side shown as a positive number.
+Because a period row keeps its two sides separately, the Debit and Credit
+series agree with the period table's Debit and Credit columns even when a
+period contains both income and expenses; a net amount alone could not say
+that.
+
+The combinations that cannot mean anything are 400s before rendering, each
+naming the field: a chart with no amount column, a series that is not in
+`columns`, `account-name` or `subtotal` as a series, a repeated series, more
+than two series, `balance` mixed with `debit`/`credit` (a net and its own
+part), `chart_series` without `chart`, and `period_mode: "cumulative"`
+without period grouping. An unknown chart type, account type, grouping or
+period unit is rejected the same way.
+
+## Built-in specs
+
+`gnc-webd` defines four report specs in code, so a fresh build — with or
+without Guile — offers reports beyond the native nine:
+
+| id | report | scope and chart |
+|---|---|---|
+| `builtin-income-expenses-month` | Income vs Expenses by Month | `INCOME` + `EXPENSE`, one line point per month over the book's transaction range; two series, `credit` (income) and `debit` (expenses) |
+| `builtin-expenses-by-account` | Expenses by Account | `EXPENSE`, all dates, one bar per expense account with activity |
+| `builtin-income-by-account` | Income by Account | `INCOME`, all dates, one bar per income account with activity |
+| `builtin-net-worth-month` | Net Worth by Month | asset and liability account types, cumulative balance at each month's end (so the line is net worth, not the month's change) |
+
+They are served by `GET /api/specs` under `builtin` (with `"builtin": true`),
+are named in `GET /api/reports` beside the native and Scheme reports, and
+render at `/report/spec/<id>`. They are not written to the saved store, and
+`DELETE /api/specs/<built-in id>` is a 400 saying so. Their descriptions say
+which accounts they are scoped to, because a period report over an unscoped
+double-entry book nets to zero every period: the scoping is what makes the
+numbers mean something, and an unscoped net-worth report would not exist.
+
 
 ## HTTP surface
 
@@ -65,29 +117,45 @@ Every route is under the server's random token, like the rest of the web UI.
 
 | route | method | purpose |
 |---|---|---|
-| `/api/spec/options` | GET | columns, groupings, period units and the date/currency option descriptors the designer form is generated from |
+| `/api/spec/options` | GET | columns, groupings, period units/modes, chart types, chart series, account types and the date/currency option descriptors the designer form is generated from |
 | `/api/spec/preview` | POST | validate and render an unsaved spec; returns the same HTML a saved report produces |
-| `/api/specs` | GET | list saved specs (full documents) |
+| `/api/specs` | GET | list saved specs under `specs`, and the built-ins under `builtin` |
 | `/api/specs` | POST | validate, assign an id and save; `400` names the invalid field, `201` returns the saved spec |
-| `/api/specs/<id>` | GET | one saved spec |
-| `/api/specs/<id>` | DELETE | delete it |
+| `/api/specs/<id>` | GET | one saved or built-in spec |
+| `/api/specs/<id>` | DELETE | delete a saved spec; a built-in is a `400` |
 | `/report/spec/<id>` | GET | render it through the native report layer |
 
 Creation validates every field against the open book: unknown columns,
-groupings, currencies, account GUIDs, spec fields, malformed dates, duplicate
-names and a start after the end are `400` responses whose body names the
-problem. The preview and the saved report run the same validator and the same
-renderer, so the preview cannot disagree with what Save produces.
+groupings, chart types, account types, currencies, account GUIDs, spec fields,
+malformed dates, duplicate names and a start after the end are `400`
+responses whose body names the problem. The preview and the saved report run
+the same validator and the same renderer, so the preview cannot disagree with
+what Save produces.
 
 ## Correctness gate
+
+`web/test/report-spec.sh` takes each built-in spec from `GET /api/specs`,
+strips the `builtin` flag, posts it to `POST /api/spec/preview`, and compares
+the preview with `/report/spec/<id>` **byte for byte**: a built-in that is
+not exactly the spec a user could build by hand fails. It also asserts the
+chart's data block is the period table's own Debit/Credit figures, that an
+explicit wider date range changes the periods, and that each nonsensical
+chart combination is a 400 naming the field.
 
 `web/test/ui-test.mjs` builds a spec in the browser equivalent to an explicit
 `/report/Trial Balance?end=2018-12-31` request, previews it, saves it, reloads
 the page and opens it again, and compares the rendered **table text cell by
-cell** with the explicit request. A designer that rendered a plausible but
-different report fails that check.
+cell** with the explicit request. It opens a built-in chart spec, asserts the
+canvas has non-blank pixels and two series, then renders the same spec with a
+different period and requires both the chart data and the canvas pixels to
+change — a static chart image cannot pass.
 
 ## Builds without Guile
 
 The designer is part of the native report layer and needs no Guile: the same
-routes, storage and rendering work in the `WITH_GUILE=OFF` build.
+routes, storage and rendering work in the `WITH_GUILE=OFF` build. The four
+built-in specs are named in `/api/reports` in both builds; alongside the
+Scheme templates in a Guile build, and as the reports beyond the native nine
+without one. The 501 for a report the native layer does not know and this
+build cannot run stays exactly as it was: no built-in makes a Scheme report
+look native.

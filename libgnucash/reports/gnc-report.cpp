@@ -546,6 +546,47 @@ column_from_name (const std::string& name, Column& column)
     return false;
 }
 
+std::vector<std::string>
+account_type_vocabulary ()
+{
+    /* The persistent names, in the order the engine defines the types.  ROOT
+     * is deliberately absent: a report never scopes to the hidden root. */
+    return {"BANK",       "CASH",    "ASSET",     "LIABILITY", "STOCK",
+            "MUTUAL",     "CURRENCY", "INCOME",   "EXPENSE",   "EQUITY",
+            "RECEIVABLE", "PAYABLE", "TRADING"};
+}
+
+bool
+account_type_from_name (const std::string& name, GNCAccountType& type)
+{
+    /* The names account_type_vocabulary() publishes and the names this
+     * accepts have to be the same set; keep the two lists in step. */
+    struct Entry
+    {
+        const char* name;
+        GNCAccountType type;
+    };
+    static const Entry entries[] = {
+        {"BANK", ACCT_TYPE_BANK},         {"CASH", ACCT_TYPE_CASH},
+        {"CREDIT", ACCT_TYPE_CREDIT},     {"ASSET", ACCT_TYPE_ASSET},
+        {"LIABILITY", ACCT_TYPE_LIABILITY},
+        {"STOCK", ACCT_TYPE_STOCK},       {"MUTUAL", ACCT_TYPE_MUTUAL},
+        {"CURRENCY", ACCT_TYPE_CURRENCY}, {"INCOME", ACCT_TYPE_INCOME},
+        {"EXPENSE", ACCT_TYPE_EXPENSE},   {"EQUITY", ACCT_TYPE_EQUITY},
+        {"RECEIVABLE", ACCT_TYPE_RECEIVABLE},
+        {"PAYABLE", ACCT_TYPE_PAYABLE},   {"TRADING", ACCT_TYPE_TRADING},
+    };
+    for (const Entry& entry : entries)
+    {
+        if (name == entry.name)
+        {
+            type = entry.type;
+            return true;
+        }
+    }
+    return false;
+}
+
 /* -------------------------------------------------------------- grouping */
 
 Table
@@ -574,36 +615,65 @@ account_table (Account* root, const Query& query,
 namespace
 {
 
-/* The GUIDs a spec's account selection means: each named account and its
- * whole subtree, which is the route's "accounts" rule.  An empty selection
- * is the whole book; an empty set here would mean the same thing, so callers
- * use is_empty() to distinguish "all" from "nothing". */
-std::set<std::string>
-spec_scope (const std::vector<Account*>& accounts)
+/* The account scope a spec means.  An empty selection is the whole book; an
+ * empty type list is every type.  The two restrictions intersect, so a GUID
+ * selects a subtree and an account type narrows that subtree (or, on its own,
+ * scopes the whole book by type). */
+struct SpecScope
 {
-    std::set<std::string> scope;
+    std::set<std::string> guids;
+    std::vector<GNCAccountType> types;
+
+    bool accepts (const Account* account) const
+    {
+        if (!types.empty () &&
+            std::find (types.begin (), types.end (),
+                       xaccAccountGetType (account)) == types.end ())
+            return false;
+        return guids.empty () || guids.count (account_guid (account)) > 0;
+    }
+};
+
+SpecScope
+spec_scope (const std::vector<Account*>& accounts,
+            const std::vector<GNCAccountType>& types)
+{
+    SpecScope scope;
+    scope.types = types;
     for (Account* account : accounts)
     {
-        scope.insert (account_guid (account));
+        scope.guids.insert (account_guid (account));
         GList* descendants = gnc_account_get_descendants_sorted (account);
         for (GList* node = descendants; node != nullptr; node = node->next)
-            scope.insert (account_guid (static_cast<Account*> (node->data)));
+            scope.guids.insert (
+                account_guid (static_cast<Account*> (node->data)));
         g_list_free (descendants);
     }
     return scope;
 }
 
-bool
-spec_includes (const std::set<std::string>& scope, Account* account)
+/* Every account in scope, parents before children, in the engine's sorted
+ * order.  This is the account list a period report sums. */
+void
+collect_scope_accounts (Account* root, const SpecScope& scope,
+                        std::vector<Account*>& out)
 {
-    return scope.empty () || scope.count (account_guid (account)) > 0;
+    GList* children = gnc_account_get_children_sorted (root);
+    for (GList* node = children; node != nullptr; node = node->next)
+    {
+        auto* child = static_cast<Account*> (node->data);
+        if (scope.accepts (child))
+            out.push_back (child);
+        collect_scope_accounts (child, scope, out);
+    }
+    g_list_free (children);
 }
 
 void
-spec_flat_rows (const Query& query, Account* account,
-                const std::set<std::string>& scope, Table& table)
+spec_flat_rows (const Query& query, Account* account, const SpecScope& scope,
+                Table& table)
 {
-    if (spec_includes (scope, account))
+    if (scope.accepts (account))
     {
         Row row;
         row.type = RowType::Account;
@@ -621,11 +691,10 @@ spec_flat_rows (const Query& query, Account* account,
 }
 
 bool
-spec_tree_rows (const Query& query, Account* account,
-                const std::set<std::string>& scope, const Grouping& grouping,
-                int depth, Table& table)
+spec_tree_rows (const Query& query, Account* account, const SpecScope& scope,
+                const Grouping& grouping, int depth, Table& table)
 {
-    const bool include = spec_includes (scope, account);
+    const bool include = scope.accepts (account);
     if (include)
     {
         Row row;
@@ -670,13 +739,15 @@ period_label (const GDate& date, PeriodUnit unit)
 }
 
 /* One row per period, each the net of every account in scope over that
- * period.  Only balance-sheet-style net amounts make sense here, so the
- * caller's column choice still decides how they are printed. */
+ * period.  The two sides are summed per account before they are netted, so a
+ * period that contains both income and expenses keeps them apart: the Debit
+ * column (and a chart's Debit series) is what the period debited, the Credit
+ * column what it credited.  With `spec.cumulative` the row is instead the
+ * balance as of the period's end. */
 bool
 spec_period_rows (const TableSpec& spec, const Query& base,
                   const std::vector<Account*>& accounts, Table& table,
-                  std::vector<std::string>& labels,
-                  std::vector<gnc_numeric>& values, std::string& error)
+                  std::string& error)
 {
     if (!spec.start.has_value () || !spec.end.has_value ())
     {
@@ -713,22 +784,40 @@ spec_period_rows (const TableSpec& spec, const Query& base,
         g_date_subtract_days (&period_last, 1);
 
         Query query = base;
-        query.start = gnc_time64_get_day_start_gdate (&cursor);
-        query.end = gnc_time64_get_day_end_gdate (&period_last);
+        if (spec.cumulative)
+        {
+            /* A balance at a date is not the period's activity: accumulate
+             * from the beginning of the book up to the period's end. */
+            query.start.reset ();
+            query.end = gnc_time64_get_day_end_gdate (&period_last);
+        }
+        else
+        {
+            query.start = gnc_time64_get_day_start_gdate (&cursor);
+            query.end = gnc_time64_get_day_end_gdate (&period_last);
+        }
 
-        gnc_numeric amount = gnc_numeric_zero ();
+        gnc_numeric debit = gnc_numeric_zero ();
+        gnc_numeric credit = gnc_numeric_zero ();
         for (Account* account : accounts)
-            amount = numeric_add (amount, query.sum (account));
+        {
+            const gnc_numeric amount = query.sum (account);
+            if (gnc_numeric_positive_p (amount))
+                debit = numeric_add (debit, amount);
+            else if (gnc_numeric_negative_p (amount))
+                credit = numeric_add (credit, gnc_numeric_neg (amount));
+        }
 
         const std::string label = period_label (cursor, spec.period_unit);
         Row row;
         row.type = RowType::Account;
         row.label = label;
-        row.amount = amount;
+        row.split_amounts = true;
+        row.debit = debit;
+        row.credit = credit;
+        row.amount = numeric_add (debit, gnc_numeric_neg (credit));
         table.rows.push_back (std::move (row));
-        labels.push_back (label);
-        values.push_back (amount);
-        total = numeric_add (total, amount);
+        total = numeric_add (total, row.amount);
 
         cursor = next;
     }
@@ -749,15 +838,117 @@ spec_period_rows (const TableSpec& spec, const Query& base,
     return true;
 }
 
+/* The date range a period spec with no bounds should print: the span the
+ * scoped transactions cover, at day granularity.  A book with no transactions
+ * in scope has no range to print, and saying so beats printing nothing. */
+bool
+scope_date_range (const std::vector<Account*>& accounts, time64& start,
+                  time64& end)
+{
+    bool found = false;
+    time64 first = 0;
+    time64 last = 0;
+    for (Account* account : accounts)
+    {
+        for (GList* node = xaccAccountGetSplitList (account);
+             node != nullptr; node = node->next)
+        {
+            auto* split = static_cast<Split*> (node->data);
+            const time64 when = xaccTransGetDate (xaccSplitGetParent (split));
+            if (!found || when < first)
+                first = when;
+            if (!found || when > last)
+                last = when;
+            found = true;
+        }
+    }
+    if (!found)
+        return false;
+    start = gnc_time64_get_day_start (first);
+    end = gnc_time64_get_day_end (last);
+    return true;
+}
+
+/* The chart a spec means: the amount columns it plots.  An empty
+ * chart_columns means derive them from the table's own columns -- the two
+ * sides when both are shown, else the single balance or one side. */
+std::vector<Column>
+chart_columns_for (const TableSpec& spec)
+{
+    if (!spec.chart_columns.empty ())
+        return spec.chart_columns;
+
+    bool debit = false;
+    bool credit = false;
+    bool balance = false;
+    for (const Column column : spec.columns)
+    {
+        debit = debit || column == Column::Debit;
+        credit = credit || column == Column::Credit;
+        balance = balance || column == Column::Balance;
+    }
+    if (debit && credit)
+        return {Column::Debit, Column::Credit};
+    if (balance)
+        return {Column::Balance};
+    if (debit)
+        return {Column::Debit};
+    if (credit)
+        return {Column::Credit};
+    return {};
+}
+
+gnc_numeric
+row_series_amount (const Row& row, Column column)
+{
+    if (column == Column::Balance)
+        return row.amount;
+    if (column != Column::Debit && column != Column::Credit)
+        return gnc_numeric_zero ();
+    if (row.split_amounts)
+        return column == Column::Debit ? row.debit : row.credit;
+    if (column == Column::Debit && gnc_numeric_positive_p (row.amount))
+        return row.amount;
+    if (column == Column::Credit && gnc_numeric_negative_p (row.amount))
+        return gnc_numeric_neg (row.amount);
+    return gnc_numeric_zero ();
+}
+
 } // namespace
 
 bool
-render_table_spec (const TableSpec& spec, Account* root, std::string& html)
+render_table_spec (const TableSpec& requested, Account* root, std::string& html,
+                   std::string* error)
 {
     if (root == nullptr)
         return false;
-    if (spec.columns.empty ())
+    if (requested.columns.empty ())
         return false;
+
+    const SpecScope scope = spec_scope (requested.accounts,
+                                        requested.account_types);
+    std::vector<Account*> scoped_accounts;
+    collect_scope_accounts (root, scope, scoped_accounts);
+
+    /* A period report with no bounds prints the range the scoped
+     * transactions cover, so a built-in spec needs no dates that only fit
+     * one book. */
+    TableSpec spec = requested;
+    if (spec.grouping == GroupingMode::Period &&
+        (!spec.start.has_value () || !spec.end.has_value ()))
+    {
+        time64 start = 0;
+        time64 end = 0;
+        if (!scope_date_range (scoped_accounts, start, end))
+        {
+            if (error != nullptr)
+                *error = "the report's account scope has no transactions, so a "
+                         "period-grouped report has no date range";
+            return false;
+        }
+        spec.start = start;
+        spec.end = end;
+    }
 
     Query query;
     query.scope = root;
@@ -772,22 +963,18 @@ render_table_spec (const TableSpec& spec, Account* root, std::string& html)
     table.columns = spec.columns;
     table.currency = query.currency;
 
-    std::vector<std::string> chart_labels;
-    std::vector<gnc_numeric> chart_values;
-
     if (spec.grouping == GroupingMode::Period)
     {
-        std::vector<Account*> accounts = spec.accounts;
-        if (accounts.empty ())
-            collect_accounts (root, accounts);
-        std::string error;
-        if (!spec_period_rows (spec, query, accounts, table, chart_labels,
-                               chart_values, error))
+        std::string reason;
+        if (!spec_period_rows (spec, query, scoped_accounts, table, reason))
+        {
+            if (error != nullptr)
+                *error = reason;
             return false;
+        }
     }
     else
     {
-        const std::set<std::string> scope = spec_scope (spec.accounts);
         if (spec.grouping == GroupingMode::AccountTree)
         {
             Grouping grouping;
@@ -803,18 +990,6 @@ render_table_spec (const TableSpec& spec, Account* root, std::string& html)
                 spec_tree_rows (query, static_cast<Account*> (node->data),
                                 scope, grouping, 0, table);
             g_list_free (children);
-
-            /* Totals would double-count a rolled-up tree; the subtotals are
-             * the totals.  A chart, if asked for, uses the top-level section
-             * subtotals rather than every nested one. */
-            for (const Row& row : table.rows)
-            {
-                if (row.type == RowType::Subtotal && row.depth == 0)
-                {
-                    chart_labels.push_back (row.label);
-                    chart_values.push_back (row.amount);
-                }
-            }
         }
         else
         {
@@ -823,23 +998,11 @@ render_table_spec (const TableSpec& spec, Account* root, std::string& html)
                 spec_flat_rows (query, static_cast<Account*> (node->data),
                                 scope, table);
             g_list_free (children);
-
-            for (const Row& row : table.rows)
-            {
-                if (chart_labels.size () >= 12)
-                    break;
-                if (row.type == RowType::Account &&
-                    !gnc_numeric_zero_p (row.amount))
-                {
-                    chart_labels.push_back (row.label);
-                    chart_values.push_back (row.amount);
-                }
-            }
         }
 
         /* A flat account list sums one row per account, so its debit/credit
          * columns have the same totals the Trial Balance prints.  The tree
-         * case deliberately has none (see above). */
+         * case deliberately has none (its subtotals are the totals). */
         if (spec.grouping == GroupingMode::None)
         {
             bool has_debit_or_credit = false;
@@ -860,14 +1023,57 @@ render_table_spec (const TableSpec& spec, Account* root, std::string& html)
         }
     }
 
-    if (spec.chart && !chart_labels.empty ())
+    if (spec.chart)
     {
-        Chart chart;
-        chart.type = ChartType::Bar;
-        chart.title = spec.title.empty () ? "Report Totals" : spec.title;
-        chart.labels = std::move (chart_labels);
-        chart.values = std::move (chart_values);
-        table.chart = std::move (chart);
+        /* The chart rows are the table's own: one per period; the top-level
+         * section subtotals of a tree; the accounts of a flat list.  A flat
+         * list's zero rows carry no information and would make the chart
+         * unreadable, so they are skipped, with a cap so a book with
+         * hundreds of accounts stays legible. */
+        std::vector<const Row*> chart_rows;
+        switch (spec.grouping)
+        {
+        case GroupingMode::Period:
+            for (const Row& row : table.rows)
+                if (row.type == RowType::Account)
+                    chart_rows.push_back (&row);
+            break;
+        case GroupingMode::AccountTree:
+            for (const Row& row : table.rows)
+                if (row.type == RowType::Subtotal && row.depth == 0)
+                    chart_rows.push_back (&row);
+            break;
+        case GroupingMode::None:
+            for (const Row& row : table.rows)
+            {
+                if (chart_rows.size () >= 12)
+                    break;
+                if (row.type == RowType::Account &&
+                    !gnc_numeric_zero_p (row.amount))
+                    chart_rows.push_back (&row);
+            }
+            break;
+        }
+
+        const std::vector<Column> series_columns = chart_columns_for (spec);
+        if (!chart_rows.empty () && !series_columns.empty ())
+        {
+            Chart chart;
+            chart.type = spec.chart_type;
+            chart.title = spec.title.empty () ? "Report Totals" : spec.title;
+            for (const Row* row : chart_rows)
+                chart.labels.push_back (row->label);
+            for (const Column column : series_columns)
+            {
+                ChartSeries series;
+                series.label = column_heading (column);
+                series.values.reserve (chart_rows.size ());
+                for (const Row* row : chart_rows)
+                    series.values.push_back (row_series_amount (*row, column));
+                chart.series.push_back (std::move (series));
+            }
+            table.chart = std::move (chart);
+        }
     }
 
     html = render_html (table, spec.title.empty () ? "Custom Report"
@@ -1420,7 +1626,10 @@ balance_sheet (Account* root, std::optional<time64> as_of,
     chart.type = ChartType::Bar;
     chart.title = "Balance Sheet Totals";
     chart.labels = {"Assets", "Liabilities", "Equity"};
-    chart.values = {assets, gnc_numeric_neg (liabilities), total_equity};
+    ChartSeries series;
+    series.label = "Total";
+    series.values = {assets, gnc_numeric_neg (liabilities), total_equity};
+    chart.series.push_back (std::move (series));
     table.chart = std::move (chart);
 
     return table;
@@ -3092,23 +3301,33 @@ std::string
 chart_json (const Chart& chart, gnc_commodity* currency)
 {
     std::ostringstream out;
-    out << "{\"type\":\"bar\",\"title\":\"" << json_escape (chart.title)
-        << "\",\"labels\":[";
+    out << "{\"type\":\"" << (chart.type == ChartType::Line ? "line" : "bar")
+        << "\",\"title\":\"" << json_escape (chart.title) << "\",\"labels\":[";
     for (size_t index = 0; index < chart.labels.size (); ++index)
     {
         if (index > 0)
             out << ",";
         out << "\"" << json_escape (chart.labels[index]) << "\"";
     }
-    out << "],\"values\":[";
-    for (size_t index = 0; index < chart.values.size (); ++index)
+    out << "],\"series\":[";
+    for (size_t series_index = 0; series_index < chart.series.size ();
+         ++series_index)
     {
-        if (index > 0)
+        const ChartSeries& series = chart.series[series_index];
+        if (series_index > 0)
             out << ",";
-        char number[G_ASCII_DTOSTR_BUF_SIZE] = {0};
-        g_ascii_dtostr (number, sizeof number,
-                        gnc_numeric_to_double (chart.values[index]));
-        out << number;
+        out << "{\"label\":\"" << json_escape (series.label)
+            << "\",\"values\":[";
+        for (size_t index = 0; index < series.values.size (); ++index)
+        {
+            if (index > 0)
+                out << ",";
+            char number[G_ASCII_DTOSTR_BUF_SIZE] = {0};
+            g_ascii_dtostr (number, sizeof number,
+                            gnc_numeric_to_double (series.values[index]));
+            out << number;
+        }
+        out << "]}";
     }
     out << "]";
     const char* mnemonic =
@@ -3127,7 +3346,8 @@ void
 render_chart (std::ostringstream& out, const Chart& chart,
               gnc_commodity* currency)
 {
-    out << "<section class='report-chart' data-chart-type='bar'>\n"
+    out << "<section class='report-chart' data-chart-type='"
+        << (chart.type == ChartType::Line ? "line" : "bar") << "'>\n"
         << "<h4 class='chart-title'>" << html_escape (chart.title)
         << "</h4>\n"
         << "<div class='chart-box'><canvas id='report-chart-canvas' "
@@ -3149,24 +3369,40 @@ render_chart (std::ostringstream& out, const Chart& chart,
   } catch (err) { money = null; }
   var palette = ["#1f5fa8", "#a83b1f", "#2f7d32", "#7a4b9c",
                  "#c08a00", "#3d7f8c"];
+  var series = Array.isArray(data.series) ? data.series : [];
+  var type = data.type === "line" ? "line" : "bar";
+  var datasets = series.map(function (entry, seriesIndex) {
+    var color = palette[seriesIndex % palette.length];
+    var dataset = {
+      label: entry.label,
+      data: entry.values,
+      borderColor: color,
+      backgroundColor: color,
+      borderWidth: type === "bar" ? 0 : 2
+    };
+    if (type === "bar" && series.length === 1) {
+      dataset.backgroundColor = entry.values.map(function (_, index) {
+        return palette[index % palette.length];
+      });
+    }
+    if (type === "line") {
+      dataset.fill = false;
+      dataset.pointRadius = 3;
+      dataset.tension = 0;
+    }
+    return dataset;
+  });
   var chart = new Chart(canvas.getContext("2d"), {
-    type: "bar",
-    data: {
-      labels: data.labels,
-      datasets: [{
-        label: data.title,
-        data: data.values,
-        backgroundColor: data.values.map(function (_, index) {
-          return palette[index % palette.length];
-        }),
-        borderWidth: 0
-      }]
-    },
+    type: type,
+    data: { labels: data.labels, datasets: datasets },
     options: {
       animation: false,
       responsive: false,
       maintainAspectRatio: false,
-      plugins: { legend: { display: false }, title: { display: false } },
+      plugins: {
+        legend: { display: series.length > 1 },
+        title: { display: false }
+      },
       scales: {
         y: { beginAtZero: true, ticks: { callback: function (value) {
           return money ? money.format(value) : String(value);
@@ -3224,20 +3460,24 @@ render_html (const Table& table, const std::string& title)
                 break;
 
             case Column::Debit:
-                if (gnc_numeric_positive_p (row.amount))
+                if (gnc_numeric_positive_p (
+                        row_series_amount (row, Column::Debit)))
                     out << "<td class='number-cell'>"
-                        << html_escape (format_amount (row.amount,
-                                                       table.currency))
+                        << html_escape (format_amount (
+                               row_series_amount (row, Column::Debit),
+                               table.currency))
                         << "</td>";
                 else
                     out << "<td align='right' valign='top'> </td>";
                 break;
 
             case Column::Credit:
-                if (gnc_numeric_negative_p (row.amount))
+                if (gnc_numeric_positive_p (
+                        row_series_amount (row, Column::Credit)))
                     out << "<td class='number-cell'>"
                         << html_escape (format_amount (
-                               gnc_numeric_neg (row.amount), table.currency))
+                               row_series_amount (row, Column::Credit),
+                               table.currency))
                         << "</td>";
                 else
                     out << "<td align='right' valign='top'> </td>";

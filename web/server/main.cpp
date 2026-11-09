@@ -250,6 +250,29 @@ reports_unavailable (GSocketConnection* connection)
 }
 #endif
 
+/* The built-in designer specs are reports in every build: without Guile they
+ * are what the report list offers beyond the native nine, and with Guile
+ * they sit beside the Scheme templates.  The plain /api/reports list stays
+ * an array of names. */
+std::string
+with_builtin_report_names (std::string body)
+{
+    if (!body.empty () && body.back () == ']')
+        body.pop_back ();
+    bool first = body == "[";
+    for (const std::string& name : web::builtin_spec_names ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "\"";
+        body += json_escape (name.c_str ());
+        body += "\"";
+    }
+    body += "]";
+    return body;
+}
+
 /* ---------------------------------------------------------- report options */
 
 const char*
@@ -378,7 +401,34 @@ spec_options_json ()
             "{\"name\":\"period\",\"label\":\"By period\"}],"
             "\"period_units\":["
             "{\"name\":\"year\",\"label\":\"Year\"},"
-            "{\"name\":\"month\",\"label\":\"Month\"}],\"options\":[";
+            "{\"name\":\"month\",\"label\":\"Month\"}],"
+            "\"period_modes\":["
+            "{\"name\":\"activity\",\"label\":\"Period activity\"},"
+            "{\"name\":\"cumulative\",\"label\":\"Balance at period end\"}],"
+            "\"charts\":["
+            "{\"name\":\"\",\"label\":\"No chart\"},"
+            "{\"name\":\"bar\",\"label\":\"Bar chart\"},"
+            "{\"name\":\"line\",\"label\":\"Line chart\"}],"
+            "\"chart_series\":["
+            "{\"name\":\"debit\",\"label\":\"Debit\"},"
+            "{\"name\":\"credit\",\"label\":\"Credit\"},"
+            "{\"name\":\"balance\",\"label\":\"Balance\"}],"
+            "\"account_types\":[";
+
+    first = true;
+    for (const std::string& name :
+         gnc::report::account_type_vocabulary ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "{\"name\":\"";
+        body += json_escape (name.c_str ());
+        body += "\",\"label\":\"";
+        body += json_escape (name.c_str ());
+        body += "\"}";
+    }
+    body += "],\"options\":[";
 
     std::vector<gnc::report::OptionDescriptor> options;
     for (const auto& option :
@@ -1227,10 +1277,10 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         {
 #ifdef GNC_WITH_REPORT
             send_response (connection, "200 OK", "application/json",
-                           reports_json ());
+                           with_builtin_report_names (reports_json ()));
 #else
             send_response (connection, "200 OK", "application/json",
-                           native_reports_json ());
+                           with_builtin_report_names (native_reports_json ()));
 #endif
         }
     }
@@ -1321,6 +1371,9 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
                         for (const web::ReportSpec& existing : specs)
                             duplicate = duplicate ||
                                         existing.name == spec.name;
+                        for (const std::string& builtin :
+                             web::builtin_spec_names ())
+                            duplicate = duplicate || builtin == spec.name;
                         if (duplicate)
                         {
                             send_response (
@@ -1369,18 +1422,28 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
             auto found = std::find_if (
                 specs.begin (), specs.end (),
                 [&id] (const web::ReportSpec& spec) { return spec.id == id; });
+            web::ReportSpec builtin;
+            const bool is_builtin =
+                found == specs.end () && web::builtin_spec_by_id (id, builtin);
             if (request.method == "GET")
             {
-                if (found == specs.end ())
-                    send_response (connection, "404 Not Found", "text/plain",
-                                   "no saved report with id '" + id + "'\n");
-                else
+                if (found != specs.end ())
                     send_response (connection, "200 OK", "application/json",
                                    web::spec_to_json (*found));
+                else if (is_builtin)
+                    send_response (connection, "200 OK", "application/json",
+                                   web::spec_to_json (builtin, true));
+                else
+                    send_response (connection, "404 Not Found", "text/plain",
+                                   "no saved report with id '" + id + "'\n");
             }
             else if (request.method == "DELETE")
             {
-                if (found == specs.end ())
+                if (is_builtin)
+                    send_response (connection, "400 Bad Request", "text/plain",
+                                   "the built-in report '" + builtin.name +
+                                       "' cannot be deleted\n");
+                else if (found == specs.end ())
                     send_response (connection, "404 Not Found", "text/plain",
                                    "no saved report with id '" + id + "'\n");
                 else
@@ -1411,7 +1474,8 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         const std::string id = url_decode (route.substr (12));
         web::ReportSpec spec;
         std::string error;
-        if (!find_spec (id, spec, error))
+        if (!find_spec (id, spec, error) &&
+            !web::builtin_spec_by_id (id, spec))
         {
             send_response (connection, "404 Not Found", "text/plain",
                            error + "\n");

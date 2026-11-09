@@ -29,7 +29,8 @@ fi
 
 LOG=$(mktemp)
 REPORTS_FILE=$(mktemp)
-trap 'kill "$SERVER_PID" 2>/dev/null; rm -f "$LOG" "$REPORTS_FILE"' EXIT
+SPEC_STORE=$(mktemp)
+trap 'kill "$SERVER_PID" 2>/dev/null; rm -f "$LOG" "$REPORTS_FILE" "$SPEC_STORE"' EXIT
 
 env GNC_UNINSTALLED=YES GNC_BUILDDIR="$BUILD" \
     ${SCHEMAS:+GSETTINGS_SCHEMA_DIR="$SCHEMAS"} \
@@ -38,6 +39,7 @@ env GNC_UNINSTALLED=YES GNC_BUILDDIR="$BUILD" \
     GUILE_LOAD_PATH="$BUILD/share/guile/site/3.0" \
     GUILE_LOAD_COMPILED_PATH="${CCACHE:-}" \
     GNC_WEBUI_DIR="$SRC/web/ui" \
+    GNC_WEBUI_REPORTS="$SPEC_STORE" \
     "$BUILD/bin/gnc-webd" --backend "$BACKEND" "$BOOK" > "$LOG" 2>&1 &
 SERVER_PID=$!
 
@@ -85,6 +87,13 @@ for native_report in "Balance Sheet" "Income Statement" "Profit & Loss" \
     echo "$reports" | grep -q "\"$native_report\"" \
         || fail "report list has no $native_report"
 done
+# The built-in designer specs are reports in every build: without Guile they
+# are what the list offers beyond the native nine.
+for builtin_report in "Income vs Expenses by Month" "Expenses by Account" \
+                      "Income by Account" "Net Worth by Month"; do
+    echo "$reports" | grep -q "\"$builtin_report\"" \
+        || fail "report list has no built-in $builtin_report"
+done
 report_count=$(echo "$reports" | tr ',' '\n' | sed 's/^\[//' | grep -c '^"')
 if [ "$HAS_GUILE" = 1 ]; then
     [ "$report_count" -gt 20 ] || fail "report list looks short ($report_count entries)"
@@ -123,6 +132,23 @@ chartjs=$(curl -fsS "${URL}vendor/chart.umd.js") \
 # from the same column/grouping/option names the renderer accepts.
 curl -fsS "${URL}api/spec/options" | grep -q '"groupings"' \
     || fail "the designer vocabulary is not served"
+
+# A built-in spec is a designer report with its own chart, served outside the
+# book.  Check both halves: the table and the data the canvas draws.
+builtin=$(curl -fsS "${URL}report/spec/builtin-income-expenses-month") \
+    || { cat "$LOG" >&2; fail "GET a built-in spec report failed"; }
+echo "$builtin" | grep -q "February 2018" \
+    || fail "the built-in period report has no period row"
+echo "$builtin" | grep -q "report-chart-canvas" \
+    || fail "the built-in spec has no chart canvas"
+echo "$builtin" | grep -qF '"series":[{"label":"Credit"' \
+    || fail "the built-in chart has no two-series data block"
+builtin_specs=$(curl -fsS "${URL}api/specs") \
+    || fail "GET api/specs failed"
+echo "$builtin_specs" | grep -q '"builtin":\[' \
+    || fail "api/specs does not list the built-in specs"
+echo "$builtin_specs" | grep -q '"specs":\[\]' \
+    || fail "the built-in specs leaked into the saved store"
 
 income_statement=$(curl -fsS "${URL}report/Income%20Statement") \
     || { cat "$LOG" >&2; fail "GET Income Statement failed"; }

@@ -121,8 +121,10 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "a report spec must be a JSON object");
 
     static const std::set<std::string> allowed = {
-        "id", "name", "title", "columns", "grouping", "period_unit",
-        "start", "end", "date_preset", "currency", "accounts", "chart"};
+        "id", "name", "title", "description", "columns", "grouping",
+        "period_unit", "period_mode", "start", "end", "date_preset",
+        "currency", "accounts", "account_types", "chart", "chart_series",
+        "builtin"};
     for (const auto& entry : value.object)
     {
         if (allowed.count (entry.first) == 0)
@@ -130,6 +132,13 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     }
 
     bool present = false;
+    /* "builtin" is output-only: GET /api/specs marks the built-in specs with
+     * it so a client can tell them apart.  Accept it on input (a client may
+     * post a built-in back) but never store it: a saved spec is never
+     * built in, and only the registry assigns that flag. */
+    const json::Value* builtin = value.find ("builtin");
+    if (builtin != nullptr && !builtin->is_null () && !builtin->is_bool ())
+        return fail (error, "'builtin' must be a boolean");
     if (!optional_string (value, "id", spec.id, present, error))
         return false;
 
@@ -146,6 +155,12 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "'title' is longer than 120 characters");
     if (spec.title.empty ())
         spec.title = spec.name;
+
+    if (!optional_string (value, "description", spec.description, present,
+                          error))
+        return false;
+    if (spec.description.size () > 240)
+        return fail (error, "'description' is longer than 240 characters");
 
     const json::Value* columns = value.find ("columns");
     if (columns == nullptr || !columns->is_array () || columns->array.empty ())
@@ -184,6 +199,17 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (spec.period_unit != "year" && spec.period_unit != "month")
         return fail (error, "unknown period_unit '" + spec.period_unit +
                              "' (expected year or month)");
+
+    spec.period_mode = "activity";
+    if (!optional_string (value, "period_mode", spec.period_mode, present,
+                          error))
+        return false;
+    if (spec.period_mode != "activity" && spec.period_mode != "cumulative")
+        return fail (error, "unknown period_mode '" + spec.period_mode +
+                             "' (expected activity or cumulative)");
+    if (spec.period_mode == "cumulative" && spec.grouping != "period")
+        return fail (error, "period_mode 'cumulative' needs grouping "
+                             "'period'");
 
     spec.query = SpecQuery{};
     if (!optional_string (value, "start", spec.query.start, present, error))
@@ -224,13 +250,13 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
 
     if (spec.grouping == "period")
     {
-        if (spec.query.date_preset == "all")
-            return fail (error, "a period-grouped report cannot use "
-                                 "date_preset 'all'");
+        /* date_preset "all" is allowed: the renderer resolves it to the
+         * range the scoped transactions cover, which is what lets a built-in
+         * period report work in every book. */
         if (spec.query.date_preset.empty () &&
             (spec.query.start.empty () || spec.query.end.empty ()))
             return fail (error, "a period-grouped report needs both a start "
-                                 "and an end date");
+                                 "and an end date, or date_preset 'all'");
     }
 
     if (check_book)
@@ -272,12 +298,130 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         }
     }
 
+    spec.account_types.clear ();
+    const json::Value* account_types = value.find ("account_types");
+    if (account_types != nullptr && !account_types->is_null ())
+    {
+        if (!account_types->is_array ())
+            return fail (error, "'account_types' must be an array of account "
+                                 "type names");
+        if (account_types->array.size () > 16)
+            return fail (error, "'account_types' has more than 16 entries");
+        std::set<std::string> seen_types;
+        for (const json::Value& entry : account_types->array)
+        {
+            if (!entry.is_string ())
+                return fail (error, "'account_types' entries must be strings");
+            GNCAccountType type;
+            if (!gnc::report::account_type_from_name (entry.string, type))
+                return fail (error, "unknown account type '" + entry.string +
+                                     "' (expected BANK, CASH, ASSET, "
+                                     "LIABILITY, STOCK, MUTUAL, CURRENCY, "
+                                     "INCOME, EXPENSE, EQUITY, RECEIVABLE, "
+                                     "PAYABLE or TRADING)");
+            if (seen_types.insert (entry.string).second)
+                spec.account_types.push_back (entry.string);
+        }
+    }
+
     spec.chart.clear ();
     if (!optional_string (value, "chart", spec.chart, present, error))
         return false;
-    if (!spec.chart.empty () && spec.chart != "bar")
+    if (!spec.chart.empty () && spec.chart != "bar" && spec.chart != "line")
         return fail (error, "unknown chart '" + spec.chart +
-                             "' (expected bar)");
+                             "' (expected bar or line)");
+
+    spec.chart_series.clear ();
+    const json::Value* series = value.find ("chart_series");
+    if (series != nullptr && !series->is_null ())
+    {
+        if (!series->is_array ())
+            return fail (error, "'chart_series' must be an array of amount "
+                                 "column names");
+        if (series->array.size () > 2)
+            return fail (error, "'chart_series' has " +
+                                 std::to_string (series->array.size ()) +
+                                 " entries; a chart draws one or two series");
+        std::set<std::string> seen_series;
+        for (const json::Value& entry : series->array)
+        {
+            if (!entry.is_string ())
+                return fail (error, "'chart_series' entries must be strings");
+            if (entry.string != "debit" && entry.string != "credit" &&
+                entry.string != "balance")
+                return fail (error, "chart series '" + entry.string +
+                                     "' is not an amount column (expected "
+                                     "debit, credit or balance)");
+            if (!seen_series.insert (entry.string).second)
+                return fail (error, "chart series '" + entry.string +
+                                     "' appears more than once");
+            bool shown = false;
+            for (const std::string& column : spec.columns)
+                shown = shown || column == entry.string;
+            if (!shown)
+                return fail (error, "chart series '" + entry.string +
+                                     "' is not one of the report's columns");
+            spec.chart_series.push_back (entry.string);
+        }
+    }
+
+    if (!spec.chart.empty () && spec.chart_series.empty ())
+    {
+        /* The chart plots the amount columns the report already prints:
+         * both sides when both are shown, else the one amount column. */
+        bool debit = false;
+        bool credit = false;
+        bool balance = false;
+        for (const std::string& column : spec.columns)
+        {
+            debit = debit || column == "debit";
+            credit = credit || column == "credit";
+            balance = balance || column == "balance";
+        }
+        if (debit && credit)
+        {
+            spec.chart_series = {"debit", "credit"};
+        }
+        else if (balance)
+        {
+            spec.chart_series = {"balance"};
+        }
+        else if (debit)
+        {
+            spec.chart_series = {"debit"};
+        }
+        else if (credit)
+        {
+            spec.chart_series = {"credit"};
+        }
+        else
+        {
+            /* A store written by an older designer may carry a chart over a
+             * report with no amount column: it rendered no chart then, so
+             * load it without one instead of making the whole store
+             * unreadable.  A new preview or save is still rejected. */
+            if (check_book)
+                return fail (error, "a chart needs a numeric column: add "
+                                     "'debit', 'credit' or 'balance' to "
+                                     "'columns' (or name one in "
+                                     "'chart_series')");
+        }
+    }
+
+    if (spec.chart_series.size () > 1)
+    {
+        /* Balance is the net of the two sides; plotting it beside one of
+         * them would draw a total and its own part as independent series. */
+        for (const std::string& name : spec.chart_series)
+        {
+            if (name == "balance")
+                return fail (error, "a chart cannot mix the 'balance' series "
+                                     "with 'debit' or 'credit'");
+        }
+    }
+
+    if (spec.chart.empty () && !spec.chart_series.empty ())
+        return fail (error, "'chart_series' needs a chart type in 'chart'");
 
     return true;
 }
@@ -413,13 +557,16 @@ spec_from_json (const std::string& body, Account* root, ReportSpec& spec,
 }
 
 std::string
-spec_to_json (const ReportSpec& spec)
+spec_to_json (const ReportSpec& spec, bool builtin)
 {
     std::ostringstream out;
     out << "{";
+    if (builtin)
+        out << "\"builtin\":true,";
     out << json_field ("id", spec.id) << ",";
     out << json_field ("name", spec.name) << ",";
     out << json_field ("title", spec.title) << ",";
+    out << json_field ("description", spec.description) << ",";
     out << "\"columns\":[";
     for (size_t index = 0; index < spec.columns.size (); ++index)
     {
@@ -430,11 +577,19 @@ spec_to_json (const ReportSpec& spec)
     out << "],";
     out << json_field ("grouping", spec.grouping) << ",";
     out << json_field ("period_unit", spec.period_unit) << ",";
+    out << json_field ("period_mode", spec.period_mode) << ",";
     out << json_field ("start", spec.query.start) << ",";
     out << json_field ("end", spec.query.end) << ",";
     out << json_field ("date_preset", spec.query.date_preset) << ",";
     out << json_field ("currency", spec.query.currency) << ",";
-    out << json_field ("chart", spec.chart) << ",";
+    out << "\"account_types\":[";
+    for (size_t index = 0; index < spec.account_types.size (); ++index)
+    {
+        if (index > 0)
+            out << ",";
+        out << json::quote (spec.account_types[index]);
+    }
+    out << "],";
     out << "\"accounts\":[";
     for (size_t index = 0; index < spec.query.accounts.size (); ++index)
     {
@@ -442,8 +597,125 @@ spec_to_json (const ReportSpec& spec)
             out << ",";
         out << json::quote (spec.query.accounts[index]);
     }
+    out << "],";
+    out << json_field ("chart", spec.chart) << ",";
+    out << "\"chart_series\":[";
+    for (size_t index = 0; index < spec.chart_series.size (); ++index)
+    {
+        if (index > 0)
+            out << ",";
+        out << json::quote (spec.chart_series[index]);
+    }
     out << "]}";
     return out.str ();
+}
+
+namespace
+{
+
+ReportSpec
+builtin_base (const char* id, const char* name, const char* description)
+{
+    ReportSpec spec;
+    spec.id = id;
+    spec.name = name;
+    spec.title = name;
+    spec.description = description;
+    return spec;
+}
+
+} // namespace
+
+const std::vector<ReportSpec>&
+builtin_specs ()
+{
+    /* Every built-in scopes by account type rather than by GUID, so the same
+     * spec is meaningful in every book; the period ones take their dates from
+     * the book's own transactions for the same reason. */
+    static const std::vector<ReportSpec> specs = [] ()
+    {
+        std::vector<ReportSpec> all;
+
+        ReportSpec income_expenses = builtin_base (
+            "builtin-income-expenses-month", "Income vs Expenses by Month",
+            "Built-in, scoped to Income and Expense accounts: one point per "
+            "month over the range the book's transactions cover. Credit is "
+            "income, Debit is expenses.");
+        income_expenses.columns = {"account-name", "debit", "credit"};
+        income_expenses.grouping = "period";
+        income_expenses.period_unit = "month";
+        income_expenses.query.date_preset = "all";
+        income_expenses.account_types = {"INCOME", "EXPENSE"};
+        income_expenses.chart = "line";
+        income_expenses.chart_series = {"credit", "debit"};
+        all.push_back (std::move (income_expenses));
+
+        ReportSpec expenses = builtin_base (
+            "builtin-expenses-by-account", "Expenses by Account",
+            "Built-in, scoped to Expense accounts over all dates: one bar per "
+            "expense account with activity.");
+        expenses.columns = {"account-name", "debit"};
+        expenses.query.date_preset = "all";
+        expenses.account_types = {"EXPENSE"};
+        expenses.chart = "bar";
+        expenses.chart_series = {"debit"};
+        all.push_back (std::move (expenses));
+
+        ReportSpec income = builtin_base (
+            "builtin-income-by-account", "Income by Account",
+            "Built-in, scoped to Income accounts over all dates: one bar per "
+            "income account with activity.");
+        income.columns = {"account-name", "credit"};
+        income.query.date_preset = "all";
+        income.account_types = {"INCOME"};
+        income.chart = "bar";
+        income.chart_series = {"credit"};
+        all.push_back (std::move (income));
+
+        ReportSpec net_worth = builtin_base (
+            "builtin-net-worth-month", "Net Worth by Month",
+            "Built-in, scoped to asset and liability accounts (bank, cash, "
+            "card, stock, A/R and A/P): each point is the balance at that "
+            "month's end, so the line is net worth, not the month's change.");
+        net_worth.columns = {"account-name", "balance"};
+        net_worth.grouping = "period";
+        net_worth.period_unit = "month";
+        net_worth.period_mode = "cumulative";
+        net_worth.query.date_preset = "all";
+        net_worth.account_types = {"BANK",  "CASH",   "ASSET",
+                                   "STOCK", "MUTUAL", "CURRENCY",
+                                   "CREDIT", "LIABILITY", "RECEIVABLE",
+                                   "PAYABLE"};
+        net_worth.chart = "line";
+        net_worth.chart_series = {"balance"};
+        all.push_back (std::move (net_worth));
+
+        return all;
+    }();
+    return specs;
+}
+
+std::vector<std::string>
+builtin_spec_names ()
+{
+    std::vector<std::string> names;
+    for (const ReportSpec& spec : builtin_specs ())
+        names.push_back (spec.name);
+    return names;
+}
+
+bool
+builtin_spec_by_id (const std::string& id, ReportSpec& spec)
+{
+    for (const ReportSpec& candidate : builtin_specs ())
+    {
+        if (candidate.id == id)
+        {
+            spec = candidate;
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string
@@ -456,6 +728,14 @@ specs_to_json (const std::vector<ReportSpec>& specs)
         if (index > 0)
             out << ",";
         out << spec_to_json (specs[index]);
+    }
+    out << "],\"builtin\":[";
+    const std::vector<ReportSpec>& builtins = builtin_specs ();
+    for (size_t index = 0; index < builtins.size (); ++index)
+    {
+        if (index > 0)
+            out << ",";
+        out << spec_to_json (builtins[index], true);
     }
     out << "]}";
     return out.str ();
@@ -526,6 +806,14 @@ render_spec_html (const ReportSpec& spec, Account* root, std::string& html,
         table.accounts.push_back (account);
     }
 
+    for (const std::string& name : spec.account_types)
+    {
+        GNCAccountType type;
+        if (!gnc::report::account_type_from_name (name, type))
+            return fail (error, "unknown account type '" + name + "'");
+        table.account_types.push_back (type);
+    }
+
     if (spec.grouping == "account-tree")
         table.grouping = gnc::report::GroupingMode::AccountTree;
     else if (spec.grouping == "period")
@@ -536,10 +824,28 @@ render_spec_html (const ReportSpec& spec, Account* root, std::string& html,
     table.period_unit = spec.period_unit == "month"
                             ? gnc::report::PeriodUnit::Month
                             : gnc::report::PeriodUnit::Year;
-    table.chart = spec.chart == "bar";
+    table.cumulative = spec.period_mode == "cumulative";
 
-    if (!gnc::report::render_table_spec (table, root, html))
-        return fail (error, "the report could not be rendered");
+    table.chart = !spec.chart.empty ();
+    table.chart_type = spec.chart == "line" ? gnc::report::ChartType::Line
+                                            : gnc::report::ChartType::Bar;
+    for (const std::string& name : spec.chart_series)
+    {
+        if (name != "debit" && name != "credit" && name != "balance")
+            return fail (error, "chart series '" + name +
+                                 "' is not an amount column");
+        gnc::report::Column column;
+        if (!gnc::report::column_from_name (name, column))
+            return fail (error, "unknown chart series '" + name + "'");
+        table.chart_columns.push_back (column);
+    }
+
+    if (!gnc::report::render_table_spec (table, root, html, &error))
+    {
+        if (error.empty ())
+            error = "the report could not be rendered";
+        return false;
+    }
     return true;
 }
 

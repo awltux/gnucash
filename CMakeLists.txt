@@ -982,6 +982,7 @@ set(web_DIST
   web/test/make-investment-book.py
   web/test/report-parity.sh
   web/test/report-options.sh
+  web/test/report-spec.sh
   web/test/ui-test.mjs)
 add_subdirectory (bindings)
 add_subdirectory (test-templates)

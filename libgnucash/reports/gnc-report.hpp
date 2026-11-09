@@ -95,6 +95,13 @@ struct Row
     std::string guid;
     int depth = 0;
     gnc_numeric amount = gnc_numeric_zero ();
+    /** A period row is the net of its accounts' activity, but the two sides
+     *  are not recoverable from the net: keep them so the Debit/Credit
+     *  columns and a multi-series chart can print the activity separately.
+     *  Both are positive magnitudes and amount == debit - credit. */
+    bool split_amounts = false;
+    gnc_numeric debit = gnc_numeric_zero ();
+    gnc_numeric credit = gnc_numeric_zero ();
     /** Print a blank amount cell instead of the (zero) amount. */
     bool blank = false;
 };
@@ -106,6 +113,14 @@ struct Row
 enum class ChartType
 {
     Bar,
+    Line,
+};
+
+/** One line or bar series: a label and one value per chart label. */
+struct ChartSeries
+{
+    std::string label;
+    std::vector<gnc_numeric> values;
 };
 
 struct Chart
@@ -113,7 +128,8 @@ struct Chart
     ChartType type = ChartType::Bar;
     std::string title;
     std::vector<std::string> labels;
-    std::vector<gnc_numeric> values;
+    /** One or two series, each drawn over the same labels. */
+    std::vector<ChartSeries> series;
 };
 
 /** A rendered table.  `amount` is signed: the Debit column shows positive
@@ -182,15 +198,34 @@ struct TableSpec
     gnc_commodity* currency = nullptr;
     /** The accounts in scope.  Empty means every account in the book. */
     std::vector<Account*> accounts;
-    /** Add a bar chart below the table. */
+    /** Further restrict the scope to these account types.  Empty means every
+     *  type.  This is what makes a built-in spec portable between books: a
+     *  GUID means one book, an account type means every book. */
+    std::vector<GNCAccountType> account_types;
+    /** A period row prints its period's activity (the default) or the
+     *  balance as of the end of the period ("cumulative"). */
+    bool cumulative = false;
+    /** Add a chart below the table. */
     bool chart = false;
+    ChartType chart_type = ChartType::Bar;
+    /** The amount columns the chart plots, in series order: one or two of
+     *  Debit/Credit/Balance.  Empty means derive from `columns`. */
+    std::vector<Column> chart_columns;
 };
 
-/** Render a TableSpec as an HTML document.  A period-grouped spec needs both
- *  dates; without them nothing is rendered and the caller reports the
- *  problem. */
+/** The account type names a spec may scope by, in display order: the engine's
+ *  persistent names (xaccAccountTypeEnumAsString), without the hidden root. */
+std::vector<std::string> account_type_vocabulary ();
+
+/** Resolve an account type name from account_type_vocabulary().  False for a
+ *  name outside the vocabulary (including "ROOT"). */
+bool account_type_from_name (const std::string& name, GNCAccountType& type);
+
+/** Render a TableSpec as an HTML document.  A period-grouped spec with no
+ *  dates uses the range the scoped transactions cover; when the scope has no
+ *  transactions `error` (when given) explains it and nothing is rendered. */
 bool render_table_spec (const TableSpec& spec, Account* root,
-                        std::string& html);
+                        std::string& html, std::string* error = nullptr);
 
 /* --------------------------------------------------------------- reports */
 

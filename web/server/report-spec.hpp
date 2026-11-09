@@ -43,12 +43,23 @@ struct ReportSpec
     std::string id;
     std::string name;
     std::string title;
+    /** Optional one-line explanation shown in the report list.  Built-ins
+     *  use it to say which accounts they are scoped to. */
+    std::string description;
     std::vector<std::string> columns;
     std::string grouping = "none";
     std::string period_unit = "year";
+    /** "activity" (the default) or "cumulative"; cumulative turns a period
+     *  grouping into balances as of each period's end. */
+    std::string period_mode = "activity";
     SpecQuery query;
-    /** "", or a chart type ("bar"). */
+    /** Account type names (account_type_vocabulary()) that further scope the
+     *  query.  Empty means every type. */
+    std::vector<std::string> account_types;
+    /** "", or a chart type ("bar" or "line"). */
     std::string chart;
+    /** One or two amount column names the chart plots, in series order. */
+    std::vector<std::string> chart_series;
 };
 
 /** Where saved reports live: $GNC_WEBUI_REPORTS when set (the tests use a
@@ -69,8 +80,18 @@ bool save_specs (const std::vector<ReportSpec>& specs, std::string& error);
 bool spec_from_json (const std::string& body, Account* root, ReportSpec& spec,
                      std::string& error);
 
-std::string spec_to_json (const ReportSpec& spec);
+std::string spec_to_json (const ReportSpec& spec, bool builtin = false);
+/** The saved reports, plus the built-in specs under "builtin".  Built-ins are
+ *  not stored: they are code, so they appear in every book and survive a
+ *  deleted or missing store. */
 std::string specs_to_json (const std::vector<ReportSpec>& specs);
+
+/** The built-in report specs, in report-list order.  Their ids are stable
+ *  ("builtin-...") and their scope is by account type, never by GUID, so the
+ *  same spec works in every book. */
+const std::vector<ReportSpec>& builtin_specs ();
+std::vector<std::string> builtin_spec_names ();
+bool builtin_spec_by_id (const std::string& id, ReportSpec& spec);
 
 /** Render a validated spec through the native report layer. */
 bool render_spec_html (const ReportSpec& spec, Account* root,

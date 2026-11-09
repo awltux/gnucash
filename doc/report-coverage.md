@@ -470,3 +470,37 @@ are loaded, and the locale loader explains the 66-vs-65 difference.
 `doc/CMakeLists.txt` adds this file to `doc_noinst_DATA`, which feeds
 `doc_DIST_local` and therefore `doc_DIST` in the parent scope, so the analysis
 ships with the documentation.  No other file changed.
+
+## 9. Update: the built-in spec library
+
+Measured at `542451b1d9`; the change described here is the web-tier work on
+`webui/engine-server` after that commit.
+
+The web tier now ships four built-in designer specs, defined in
+`web/server/report-spec.cpp` and served by `GET /api/specs` under `builtin`:
+
+| id | report | what it covers |
+|---|---|---|
+| `builtin-income-expenses-month` | Income vs Expenses by Month | period grouping over `INCOME` + `EXPENSE`, two series (credit = income, debit = expenses), line chart |
+| `builtin-expenses-by-account` | Expenses by Account | flat `EXPENSE`, bar chart |
+| `builtin-income-by-account` | Income by Account | flat `INCOME`, bar chart |
+| `builtin-net-worth-month` | Net Worth by Month | cumulative period balances over asset and liability types, line chart |
+
+They are **not** ports of the 19 Scheme chart reports and do not change the
+name coverage in section 3: 10 of 66 names, 15.2%, is still the number.  What
+changed is the reason the chart class was listed as out of scope.  The spec
+vocabulary now has multi-series charts (`bar` and `line`), a chart series is a
+chosen amount column of the table's own rows (debit, credit or balance), and a
+period row keeps its debit and credit sides separately so a chart can show
+income against expenses without a bespoke renderer.  Account-type scoping
+makes a spec portable between books, and `date_preset: "all"` takes a period
+report's range from the scoped transactions.  The class that remains
+uncovered is the *named* Scheme chart reports with their own option pages,
+budget charts (needs the budget model) and price/scatter charts (needs a
+second chart family), not chart rendering as such.
+
+The honesty rules from the task hold: the built-ins are named in
+`/api/reports` in both builds and marked `builtin` in the spec list; they are
+never written to the saved store and cannot be deleted; a Scheme-only report
+still answers 501 without Guile, so no Scheme report is made to look native,
+and the rest of the 56 non-native names remain visibly unavailable.
