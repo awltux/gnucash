@@ -46,6 +46,12 @@ With --two-accounts a second stock account, Assets:Investments:Retirement,
 carries a lot of the same security with one partial sale, which is what
 exercises the report's per-account sections and its grand total.
 
+Every account and lot is also written to <output>.ids, one "kind name guid"
+row per line (tab-separated), the companion file make-invoice-book.py writes
+for owners: the valuation/portfolio reports take an account GUID (Lot Viewer,
+the IFRS cost basis report) or a selection of them (the two portfolio
+listings), so a test has to be able to name one without parsing the book.
+
 Run it with python3; it needs no GnuCash libraries.
 """
 import sys
@@ -370,10 +376,34 @@ def main(argv):
 
     with open(out_path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(out) + "\n")
+
+    def full_name(account):
+        """The account's full name, "Assets:Investments:Brokerage"."""
+        parts = []
+        node = account
+        while node is not None and node.type != "ROOT":
+            parts.append(node.name)
+            node = node.parent
+        return ":".join(reversed(parts))
+
+    # A machine-readable companion so a test can name an account or a lot
+    # without parsing the book.  One "kind name guid" row per line, the same
+    # layout make-invoice-book.py writes for its owners.  Accounts carry their
+    # full name, which is unique; the stock accounts and the lots below them
+    # are what the valuation/portfolio reports select.
+    identifiers = [("account", full_name(account), account.guid)
+                   for account in accounts if account.type != "ROOT"]
+    identifiers += [("lot", lot.title, lot.guid)
+                    for account in accounts for lot in account.lots]
+    with open(out_path + ".ids", "w", encoding="utf-8") as handle:
+        for kind, name, value in identifiers:
+            handle.write(f"{kind}\t{name}\t{value}\n")
+
     print(f"wrote {out_path}: {len(accounts)} accounts, "
           f"{len(transactions)} transactions, "
           f"{len(brokerage.lots) + len(retirement.lots)} lots, "
           f"{len(prices)} prices")
+    print(f"wrote {out_path}.ids: {len(identifiers)} account and lot ids")
 
 
 if __name__ == "__main__":

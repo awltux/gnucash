@@ -223,6 +223,10 @@ All source paths in this section are relative to `gnucash/report/reports/`.
 | 7 | Receivable Aging | `standard/new-aging.scm` | `receivable_aging()`: owner/lot aging on A/Receivable accounts, six buckets, amounts negated. |
 | 8 | Payable Aging | `standard/new-aging.scm` | `payable_aging()`: the same engine on A/Payable accounts. |
 | 9 | Investment Lots | `standard/investment-lots.scm` | `investment_lots()`: lot state, prices, 20 columns, realised/unrealised gains, short/long-term tests. |
+| 25 | Advanced Portfolio | `standard/advanced-portfolio.scm` | `advanced_portfolio()`: per-account basis, value, money in/out, realised and unrealised gain, rate of gain, income, brokerage fees and total return. |
+| 34 | IFRS weighted-average cost basis report | `standard/ifrs-cost-basis.scm` | `ifrs_cost_basis()`: the 27-column running average-cost ledger, the basis and gain of each sale, the register's gain and the variance. |
+| 37 | Investment Portfolio | `standard/portfolio.scm` | `investment_portfolio()`: per-account units, price and value at a date, with the Total row. |
+| 39 | Lot Viewer | `standard/lot-viewer.scm` | `lot_viewer()`: one row per transaction, one column per lot, the document row and each lot's balance. |
 | 10 | Budget Report | `standard/budget.scm` | `budget_report()`: budget-vs-actual period table over the book's default budget. |
 | 11 | Budget Income Statement | `standard/budget-income-statement.scm` | `budget_income_statement()`: budgeted revenue/expense statement. |
 | 12 | Budget Profit & Loss | `standard/budget-income-statement.scm` | Second registration of the budget statement renderer. |
@@ -256,6 +260,50 @@ give every owner type a document.  `report-parity.sh` gained the
 `ext4-web` and `ext4-noguile`; the extracts include the history rows, the
 brought-forward and period totals, the aging row and the summary's customer
 rows.  See section 11.
+
+#### 3.1b The valuation/portfolio cluster (registry numbers 25, 34, 37, 39)
+
+Four names share the lot and price machinery Investment Lots established, so
+they are reported together.  `gnc-report.cpp` holds all four; the order below is
+the order they were implemented in, by tractability.
+
+| # | Report | Source | Native implementation / evidence |
+|---:|---|---|---|
+| 39 | Lot Viewer | `standard/lot-viewer.scm` | `lot_viewer()`: the account's transactions in the period, one column per lot any of them touches (titled and short-GUIDed), a document row, each transaction's split amount per lot in the account's commodity, the "Other Account" column and a Balance row.  The smallest of the four: no price lookup and no gain arithmetic, only the lot/split partition.  Its Scheme option holds *one* account; the native option is `account`, and `report-parity.sh` sets it from `[options]` as `account=<GUID>`. |
+| 37 | Investment Portfolio | `standard/portfolio.scm` | `investment_portfolio()`: one row per stock/mutual account -- account, symbol, listing, units, price, value -- and a Total row.  One balance and one price lookup per account: the first report to need the price-source option, and the one that proves it. |
+| 25 | Advanced Portfolio | `standard/advanced-portfolio.scm` | `advanced_portfolio()`: the same account rows with basis, value, money in/out, realised and unrealised gain, total gain and its rate, income, brokerage fees, total return and its rate, plus the grand total.  Needs the basis engine (`basis_builder()`: average/FIFO/LIFO over `BasisParcel`s) and the price-source fallback marker. |
+| 34 | IFRS weighted-average cost basis report | `standard/ifrs-cost-basis.scm` | `ifrs_cost_basis()`: the 27-column running ledger.  The transaction-identification table (`open_types`, `long_types`, `short_types`) is ported row for row; the running basis adds and multiplies with `GNC_DENOM_AUTO`/`REDUCE` because the Scheme report's arithmetic is exact and only rounds when it prints (a fixed-denominator accumulator drifts by a cent over a year of transactions). |
+
+The fixture is `web/test/make-investment-book.py --two-accounts`: four lots in
+one account (one closed, one pre-window, two in-window), one in the second, a
+short-term and a long-term sale, five prices, USD throughout.  No new fixture
+data was needed: it already had multiple purchases at different prices and a lot
+that is opened and never closed.  The script now also writes `<book>.ids` (one
+`kind name guid` row per account and lot, the companion file
+`make-invoice-book.py` writes for its owners), because three of the four
+reports take an account GUID and a test has to be able to name one.  What the
+fixture does not exercise, and the reports therefore do not prove: a currency
+other than the transaction currency (every conversion is the identity on this
+book), commission splits and dividend reinvestment (`advanced_portfolio()`
+does not implement the Scheme report's DRP residual account), spin-offs, and
+stock splits.
+
+Both default pages are reproduced rather than rejected.  Lot Viewer's Scheme
+account option has no default; a null account adds no term to its split query,
+so the default page is the whole book's transactions and every lot they touch,
+with the amounts in the default currency (`gnc_commodity_print_info(null)` is
+the default print info).  The IFRS report's five account selections have no
+default either, and each falls back to the first account in the book of its
+own allowed types -- the engine's `GncOptionAccountSelValue::get_default_value`
+rule -- so the report's default run is the Scheme report's default run, and on
+a book with no stock account both print the "specify report options" warning.
+
+`report-parity.sh` gained the `portfolio`, `lot-viewer` and `ifrs` extractors
+and compares all four names in `ext4-web` and `ext4-noguile`, on their defaults
+and scoped (13 cases per build).  The extracts are the full cell matrix for Lot
+Viewer and IFRS and (label, text columns, amounts) for the two portfolio
+listings, so the note/narrative columns and the blank cells are part of the
+claim.
 
 ### 3.2 Spec (5 names expressible today)
 
@@ -369,16 +417,16 @@ subsystem or a changed report, not a report port.
 
 | Class | Names | Share of 66 | Notes |
 |---|---:|---:|---|
-| native | 24 | 36.4% | 17 implementations; seven names share a renderer. |
+| native | 28 | 42.4% | 21 implementations; seven names share a renderer. |
 | spec | 5 | 7.6% | 4 built-in specs cover four of them; Account Summary has no built-in. |
-| logic | 16 | 24.2% | About seven engines; see section 3.3. |
+| logic | 12 | 18.2% | About six engines; see section 3.3. |
 | template | 2 | 3.0% | Easy and Fancy Invoice layouts. |
 | closed | 19 | 28.8% | 13 chart-model (including Budget Chart), 2 demos, 4 other decisions. |
 | **total** | **66** | **100%** | 65 loaded per build because of the locale `taxtxf`. |
 
-Native + spec = **29/66 = 43.9%**.  Native + spec + closed = **48/66 =
-72.7%** done-or-decided.  The unported remainder is logic + template =
-**18/66 = 27.3%**.
+Native + spec = **33/66 = 50.0%**.  Native + spec + closed = **52/66 =
+78.8%** done-or-decided.  The unported remainder is logic + template =
+**14/66 = 21.2%**.
 
 Separate from the 66: **4 built-in designer specs** (Income vs Expenses by
 Month, Expenses by Account, Income by Account, Net Worth by Month).  They are
@@ -391,21 +439,21 @@ They are the `+4` in the `/api/reports` counts in section 1.1.
 
 The headline is deliberately simple:
 
-- **24 of 66 source names render natively: 24/66 = 36.4%.**  That is the
+- **28 of 66 source names render natively: 28/66 = 42.4%.**  That is the
   number to use for "how much of the Scheme registry does the native layer
   replace".  Because the locale loader swaps the two tax reports, the per-build
-  number is **24/65 = 36.9% in a US build** and **23/65 = 35.4% in a German
+  number is **28/65 = 43.1% in a US build** and **27/65 = 41.5% in a German
   build**: the German `Tax Report / TXF Export` replaces the US schedule, and
-  the German report is closed.  The 24/66 source count includes both tax names,
+  the German report is closed.  The 28/66 source count includes both tax names,
   only one of which a build loads.
-- **29 of 66 can be produced without new native code: 29/66 = 43.9%.**  Five
+- **33 of 66 can be produced without new native code: 33/66 = 50.0%.**  Five
   more are spec-expressible.  Four of those five correspond to patterns the
   built-in specs already exercise, but the built-ins are separate names, not
   registrations of the Scheme names; Account Summary has no built-in.
   A user who wants the Scheme name itself still needs it registered.
 - **19 of 66 are closed: 19/66 = 28.8%.**  If closed decisions count as
-  "covered", 48/66 = 72.7% is done-or-decided.
-- **18 of 66 are unported: 18/66 = 27.3%.**  This is the only number that is a
+  "covered", 52/66 = 78.8% is done-or-decided.
+- **14 of 66 are unported: 14/66 = 21.2%.**  This is the only number that is a
   backlog.
 
 A Guile-free build's `/api/reports` has 28 entries (24 native + 4 built-in
@@ -512,7 +560,8 @@ over a book maintained in the desktop application:
 - Receivable and Payable Aging, if they track money owed;
 - Customer Report, Vendor Report, Employee Report, Job Report and Customer
   Summary, if they invoice customers or track a job;
-- Investment Lots for a brokerage account;
+- Investment Lots, Investment Portfolio and Advanced Portfolio for a
+  brokerage account, and Lot Viewer for one account's lots;
 - the four built-in chart specs (income vs expenses by month, expenses by
   account, income by account, net worth by month);
 - Printable Invoice, Receipt, Tax Invoice and Australian Tax Invoice, if they
@@ -532,8 +581,6 @@ What that user **cannot** do natively:
   Statement;
 - General Journal, Reconciliation Report and Transaction Breakdown Report;
 - the Income and GST Statement (relevant where GST applies);
-- the portfolio/cost-basis reports (Advanced Portfolio, Investment Portfolio,
-  IFRS) and Lot Viewer;
 - Easy Invoice and Fancy Invoice layouts;
 - the German tax report/ELSTER export.
 
@@ -562,9 +609,6 @@ A business that needs any of the following **cannot**:
   Breakdown Report.
 - **Tax:** Income and GST Statement (non-US GST); Tax Report / TXF Export
   (German ELSTER).  The US schedule is native.
-- **Investments:** Advanced Portfolio, Investment Portfolio, IFRS
-  weighted-average cost basis report, Lot Viewer.  Investment Lots covers the
-  lot table, not the portfolio summaries or IFRS cost basis.
 - **Documents:** Easy Invoice, Fancy Invoice.  The four native documents cover
   the standard printable invoice, receipt and tax invoice, not those two
   layouts.
@@ -578,13 +622,13 @@ report equity/cash flow, bill with a custom layout, or file non-US tax.
 
 The unported logic/template gap is **weeks, not months**.  The last six report
 stages added 18 names (from the six core reports to 24) in about nine hours of
-commit-to-commit time (section 6); the 18 remaining names are the same count,
+commit-to-commit time (section 6); the 14 remaining names are the same count,
 and several of them share engines.  At the observed pace, with a 2-3x
-allowance for the harder engines (IFRS, scheduled transactions), the unported
+allowance for the harder engines (scheduled transactions), the unported
 work is **order 2-4 weeks**, not the "months in total" of the earlier
 document.
 
-**Full parity is months**, but not because of the 18 unported report names.
+**Full parity is months**, but not because of the 14 unported report names.
 It is months because the 19 closed names include new subsystems: pie, scatter,
 stacked multi-series and per-account period-index charts for 13 names
 (including Budget Chart); an ELSTER XML writer and German tax table for one; an
@@ -651,7 +695,7 @@ close precedent.
 
 | Remaining cluster | Names | Closest precedent | Projected source lines | Projected commit-time |
 |---|---:|---|---:|---:|
-| Portfolios/cost basis (Advanced, Investment Portfolio, IFRS, Lot Viewer) | 4 | lots | 3,200-4,800 | 4-6 h |
+| Portfolios/cost basis (Advanced, Investment Portfolio, IFRS, Lot Viewer) | 4 | lots | done: see section 3.1b | - |
 | Cross-tab statements (BS Multicolumn, IS Multicolumn, Equity) | 3 | budgets + documents | 1,500-2,100 | 2-3 h |
 | Entry listings (General Journal, Transaction Breakdown, Reconciliation) | 3 | listings + aging | 1,500-2,100 | 2-3 h |
 | Cash flow (Cash Flow, Cash Flow Barchart) | 2 | cash flow | 1,200-1,800 | 1-2 h |
@@ -721,7 +765,7 @@ work described in 5.3.
   about reports and documents, not about replacing data entry.
 - **`/api/reports` is 69 in a Guile build and 28 in a Guile-free build.**
   Neither is 66.  The 66 is the source registry; a build loads 65 of those, and
-  the 4 built-ins are extra; the 24 native names are a subset of the 66.
+  the 4 built-ins are extra; the 28 native names are a subset of the 66.
   Quoting any of these as "the number of reports" without the list is a
   category error.
 

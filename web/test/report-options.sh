@@ -161,6 +161,130 @@ expect_status 400 "period on the lots report" \
     "/report/Investment%20Lots?period=all"
 expect_body "period on the lots report" "does not accept a 'period' option"
 
+# The two portfolio listings publish the same price source, account selection
+# and zero-share switch; the Advanced Portfolio adds the basis method, the
+# brokerage-fee policy and its four display switches, and has no start date
+# because its one date is the valuation date.
+for pf in "Investment Portfolio:1" "Advanced Portfolio:2"; do
+    pfname=${pf%:*}
+    pflevel=${pf##*:}
+    pfenc=$(printf '%s' "$pfname" | sed 's/ /%20/g')
+    expect_status 200 "$pfname options" "/api/report/$pfenc/options"
+    expect_body "$pfname options" "\"report\":\"$pfname\""
+    expect_body "$pfname options" '"name":"end"'
+    expect_body "$pfname options" '"label":"Date"'
+    expect_body "$pfname options" '"name":"currency"'
+    expect_body "$pfname options" '"name":"price-source"'
+    expect_body "$pfname options" '"type":"choice"'
+    expect_body "$pfname options" \
+        '"choices":["pricedb-latest","pricedb-before","pricedb-nearest"]'
+    expect_body "$pfname options" '"name":"accounts"'
+    expect_body "$pfname options" '"name":"include-zero"'
+    expect_not_body "$pfname options has no period preset" '"name":"period"'
+    if [ "$pflevel" = "1" ]; then
+        # The Investment Portfolio accepts a start date for range symmetry.
+        expect_body "$pfname options" '"name":"start"'
+        expect_not_body "$pfname options has no basis method" \
+            '"name":"basis-method"'
+    else
+        expect_not_body "$pfname has no start date" '"name":"start"'
+        expect_body "$pfname options" '"name":"basis-method"'
+        expect_body "$pfname options" \
+            '"choices":["average-basis","fifo-basis","filo-basis"]'
+        expect_body "$pfname options" '"name":"brokerage-fees"'
+        expect_body "$pfname options" \
+            '"choices":["include-in-basis","include-in-gain","ignore-brokerage"]'
+        expect_body "$pfname options" '"name":"show-symbol"'
+    fi
+    expect_status 400 "bad price source on the $pfname" \
+        "/report/$pfenc?price-source=weighted-average"
+    expect_body "bad price source on the $pfname" \
+        "invalid price-source 'weighted-average'"
+    expect_status 400 "period on the $pfname" "/report/$pfenc?period=all"
+    expect_body "period on the $pfname" "does not accept a 'period' option"
+    if [ "$pflevel" = "2" ]; then
+        expect_status 400 "start on the $pfname" \
+            "/report/$pfenc?start=2026-01-01"
+        expect_body "start on the $pfname" "does not accept a 'start' option"
+        expect_status 400 "bad basis method on the $pfname" \
+            "/report/$pfenc?basis-method=average"
+        expect_body "bad basis method on the $pfname" \
+            "invalid basis-method 'average'"
+    fi
+done
+
+# The Lot Viewer takes one account, a period and a description filter.  It has
+# no currency and no period preset.
+expect_status 200 "Lot Viewer options" "/api/report/Lot%20Viewer/options"
+expect_body "Lot Viewer options" '"name":"start"'
+expect_body "Lot Viewer options" '"name":"end"'
+expect_body "Lot Viewer options" '"name":"account"'
+expect_body "Lot Viewer options" '"label":"Account"'
+expect_body "Lot Viewer options" '"name":"description-filter"'
+expect_body "Lot Viewer options" '"type":"text"'
+expect_not_body "Lot Viewer options has no 'accounts' list" '"name":"accounts"'
+expect_not_body "Lot Viewer options has no currency" '"name":"currency"'
+expect_not_body "Lot Viewer options has no period preset" '"name":"period"'
+expect_status 400 "accounts on the lot viewer" "/report/Lot%20Viewer?accounts=all"
+expect_body "accounts on the lot viewer" "does not accept an 'accounts' option"
+expect_status 400 "currency on the lot viewer" "/report/Lot%20Viewer?currency=USD"
+expect_body "currency on the lot viewer" "does not accept a 'currency' option"
+
+# The IFRS cost basis report has five account selections: the stock account is
+# the route's "accounts", and the other four are their own names.
+expect_status 200 "IFRS options" \
+    "/api/report/IFRS%20weighted-average%20cost%20basis%20report/options"
+expect_body "IFRS options" '"name":"start"'
+expect_body "IFRS options" '"name":"end"'
+expect_body "IFRS options" '"name":"currency"'
+expect_body "IFRS options" '"name":"accounts"'
+expect_body "IFRS options" '"label":"Stock Account"'
+expect_body "IFRS options" '"name":"proceeds-account"'
+expect_body "IFRS options" '"name":"dividend-account"'
+expect_body "IFRS options" '"name":"capgains-account"'
+expect_body "IFRS options" '"name":"fees-account"'
+expect_body "IFRS options" '"name":"fee-action"'
+expect_body "IFRS options" '"name":"format-cells"'
+expect_not_body "IFRS options has no period preset" '"name":"period"'
+expect_status 400 "period on the IFRS report" \
+    "/report/IFRS%20weighted-average%20cost%20basis%20report?period=all"
+expect_body "period on the IFRS report" "does not accept a 'period' option"
+expect_status 400 "unknown option on the IFRS report" \
+    "/report/IFRS%20weighted-average%20cost%20basis%20report?basis-method=fifo-basis"
+expect_body "unknown option on the IFRS report" \
+    "unknown option 'basis-method' for report"
+
+# The cluster's default pages.  Lot Viewer's Scheme account option has no
+# default, and a null account makes its split query add no account term at
+# all: the default page is the whole book, one column per lot it can reach, it
+# is not the "specify report options" warning.  The page is a table when the
+# book has transactions in the default period and the engine's "No data"
+# warning when it does not; both are the report's own default output.
+lv_status=$(fetch "/report/Lot%20Viewer")
+if [ "$lv_status" = 200 ] && grep -qE '<table|>No data<' "$BODY"; then
+    ok "Lot Viewer defaults render the whole book, or say there is no data"
+else
+    bad "Lot Viewer defaults: got $lv_status: $(head -c 200 "$BODY")"
+fi
+expect_status 200 "Lot Viewer defaults (again)" "/report/Lot%20Viewer"
+expect_not_body "Lot Viewer defaults do not ask for options" \
+    "specify certain report options"
+
+# The IFRS report's five account selections fall back to the engine's "first
+# account of the allowed types", so with no options at all it renders the same
+# ledger the Scheme report renders on a book that has a stock account, and the
+# engine's "specify report options" warning on a book that has none.  Both are
+# correct default pages, so the check here is that the default is one of them
+# (never a blank page); the stock-account case is compared with the Scheme
+# report by report-parity.sh on the generated investment book.
+if_status=$(fetch "/report/IFRS%20weighted-average%20cost%20basis%20report")
+if [ "$if_status" = 200 ] && \
+   grep -qE '<table|specify certain report options' "$BODY"; then
+    ok "IFRS defaults render the ledger, or say why this book has no stock account"
+else
+    bad "IFRS defaults: got $if_status: $(head -c 200 "$BODY")"
+fi
+
 # The Budget Report reads a budget object rather than a query over splits, so
 # its only honest option is the account selection: its Scheme "dates" are
 # budget-period selectors, not calendar dates.  It always uses the book's
@@ -723,6 +847,15 @@ PY
             # period, the display switches have nothing to change.  The
             # generated owner book and report-parity.sh cover them.
             ok "$report has no customer activity in this book; the generated owner book covers it"
+            continue ;;
+        "Investment Portfolio"|"Advanced Portfolio"|"Lot Viewer"|\
+        "IFRS weighted-average cost basis report")
+            # sample1.gnucash has no stock account, no price database and no
+            # lots, so every option of the valuation cluster renders the same
+            # empty report on it.  The descriptors and the 400s are checked
+            # above; web/test/make-investment-book.py and report-parity.sh
+            # cover what the options do.
+            ok "$report needs a book with lots and prices; the generated investment book covers it"
             continue ;;
     esac
 

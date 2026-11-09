@@ -121,6 +121,35 @@
 #   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
 #       /tmp/investment-book.gnucash "Investment Lots" 2026-01-01 2026-06-30
 #
+# The same book serves the valuation/portfolio cluster:
+#
+#   python3 web/test/make-investment-book.py /tmp/investment-book.gnucash --two-accounts
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/investment-book.gnucash "Investment Portfolio" "" 2026-06-30
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/investment-book.gnucash "Investment Portfolio" "" 2026-06-30 "" "" \
+#       "price-source=pricedb-nearest"
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/investment-book.gnucash "Advanced Portfolio" "" 2026-06-30
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/investment-book.gnucash "Lot Viewer" 2026-01-01 2026-06-30 "" "" \
+#       "account=<stock account GUID>"
+#   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
+#       /tmp/investment-book.gnucash "IFRS weighted-average cost basis report" \
+#       2026-01-01 2026-06-30 "<stock account GUID>" "" \
+#       "proceeds-account=<GUID>&capgains-account=<GUID>&fees-account=<GUID>"
+#
+# The two portfolio listings have one date, which is their valuation date, so
+# they take no start date.  Lot Viewer's Scheme option holds a *single*
+# account, so its account goes through [options] as account=<GUID>: the
+# [accounts] channel is a list, which that option cannot take.  Left unset all
+# four reports render the same default pages the Scheme reports render (Lot
+# Viewer: the whole book's transactions and every lot they touch; IFRS: its
+# five selections resolved to the first account of each allowed type), so they
+# are compared with no options at all as well.  The IFRS report's stock account
+# is its first account selection and the other three are separate options, each
+# set from [options] by GUID.
+#
 # The Tax Schedule report needs tax-related accounts with US TXF codes; no
 # book in the tree has any, so generate one and run it for its tax year:
 #
@@ -193,6 +222,10 @@ extractor_for() {
         "General Ledger")   echo general-ledger ;;
         "Receivable Aging"|"Payable Aging") echo aging ;;
         "Investment Lots") echo investment-lots ;;
+        "Investment Portfolio") echo portfolio ;;
+        "Advanced Portfolio") echo advanced-portfolio ;;
+        "Lot Viewer") echo lot-viewer ;;
+        "IFRS weighted-average cost basis report") echo ifrs ;;
         "Budget Report") echo budget-report ;;
         "Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo budget-statement ;;
@@ -218,6 +251,11 @@ report_guid() {
         "Receivable Aging") echo "9cf76bed17f14401b8e3e22d0079cb98" ;;
         "Payable Aging")    echo "e57770f2dbca46619d6dac4ac5469b50" ;;
         "Investment Lots")  echo "ab2acc24afd14630a551f98f1a35fa81" ;;
+        "Investment Portfolio") echo "4a6b82e8678c4f3d9e85d9f09634ca89" ;;
+        "Advanced Portfolio") echo "21d7cfc59fc74f22887596ebde7e462d" ;;
+        "Lot Viewer") echo "b64b8cbaa633472c93ab7d9a2424d157" ;;
+        "IFRS weighted-average cost basis report") \
+            echo "15d5b744176c4625a703720338725291" ;;
         "Budget Report")    echo "810ed4b25ef0486ea43bbd3dddb32b11" ;;
         "Budget Income Statement") echo "583c313fcc484efc974c4c844404f454" ;;
         "Budget Profit & Loss")    echo "e5fa5ce805e840ecbeca4dba3fa4ead9" ;;
@@ -259,6 +297,11 @@ scheme_start_option() {
         "Receivable Aging"|"Payable Aging") echo "" ;;
         # The lots report calls its dates "Start date"/"End date".
         "Investment Lots") echo "Start date" ;;
+        # The two portfolio listings have one date, which is their
+        # valuation date; there is no start date to set.
+        "Investment Portfolio"|"Advanced Portfolio") echo "" ;;
+        "Lot Viewer") echo "Start Date" ;;
+        "IFRS weighted-average cost basis report") echo "Start Date" ;;
         # The tax schedule's period options are the Scheme names "From"/"To".
         "Tax Schedule Report/TXF Export") echo "From" ;;
         # The budget reports' periods are budget periods, not calendar dates;
@@ -281,6 +324,9 @@ scheme_end_option() {
         "Balance Sheet") echo "Balance Sheet Date" ;;
         "Receivable Aging"|"Payable Aging") echo "To" ;;
         "Investment Lots") echo "End date" ;;
+        "Investment Portfolio"|"Advanced Portfolio") echo "Date" ;;
+        "Lot Viewer") echo "End Date" ;;
+        "IFRS weighted-average cost basis report") echo "End Date" ;;
         "Tax Schedule Report/TXF Export") echo "To" ;;
         "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo "" ;;
@@ -299,7 +345,9 @@ native_takes_accounts() {
         "Transaction Report"|"General Ledger"|"Budget Report"|\
         "Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow"|\
-        "Tax Schedule Report/TXF Export") return 0 ;;
+        "Tax Schedule Report/TXF Export"|\
+        "Investment Portfolio"|"Advanced Portfolio"|\
+        "IFRS weighted-average cost basis report") return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -310,13 +358,25 @@ native_takes_accounts() {
 scheme_account_option() {
     case "$1" in
         "Budget Report"|"Budget Flow") echo "Account" ;;
+        "IFRS weighted-average cost basis report") echo "Stock Account" ;;
         "Tax Schedule Report/TXF Export") echo "Select Accounts (none = all)" ;;
         *) echo "Accounts" ;;
     esac
 }
 
+# Whether the Scheme report's account option holds one account ("Account",
+# "Stock Account") or a list of them.  The harness resolves GUIDs to a list,
+# so a single-account option takes the first entry of that list.
+scheme_account_single() {
+    case "$1" in
+        "IFRS weighted-average cost basis report") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export, Customer Report, Vendor Report, Employee Report, Job Report, Customer Summary)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Investment Portfolio, Advanced Portfolio, Lot Viewer, IFRS weighted-average cost basis report, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export, Customer Report, Vendor Report, Employee Report, Job Report, Customer Summary)"
 
 case "$REPORT" in
     "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
@@ -441,8 +501,23 @@ if [ -n "$START" ] || [ -n "$END" ] || [ -n "$ACCOUNTS" ] || \
                                             (member (gncAccountGetGUID a) wanted))
                                           all))))"
         fi
+        # A single-account option ("Account", "Stock Account") takes one
+        # account object, which has to be looked up in the book: the option's
+        # value is the entity, not a GUID.
+        ACCOUNT_VALUE="$ACCOUNT_EXPR"
+        if scheme_account_single "$REPORT"; then
+            FIRST_GUID=${ACCOUNTS%%,*}
+            ACCOUNT_VALUE="(letrec ((loop (lambda (lst)
+                                  (cond ((null? lst) #f)
+                                        ((string=? (gncAccountGetGUID (car lst))
+                                                   \"$FIRST_GUID\")
+                                         (car lst))
+                                        (else (loop (cdr lst)))))))
+                             (loop (gnc-account-get-descendants-sorted
+                                    (gnc-get-current-root-account))))"
+        fi
         ACCOUNT_OPTION="(gnc-set-option (gnc:optiondb options) \"Accounts\" \"$(scheme_account_option "$REPORT")\"
-                        $ACCOUNT_EXPR)"
+                        $ACCOUNT_VALUE)"
     fi
 
     INVOICE_OPTION=""
@@ -525,6 +600,66 @@ PY
                             page="Display"; name="Show Lines with All Zeros" ;;
                         show_inactive)
                             page="Display"; name="Show Inactive Customers" ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
+                "Investment Portfolio"|"Advanced Portfolio")
+                    case "$key" in
+                        price-source)   page="General"; name="Price Source" ;;
+                        basis-method)   page="General"; name="Basis calculation method" ;;
+                        brokerage-fees) page="General"; name="How to report brokerage fees" ;;
+                        include-zero)
+                            page="Accounts"; name="Include accounts with no shares" ;;
+                        show-symbol)    page="Display"; name="Show ticker symbols" ;;
+                        show-listing)   page="Display"; name="Show listings" ;;
+                        show-shares)    page="Display"; name="Show number of shares" ;;
+                        show-price)     page="Display"; name="Show prices" ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
+                "Lot Viewer")
+                    case "$key" in
+                        account)
+                            EXTRA_SCHEME="$EXTRA_SCHEME
+      (gnc-set-option (gnc:optiondb options) \"General\" \"Account\"
+                      (letrec ((loop (lambda (lst)
+                                       (cond ((null? lst) #f)
+                                             ((string=? (gncAccountGetGUID (car lst))
+                                                        \"$value\")
+                                              (car lst))
+                                             (else (loop (cdr lst)))))))
+                        (loop (gnc-account-get-descendants-sorted
+                               (gnc-get-current-root-account)))))"
+                            continue ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
+                "IFRS weighted-average cost basis report")
+                    case "$key" in
+                        proceeds-account|dividend-account|capgains-account|\
+                        fees-account)
+                            case "$key" in
+                                proceeds-account) acct_name="Proceeds Account" ;;
+                                dividend-account) acct_name="Dividend Account" ;;
+                                capgains-account) acct_name="Cap Gains Account" ;;
+                                fees-account)     acct_name="Fees Account" ;;
+                            esac
+                            EXTRA_SCHEME="$EXTRA_SCHEME
+      (gnc-set-option (gnc:optiondb options) \"General\" \"$acct_name\"
+                      (letrec ((loop (lambda (lst)
+                                       (cond ((null? lst) #f)
+                                             ((string=? (gncAccountGetGUID (car lst))
+                                                        \"$value\")
+                                              (car lst))
+                                             (else (loop (cdr lst)))))))
+                        (loop (gnc-account-get-descendants-sorted
+                               (gnc-get-current-root-account)))))"
+                            continue ;;
+                        fee-action)
+                            page="General"; name="Action field filter for fees" ;;
+                        format-cells)
+                            page="General"; name="Format monetary cells" ;;
+                        format-short)
+                            page="General"; name="Alternative row-style for shorts" ;;
+                        capitalise-purchase-costs)
+                            page="General"; name="Capitalise purchase commissions" ;;
                         *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
                     esac ;;
                 *)
@@ -1025,6 +1160,68 @@ def lot_value(text, cell_class):
     return stripped
 
 
+def portfolio(rows):
+    """The portfolio listings: (label, text columns, amounts) per row.
+
+    The two listings share the Account/Symbol/Listing/Shares/Price/Value
+    layout, and the Total row spans its amount across the columns.  Every
+    non-numeric cell after the label is kept, so the symbol and the listing
+    are part of the claim, and the column heading row is compared as the row
+    whose label is "Account".
+    """
+    out = []
+    for cells in rows:
+        texts = [" ".join(t.split()) for t, _ in cells]
+        if not texts:
+            continue
+        label = texts[0]
+        if not label:
+            continue
+        others = tuple(t for t, c in cells[1:] if t and not is_number(c))
+        numbers = tuple(amount(t) for t, c in cells[1:]
+                        if is_number(c) and t.strip())
+        out.append((label, others, numbers))
+    return out
+
+
+def lot_viewer(rows):
+    """The lot viewer: every cell of every row, in order.
+
+    Its table is a matrix: three fixed columns, one column per lot and the
+    "other account" column, with two heading rows (the lot titles, then their
+    short GUIDs), a document row, one row per transaction and a balance row.
+    Comparing every cell keeps the lot columns, their order, the amounts and
+    the balances in the claim.
+    """
+    out = []
+    for cells in rows:
+        out.append(tuple(" ".join(t.split()) for t, _ in cells))
+    return out
+
+
+def ifrs(rows):
+    """The IFRS cost basis ledger: every cell of every row, in order.
+
+    The report is a running ledger, so a row means nothing without its
+    neighbours: the claim is the whole 28-column table, including the note
+    column ("Buy", "Sell", "Notional distribution (dividend)") and the blank
+    cells where a transaction has no amount of that kind.  Text cells are
+    compared as text, amounts as numbers, so a currency symbol cannot hide a
+    difference and a blank cell is distinct from a printed zero.
+    """
+    out = []
+    for cells in rows:
+        values = []
+        for text, cell_class in cells:
+            stripped = " ".join(text.split())
+            if is_number(cell_class) and stripped:
+                values.append(amount(stripped))
+            else:
+                values.append(stripped)
+        out.append(tuple(values))
+    return out
+
+
 def budget_statement(rows):
     """A budget statement/flow row: (label, all amounts in the row).
 
@@ -1321,6 +1518,8 @@ EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "transaction-report": transaction_report,
               "general-ledger": general_ledger, "aging": aging,
               "investment-lots": investment_lots,
+              "portfolio": portfolio, "advanced-portfolio": portfolio,
+              "lot-viewer": lot_viewer, "ifrs": ifrs,
               "budget-report": budget_report,
               "budget-statement": budget_statement,
               "invoice": invoice, "receipt": receipt,

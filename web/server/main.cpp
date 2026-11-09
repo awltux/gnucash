@@ -989,13 +989,18 @@ build_report_request (const std::string& report, const std::string& query,
 
         case gnc::report::OptionType::AccountList:
         {
+            have_accounts = true;
             if (param.name != "accounts")
             {
-                error = "report '" + report + "' has no account selection '" +
-                        param.name + "'";
-                return false;
+                /* A report may publish more than one account selection (the
+                 * IFRS report has five); they are independent lists and the
+                 * report reads the extra ones by name. */
+                std::vector<Account*> selected;
+                if (!apply_accounts (false, {param.value}, selected, error))
+                    return false;
+                request.account_lists[param.name] = std::move (selected);
+                break;
             }
-            have_accounts = true;
             if (param.value == "all")
             {
                 all_accounts = true;
@@ -1097,11 +1102,17 @@ build_report_request (const std::string& report, const std::string& query,
                 request.tax_format = param.value;
                 break;
             }
-            error = "report '" + report + "' has no choice option '" +
-                    param.name + "'";
-            return false;
+            if (!choice_ok (param.value))
+            {
+                error = "invalid " + param.name + " '" + param.value + "'";
+                return false;
+            }
+            /* A choice the report publishes and this route has no special
+             * meaning for belongs to the report: it reads the value by the
+             * descriptor's name. */
+            request.choices[param.name] = param.value;
+            break;
         }
-
         case gnc::report::OptionType::Text:
         {
             if (param.name == "title")
@@ -1114,9 +1125,9 @@ build_report_request (const std::string& report, const std::string& query,
             }
             else
             {
-                error = "report '" + report + "' has no text option '" +
-                        param.name + "'";
-                return false;
+                /* The report's own text option (the lots viewer's
+                 * description filter, the IFRS fee action), read by name. */
+                request.texts[param.name] = param.value;
             }
             break;
         }
@@ -1158,9 +1169,11 @@ build_report_request (const std::string& report, const std::string& query,
                     request.invoice_options, param.name, value);
             if (!accepted)
             {
-                error = "report '" + report + "' has no boolean option '" +
-                        param.name + "'";
-                return false;
+                /* A switch the report publishes and this route has no
+                 * dedicated field for: store it by the descriptor's name for
+                 * the report to read, with its own default for an omitted
+                 * one. */
+                request.booleans[param.name] = value;
             }
             break;
         }

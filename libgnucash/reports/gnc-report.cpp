@@ -3293,6 +3293,1773 @@ investment_lots (Account* root, const LotOptions& options,
     return report;
 }
 
+/* ------------------------------------------------------ portfolio listings */
+
+namespace
+{
+
+/* The Scheme reports print units with gnc-share-print-info-places(), i.e. a
+ * fixed number of decimals and no commodity: "130.00". */
+std::string
+format_shares (gnc_numeric amount, int places)
+{
+    return xaccPrintAmount (amount, gnc_share_print_info_places (places));
+}
+
+/* The price of one unit of `commodity` in `report_cur`, and the price row the
+ * report prints.  The two are not the same lookup in the Scheme reports: the
+ * Price column prints a price in whatever currency the price database has it,
+ * while Value converts the units at the same source.  A book whose prices are
+ * already in the report currency makes them agree, and that is the only case
+ * the parity claim covers; for a price quoted the other way round the Scheme
+ * report inverts it and so does this. */
+struct PriceQuote
+{
+    /* Owned by the caller: gnc_price_unref() when done. */
+    GNCPrice* price = nullptr;
+    /* The price's value in its own currency (inverted when the lookup found
+     * it quoted the other way round). */
+    gnc_numeric value = gnc_numeric_zero ();
+};
+
+PriceQuote
+quote_price (GNCPriceDB* db, gnc_commodity* commodity, gnc_commodity* report_cur,
+             PriceSource source, time64 when)
+{
+    PriceQuote quote;
+    if (db == nullptr || commodity == nullptr)
+        return quote;
+
+    GList* prices = nullptr;
+    switch (source)
+    {
+    case PriceSource::Latest:
+        prices = gnc_pricedb_lookup_latest_any_currency (db, commodity);
+        break;
+    case PriceSource::Before:
+        prices = gnc_pricedb_lookup_nearest_before_any_currency_t64 (
+            db, commodity, time64CanonicalDayTime (when));
+        break;
+    case PriceSource::Nearest:
+        prices = gnc_pricedb_lookup_nearest_in_time_any_currency_t64 (
+            db, commodity, time64CanonicalDayTime (when));
+        break;
+    }
+
+    if (prices == nullptr)
+        return quote;
+
+    /* portfolio.scm takes the first price of the list, and inverts it only
+     * when the report currency is its commodity.  Preferring a price quoted
+     * in the report currency is what find-price() in the advanced report
+     * does; the two agree whenever the database holds only one quote. */
+    GNCPrice* first = static_cast<GNCPrice*> (prices->data);
+    GNCPrice* chosen = nullptr;
+    for (GList* node = prices; node != nullptr; node = node->next)
+    {
+        auto* price = static_cast<GNCPrice*> (node->data);
+        if (report_cur != nullptr &&
+            gnc_commodity_equiv (report_cur,
+                                 gnc_price_get_currency (price)))
+        {
+            chosen = price;
+            break;
+        }
+    }
+    if (chosen == nullptr)
+        chosen = first;
+
+    if (gnc_commodity_equiv (commodity, gnc_price_get_commodity (chosen)))
+    {
+        gnc_price_ref (chosen);
+        quote.price = chosen;
+        quote.value = gnc_price_get_value (chosen);
+    }
+    else
+    {
+        quote.price = gnc_price_invert (chosen);
+        quote.value = gnc_price_get_value (quote.price);
+    }
+    gnc_price_list_destroy (prices);
+    return quote;
+}
+
+/* Convert `amount` of `from` into `report_cur` at the price source, which is
+ * gnc:case-exchange-fn()'s own choice of engine helper. */
+gnc_numeric
+convert_at_source (gnc_numeric amount, gnc_commodity* from,
+                   gnc_commodity* report_cur, GNCPriceDB* db, PriceSource source,
+                   time64 when)
+{
+    if (from == nullptr || report_cur == nullptr ||
+        gnc_commodity_equiv (from, report_cur))
+        return amount;
+    switch (source)
+    {
+    case PriceSource::Latest:
+        return gnc_pricedb_convert_balance_latest_price (db, amount, from,
+                                                        report_cur);
+    case PriceSource::Before:
+        return gnc_pricedb_convert_balance_nearest_before_price_t64 (
+            db, amount, from, report_cur, time64CanonicalDayTime (when));
+    case PriceSource::Nearest:
+        return gnc_pricedb_convert_balance_nearest_price_t64 (
+            db, amount, from, report_cur, time64CanonicalDayTime (when));
+    }
+    return amount;
+}
+
+/* lot-viewer.scm's txn-type-alist: the four names the report prints. */
+const char*
+transaction_type_name (Transaction* txn)
+{
+    switch (xaccTransGetTxnType (txn))
+    {
+    case TXN_TYPE_INVOICE: return "Inv";
+    case TXN_TYPE_PAYMENT: return "Pmt";
+    case TXN_TYPE_LINK:    return "Link";
+    default:               return "None";
+    }
+}
+
+/* One lot column's cell for a transaction: the amounts of the splits that
+ * belong to the lot, or ":" when none do.  The Scheme report prints each
+ * amount in the *account's* commodity, which is why the other accounts'
+ * splits in the same transaction are printed as if they were shares.  With no
+ * account chosen the commodity is null, and the engine prints a null-commodity
+ * monetary with the default print info ("$20.00"), so the same fallback is
+ * used here. */
+Cell
+lot_cell (const std::vector<Split*>& splits, gnc_commodity* currency)
+{
+    if (splits.empty ())
+        return {":", "number-cell"};
+    std::string text;
+    for (Split* split : splits)
+    {
+        if (!text.empty ())
+            text += " ";
+        if (currency != nullptr)
+            text += format_amount (xaccSplitGetAmount (split), currency);
+        else
+            text += xaccPrintAmount (xaccSplitGetAmount (split),
+                                     gnc_default_print_info (TRUE));
+    }
+    return {text, "number-cell"};
+}
+
+/* The reports' default account selection: every stock and mutual fund account
+ * below the root, in the engine's sorted order. */std::vector<Account*>
+default_portfolio_accounts (Account* root)
+{
+    std::vector<Account*> all;
+    collect_accounts (root, all);
+    std::vector<Account*> selected;
+    for (Account* account : all)
+    {
+        const GNCAccountType type = xaccAccountGetType (account);
+        if (type == ACCT_TYPE_STOCK || type == ACCT_TYPE_MUTUAL)
+            selected.push_back (account);
+    }
+    return selected;
+}
+
+/* The first account of a named selection: a report that publishes more than
+ * one account list reads the ones after "accounts" from here. */
+Account*
+first_account_option (const ReportRequest& request, const std::string& name)
+{
+    const auto found = request.account_lists.find (name);
+    if (found == request.account_lists.end () || found->second.empty ())
+        return nullptr;
+    return found->second.front ();
+}
+
+/* An unset account-selection option's value, which is what the engine's
+ * GncOptionAccountSelValue::get_default_value() resolves: the first account
+ * below the root, in the engine's sorted order, whose type is one of the
+ * option's allowed types.  The IFRS report's five selections all have an
+ * empty default and an allowed-type set, so this is how its "no options at
+ * all" run decides which accounts are its stock, proceeds, dividend, capital
+ * gains and fee accounts. */
+Account*
+first_account_of_types (Account* root,
+                        std::initializer_list<GNCAccountType> types)
+{
+    if (root == nullptr)
+        return nullptr;
+    GList* descendants = gnc_account_get_descendants_sorted (root);
+    Account* found = nullptr;
+    for (GList* node = descendants; node != nullptr && found == nullptr;
+         node = node->next)
+    {
+        Account* account = static_cast<Account*> (node->data);
+        for (GNCAccountType type : types)
+            if (xaccAccountGetType (account) == type)
+            {
+                found = account;
+                break;
+            }
+    }
+    g_list_free (descendants);
+    return found;
+}
+
+} // namespace
+
+PortfolioReport
+investment_portfolio (Account* root, const PortfolioOptions& options,
+                      gnc_commodity* requested)
+{
+    PortfolioReport report;
+    report.title = "Investment Portfolio";
+
+    gnc_commodity* report_cur = report_currency (root, requested);
+    if (root == nullptr || report_cur == nullptr)
+        return report;
+
+    gchar* printed = nullptr;
+    printed = gnc_date_interval_format (options.date, options.date);
+    if (printed != nullptr)
+    {
+        report.title += " ";
+        report.title += printed;
+        g_free (printed);
+    }
+
+    GNCPriceDB* db =
+        gnc_pricedb_get_db (qof_instance_get_book (QOF_INSTANCE (root)));
+
+    std::vector<Account*> accounts = options.accounts;
+    if (accounts.empty ())
+        accounts = default_portfolio_accounts (root);
+
+    report.table.headings = {"Account", "Symbol", "Listing", "Units", "Price",
+                             "Value"};
+
+    gnc_numeric total = zero_in (report_cur);
+    bool any_row = false;
+    for (Account* account : accounts)
+    {
+        gnc_commodity* commodity = xaccAccountGetCommodity (account);
+        if (commodity == nullptr)
+            continue;
+
+        const gnc_numeric units =
+            xaccAccountGetBalanceAsOfDate (account, options.date);
+        if (!options.include_zero && gnc_numeric_zero_p (units))
+            continue;
+
+        PriceQuote quote = quote_price (db, commodity, report_cur,
+                                        options.price_source, options.date);
+        gnc_numeric value = convert_at_source (units, commodity, report_cur, db,
+                                               options.price_source,
+                                               options.date);
+        total = gnc_numeric_add_fixed (total, value);
+
+        std::vector<Cell> row;
+        row.push_back ({account_name (account), "anchor-cell"});
+        row.push_back ({gnc_commodity_get_mnemonic (commodity), "text-cell"});
+        row.push_back ({gnc_commodity_get_namespace (commodity), "text-cell"});
+        row.push_back ({format_shares (units, options.share_places),
+                        "number-cell"});
+        if (quote.price != nullptr)
+            row.push_back (
+                {format_amount (quote.value, gnc_price_get_currency (quote.price)),
+                 "number-cell"});
+        else
+            row.push_back ({format_amount (gnc_numeric_zero (), report_cur),
+                            "number-cell"});
+        row.push_back ({format_amount (value, report_cur), "number-cell"});
+        report.table.rows.push_back (std::move (row));
+        any_row = true;
+
+        if (quote.price != nullptr)
+            gnc_price_unref (quote.price);
+    }
+
+    /* The Scheme report prints the rule row and the total whenever an account
+     * selection exists, even when every account has been skipped. */
+    if (any_row)
+    {
+        report.table.rows.push_back ({label_cell ("", "", 6)});
+        std::vector<Cell> total_row;
+        total_row.push_back (label_cell ("Total", "total-label-cell"));
+        total_row.push_back (label_cell (format_amount (total, report_cur),
+                                         "total-number-cell", 5));
+        report.table.rows.push_back (std::move (total_row));
+    }
+    return report;
+}
+
+/* ------------------------------------------------------------- lot viewer */
+
+LotViewerReport
+lot_viewer (const LotViewerOptions& options)
+{
+    LotViewerReport report;
+    report.title = "Lot Viewer";
+
+    /* The Scheme option's unset value is a null account, and
+     * xaccQueryAddSingleAccountMatch() with a null account adds no term at
+     * all: the query then matches every non-voided split in the book and the
+     * report lists every lot it can reach, with the amounts printed in the
+     * default currency (xaccAccountGetCommodity(null) is null, and
+     * gnc_commodity_print_info(null) is the default print info).  That is the
+     * report's default page, so the native report reproduces it rather than
+     * requiring an account. */
+    Account* account = options.account;
+    gnc_commodity* currency =
+        account != nullptr ? xaccAccountGetCommodity (account) : nullptr;
+
+    /* xaccQueryAddClearedMatch (CLEARED-ALL & ~CLEARED-VOIDED) plus the date
+     * match: every non-voided split inside the period, of the account or --
+     * with no account -- of the whole book. */
+    const time64 start = gnc_time64_get_day_start (options.start);
+    const time64 end = gnc_time64_get_day_end (options.end);
+
+    std::vector<Split*> splits;
+    std::vector<Account*> sources;
+    if (account != nullptr)
+        sources.push_back (account);
+    else if (options.root != nullptr)
+    {
+        /* The whole book, so the null-account query's split set is
+         * reproduced: the root account and every account below it. */
+        sources.push_back (options.root);
+        collect_accounts (options.root, sources);
+    }
+
+    for (Account* source : sources)
+    {
+        for (GList* node = xaccAccountGetSplitList (source); node != nullptr;
+             node = node->next)
+        {
+            auto* split = static_cast<Split*> (node->data);
+            Transaction* txn = xaccSplitGetParent (split);
+            if (xaccTransGetVoidStatus (txn))
+                continue;
+            const time64 date = xaccTransGetDate (txn);
+            if (date < start || date > end)
+                continue;
+            if (!options.description_filter.empty ())
+            {
+                const char* description = xaccTransGetDescription (txn);
+                if (description == nullptr ||
+                    strstr (description,
+                            options.description_filter.c_str ()) == nullptr)
+                    continue;
+            }
+            splits.push_back (split);
+        }
+    }
+
+    /* qof-query-run() answers in date order, and the report takes its lot
+     * columns in the order the lots first appear in that list. */
+    std::stable_sort (splits.begin (), splits.end (),
+                      [] (Split* left, Split* right)
+                      {
+                          Transaction* left_txn = xaccSplitGetParent (left);
+                          Transaction* right_txn = xaccSplitGetParent (right);
+                          const time64 left_date = xaccTransGetDate (left_txn);
+                          const time64 right_date = xaccTransGetDate (right_txn);
+                          if (left_date != right_date)
+                              return left_date < right_date;
+                          return xaccTransOrder (left_txn, right_txn) < 0;
+                      });
+
+    if (splits.empty ())
+    {
+        report.warning = "no-data";
+        return report;
+    }
+
+    std::vector<GNCLot*> lots;
+    std::vector<std::vector<Split*>> lot_splits;
+    std::set<GNCLot*> seen;
+    for (Split* split : splits)
+    {
+        GNCLot* lot = xaccSplitGetLot (split);
+        if (lot == nullptr || !seen.insert (lot).second)
+            continue;
+        lots.push_back (lot);
+        std::vector<Split*> members;
+        for (GList* node = gnc_lot_get_split_list (lot); node != nullptr;
+             node = node->next)
+            members.push_back (static_cast<Split*> (node->data));
+        lot_splits.push_back (std::move (members));
+    }
+
+    /* The transactions are the splits' parents, unique, in the engine's
+     * transaction order. */
+    std::vector<Transaction*> transactions;
+    for (Split* split : splits)
+    {
+        Transaction* txn = xaccSplitGetParent (split);
+        if (std::find (transactions.begin (), transactions.end (), txn) ==
+            transactions.end ())
+            transactions.push_back (txn);
+    }
+    std::stable_sort (transactions.begin (), transactions.end (),
+                      [] (Transaction* left, Transaction* right)
+                      { return xaccTransOrder (left, right) < 0; });
+
+    CellTable& table = report.table;
+
+    /* The two heading rows: the lot titles and their short GUIDs. */
+    std::vector<Cell> titles;
+    titles.push_back (label_cell ("Date", ""));
+    titles.push_back (label_cell ("Desc", ""));
+    titles.push_back (label_cell ("Type", ""));
+    for (GNCLot* lot : lots)
+    {
+        const char* title = gnc_lot_get_title (lot);
+        titles.push_back (
+            label_cell (title != nullptr && title[0] != '\0' ? title : "None",
+                        ""));
+    }
+    titles.push_back (label_cell ("Other Account", ""));
+    table.rows.push_back (std::move (titles));
+
+    std::vector<Cell> guids;
+    guids.push_back (label_cell ("", ""));
+    guids.push_back (label_cell ("", ""));
+    guids.push_back (label_cell ("", ""));
+    for (GNCLot* lot : lots)
+    {
+        gchar* guid = guid_to_string (gnc_lot_get_guid (lot));
+        std::string text = guid != nullptr ? guid : "";
+        g_free (guid);
+        if (text.size () > 8)
+            text.resize (8);
+        guids.push_back (label_cell (text, ""));
+    }
+    guids.push_back (label_cell ("", ""));
+    table.rows.push_back (std::move (guids));
+
+    /* The document row: the invoice a lot came from, or nothing. */
+    std::vector<Cell> documents;
+    documents.push_back (label_cell ("", ""));
+    documents.push_back (label_cell ("Document", ""));
+    documents.push_back (label_cell ("", ""));
+    for (GNCLot* lot : lots)
+    {
+        GncInvoice* invoice = gncInvoiceGetInvoiceFromLot (lot);
+        documents.push_back (
+            invoice != nullptr ? label_cell (gncInvoiceGetID (invoice), "")
+                               : label_cell ("", ""));
+    }
+    documents.push_back (label_cell ("", ""));
+    table.rows.push_back (std::move (documents));
+
+    /* One row per transaction.  Every lot column holds the transaction's
+     * splits that belong to that lot, and the last column the rest. */
+    for (Transaction* txn : transactions)
+    {
+        std::vector<Cell> row;
+        row.push_back (label_cell (printed_date (xaccTransGetDate (txn)), ""));
+        const char* description = xaccTransGetDescription (txn);
+        row.push_back (label_cell (description != nullptr ? description : "",
+                                   ""));
+        row.push_back (label_cell (transaction_type_name (txn), ""));
+
+        std::vector<Split*> remaining;
+        for (GList* node = xaccTransGetSplitList (txn); node != nullptr;
+             node = node->next)
+            remaining.push_back (static_cast<Split*> (node->data));
+
+        for (size_t index = 0; index < lots.size (); ++index)
+        {
+            std::vector<Split*> in_lot;
+            std::vector<Split*> rest;
+            for (Split* split : remaining)
+            {
+                if (std::find (lot_splits[index].begin (),
+                               lot_splits[index].end (),
+                               split) != lot_splits[index].end ())
+                    in_lot.push_back (split);
+                else
+                    rest.push_back (split);
+            }
+            row.push_back (lot_cell (in_lot, currency));
+            remaining = std::move (rest);
+        }
+        row.push_back (lot_cell (remaining, currency));
+        table.rows.push_back (std::move (row));
+    }
+
+    /* The balance row: each lot's balance, in the account's commodity. */
+    std::vector<Cell> balances;
+    balances.push_back (label_cell ("", ""));
+    balances.push_back (label_cell ("Balance", ""));
+    balances.push_back (label_cell ("", ""));
+    for (GNCLot* lot : lots)
+    {
+        const gnc_numeric balance = gnc_lot_get_balance (lot);
+        balances.push_back (
+            {currency != nullptr
+                 ? format_amount (balance, currency)
+                 : xaccPrintAmount (balance, gnc_default_print_info (TRUE)),
+             "number-cell"});
+    }
+    balances.push_back (label_cell ("", ""));
+    table.rows.push_back (std::move (balances));
+    return report;
+}
+
+/* ------------------------------------------------- advanced portfolio basis */
+
+namespace
+{
+
+/* To avoid overflows the Scheme report computes prices and unit counts at a
+ * fixed denominator of 1e8; these are its price-denom and units-denom. */
+constexpr int price_denom = 100000000;
+constexpr int units_denom = 100000000;
+
+struct BasisParcel
+{
+    gnc_numeric units;
+    gnc_numeric price;
+};
+
+using BasisList = std::vector<BasisParcel>;
+
+/* sum-basis(): the parcels' units times their price, in the report currency. */
+gnc_numeric
+sum_basis (const BasisList& list, int currency_frac)
+{
+    gnc_numeric total = gnc_numeric_zero ();
+    for (auto parcel = list.rbegin (); parcel != list.rend (); ++parcel)
+        total = gnc_numeric_add (
+            gnc_numeric_mul (parcel->units, parcel->price, currency_frac,
+                             GNC_HOW_RND_ROUND),
+            total, currency_frac, GNC_HOW_RND_ROUND);
+    return total;
+}
+
+gnc_numeric
+units_basis (const BasisList& list)
+{
+    gnc_numeric total = gnc_numeric_zero ();
+    for (auto parcel = list.rbegin (); parcel != list.rend (); ++parcel)
+        total = gnc_numeric_add (parcel->units, total, units_denom,
+                                 GNC_HOW_RND_ROUND);
+    return total;
+}
+
+/* apply-basis-ratio(): a stock split or a spin-off rescales the parcels. */
+BasisList
+apply_basis_ratio (const BasisList& list, gnc_numeric units_ratio,
+                   gnc_numeric value_ratio)
+{
+    BasisList out;
+    out.reserve (list.size ());
+    for (const BasisParcel& parcel : list)
+        out.push_back ({gnc_numeric_mul (units_ratio, parcel.units, units_denom,
+                                        GNC_HOW_RND_ROUND),
+                        gnc_numeric_mul (value_ratio, parcel.price, price_denom,
+                                        GNC_HOW_RND_ROUND)});
+    return out;
+}
+
+/* basis-builder(): the Scheme report's own accumulation, case for case.  A
+ * purchase with a value adds units, a sale with a value removes them from the
+ * head (FIFO) or the tail (LIFO) or from the running average, a units-only
+ * change is a split and a value-only change is a spin-off. */
+BasisList
+basis_builder (const BasisList& list, gnc_numeric b_units, gnc_numeric b_value,
+               const std::string& method, int currency_frac)
+{
+    const bool has_value = !gnc_numeric_zero_p (b_value);
+
+    if (has_value && gnc_numeric_positive_p (b_units))
+    {
+        if (method == "average-basis" && !list.empty ())
+        {
+            const gnc_numeric units = gnc_numeric_add (
+                b_units, list.front ().units, units_denom, GNC_HOW_RND_ROUND);
+            const gnc_numeric value = gnc_numeric_add (
+                b_value,
+                gnc_numeric_mul (list.front ().units, list.front ().price,
+                                 GNC_DENOM_AUTO, GNC_HOW_DENOM_REDUCE),
+                GNC_DENOM_AUTO, GNC_HOW_DENOM_REDUCE);
+            if (gnc_numeric_zero_p (units))
+                return list;
+            return {{units, gnc_numeric_div (value, units, price_denom,
+                                             GNC_HOW_RND_ROUND)}};
+        }
+        BasisList out = list;
+        out.push_back ({b_units, gnc_numeric_div (b_value, b_units, price_denom,
+                                                 GNC_HOW_RND_ROUND)});
+        return out;
+    }
+
+    if (has_value && gnc_numeric_negative_p (b_units))
+    {
+        if (list.empty ())
+            return {};
+        if (method == "fifo-basis")
+        {
+            const int compare = gnc_numeric_compare (gnc_numeric_abs (b_units),
+                                                     list.front ().units);
+            if (compare < 0)
+            {
+                BasisList out = list;
+                out.front ().units = gnc_numeric_add (
+                    b_units, list.front ().units, units_denom,
+                    GNC_HOW_RND_ROUND);
+                return out;
+            }
+            if (compare == 0)
+                return BasisList (list.begin () + 1, list.end ());
+            const BasisList rest (list.begin () + 1, list.end ());
+            return basis_builder (
+                rest,
+                gnc_numeric_add (b_units, list.front ().units, units_denom,
+                                 GNC_HOW_RND_ROUND),
+                b_value, method, currency_frac);
+        }
+        if (method == "filo-basis")
+        {
+            BasisList reversed (list.rbegin (), list.rend ());
+            const int compare = gnc_numeric_compare (gnc_numeric_abs (b_units),
+                                                     reversed.front ().units);
+            if (compare < 0)
+            {
+                reversed.front ().units = gnc_numeric_add (
+                    b_units, reversed.front ().units, units_denom,
+                    GNC_HOW_RND_ROUND);
+                std::reverse (reversed.begin (), reversed.end ());
+                return reversed;
+            }
+            if (compare == 0)
+            {
+                reversed.erase (reversed.begin ());
+                std::reverse (reversed.begin (), reversed.end ());
+                return reversed;
+            }
+            const BasisList rest (reversed.begin () + 1, reversed.end ());
+            BasisList out = basis_builder (
+                rest,
+                gnc_numeric_add (b_units, reversed.front ().units, units_denom,
+                                 GNC_HOW_RND_ROUND),
+                b_value, method, currency_frac);
+            std::reverse (out.begin (), out.end ());
+            return out;
+        }
+        /* average-basis: the sale takes units out at the running average. */
+        BasisList out = list;
+        out.front ().units = gnc_numeric_add (list.front ().units, b_units,
+                                              units_denom, GNC_HOW_RND_ROUND);
+        return out;
+    }
+
+    if (!has_value && !gnc_numeric_zero_p (b_units))
+    {
+        /* A split or a merger: rescale the units, and the value the other way
+         * round so the basis does not move. */
+        const gnc_numeric current = units_basis (list);
+        gnc_numeric units_ratio = gnc_numeric_zero ();
+        if (!gnc_numeric_zero_p (current))
+            units_ratio = gnc_numeric_div (
+                gnc_numeric_add (b_units, current, GNC_DENOM_AUTO,
+                                 GNC_HOW_DENOM_REDUCE),
+                current, GNC_DENOM_AUTO, GNC_HOW_DENOM_REDUCE);
+        gnc_numeric value_ratio = gnc_numeric_zero ();
+        if (!gnc_numeric_zero_p (units_ratio))
+            value_ratio = gnc_numeric_div (gnc_numeric_create (1, 1), units_ratio,
+                                          GNC_DENOM_AUTO,
+                                          GNC_HOW_DENOM_REDUCE);
+        return apply_basis_ratio (list, units_ratio, value_ratio);
+    }
+
+    if (gnc_numeric_zero_p (b_units) && has_value)
+    {
+        /* A spin-off: rescale the values, leave the units alone. */
+        const gnc_numeric current = sum_basis (list, currency_frac);
+        if (gnc_numeric_zero_p (current))
+            return list;
+        const gnc_numeric value_ratio = gnc_numeric_div (
+            gnc_numeric_add (b_value, current, GNC_DENOM_AUTO,
+                             GNC_HOW_DENOM_REDUCE),
+            current, GNC_DENOM_AUTO, GNC_HOW_DENOM_REDUCE);
+        return apply_basis_ratio (list, gnc_numeric_create (1, 1), value_ratio);
+    }
+
+    return list;
+}
+
+/* spin-off?(): a no-units split whose transaction has exactly one other split,
+ * which is not in an income or expense account. */
+bool
+is_spin_off (Split* split, Account* current)
+{
+    Split* other = xaccSplitGetOtherSplit (split);
+    if (other == nullptr)
+        return false;
+    if (!gnc_numeric_zero_p (xaccSplitGetAmount (split)))
+        return false;
+    if (xaccSplitGetAccount (split) != current)
+        return false;
+    const GNCAccountType type = xaccAccountGetType (xaccSplitGetAccount (other));
+    return type != ACCT_TYPE_EXPENSE && type != ACCT_TYPE_INCOME;
+}
+
+} // namespace
+
+PortfolioReport
+advanced_portfolio (Account* root, const PortfolioOptions& options,
+                    gnc_commodity* requested)
+{
+    PortfolioReport report;
+    report.title = "Advanced Portfolio";
+
+    gnc_commodity* report_cur = report_currency (root, requested);
+    if (root == nullptr || report_cur == nullptr)
+        return report;
+
+    gchar* printed = gnc_date_interval_format (options.date, options.date);
+    if (printed != nullptr)
+    {
+        report.title += " ";
+        report.title += printed;
+        g_free (printed);
+    }
+
+    GNCPriceDB* db =
+        gnc_pricedb_get_db (qof_instance_get_book (QOF_INSTANCE (root)));
+    const int currency_frac = gnc_commodity_get_fraction (report_cur);
+
+    std::vector<Account*> accounts = options.accounts;
+    if (accounts.empty ())
+        accounts = default_portfolio_accounts (root);
+
+    const bool show_brokerage = options.brokerage_fees != "ignore-brokerage";
+
+    std::vector<std::string> headings = {"Account"};
+    if (options.show_symbol)
+        headings.push_back ("Symbol");
+    if (options.show_listing)
+        headings.push_back ("Listing");
+    if (options.show_shares)
+        headings.push_back ("Shares");
+    if (options.show_price)
+        headings.push_back ("Price");
+    headings.push_back (" ");
+    for (const char* heading :
+         {"Basis", "Value", "Money In", "Money Out", "Realized Gain",
+          "Unrealized Gain", "Total Gain", "Rate of Gain", "Income"})
+        headings.push_back (heading);
+    if (show_brokerage)
+        headings.push_back ("Brokerage Fees");
+    headings.push_back ("Total Return");
+    headings.push_back ("Rate of Return");
+    report.table.headings = headings;
+
+    /* The totals the Scheme report accumulates in commodity collectors, which
+     * for a single-currency book are plain sums in the report currency. */
+    gnc_numeric total_basis = zero_in (report_cur);
+    gnc_numeric total_value = zero_in (report_cur);
+    gnc_numeric total_money_in = zero_in (report_cur);
+    gnc_numeric total_money_out = zero_in (report_cur);
+    gnc_numeric total_gain = zero_in (report_cur);
+    gnc_numeric total_ugain = zero_in (report_cur);
+    gnc_numeric total_income = zero_in (report_cur);
+    gnc_numeric total_brokerage = zero_in (report_cur);
+
+    auto rate_cell = [] (gnc_numeric gain, gnc_numeric money_in)
+    {
+        if (gnc_numeric_zero_p (money_in))
+            return Cell {"", "number-cell"};
+        const double rate = 100.0 * gnc_numeric_to_double (gain) /
+                            gnc_numeric_to_double (money_in);
+        char text[32] = {0};
+        g_snprintf (text, sizeof text, "%.2f%%", rate);
+        return Cell {text, "number-cell"};
+    };
+
+    for (Account* account : accounts)
+    {
+        gnc_commodity* commodity = xaccAccountGetCommodity (account);
+        if (commodity == nullptr)
+            continue;
+
+        const gnc_numeric shares =
+            xaccAccountGetBalanceAsOfDate (account, options.date);
+        if (!options.include_zero && gnc_numeric_zero_p (shares))
+            continue;
+
+        /* The price at the report date.  With no price the Scheme report
+         * falls back to a transaction's share price (and prints "*"), and
+         * then to 1 (and prints "**"); the native report does not read
+         * transaction prices, so it uses 1 and says so. */
+        PriceQuote quote = quote_price (db, commodity, report_cur,
+                                        options.price_source, options.date);
+        bool have_price = quote.price != nullptr;
+        gnc_numeric price_value =
+            have_price ? quote.value : gnc_numeric_create (1, 1);
+        gnc_numeric value;
+        if (have_price &&
+            gnc_commodity_equiv (gnc_price_get_currency (quote.price),
+                                 report_cur))
+            value = gnc_numeric_mul (shares, price_value, currency_frac,
+                                     GNC_HOW_RND_ROUND);
+        else if (have_price)
+            value = convert_to_report_currency (
+                gnc_numeric_mul (shares, price_value, currency_frac,
+                                 GNC_HOW_RND_ROUND),
+                gnc_price_get_currency (quote.price), report_cur, db,
+                options.date);
+        else
+            value = gnc_numeric_mul (shares, price_value, currency_frac,
+                                     GNC_HOW_RND_ROUND);
+
+        BasisList basis_list;
+        gnc_numeric money_in = zero_in (report_cur);
+        gnc_numeric money_out = zero_in (report_cur);
+        gnc_numeric gain = zero_in (report_cur);
+        gnc_numeric income = zero_in (report_cur);
+        gnc_numeric brokerage = zero_in (report_cur);
+
+        std::set<Transaction*> seen;
+        for (GList* node = xaccAccountGetSplitList (account); node != nullptr;
+             node = node->next)
+        {
+            auto* split = static_cast<Split*> (node->data);
+            Transaction* txn = xaccSplitGetParent (split);
+            if (xaccTransGetDate (txn) > options.date)
+                continue;
+            if (!seen.insert (txn).second)
+                continue;
+
+            gnc_commodity* txn_currency = xaccTransGetCurrency (txn);
+            const int txn_frac = gnc_commodity_get_fraction (txn_currency);
+
+            gnc_numeric trans_income = gnc_numeric_zero ();
+            gnc_numeric trans_brokerage = gnc_numeric_zero ();
+            gnc_numeric trans_shares = gnc_numeric_zero ();
+            gnc_numeric shares_bought = gnc_numeric_zero ();
+            gnc_numeric shares_sold = gnc_numeric_zero ();
+            gnc_numeric trans_sold = gnc_numeric_zero ();
+            gnc_numeric trans_bought = gnc_numeric_zero ();
+            gnc_numeric trans_spinoff = gnc_numeric_zero ();
+
+            /* Pass 1: what the transaction does to the account's income, its
+             * fees and its share count. */
+            for (GList* item = xaccTransGetSplitList (txn); item != nullptr;
+                 item = item->next)
+            {
+                auto* other = static_cast<Split*> (item->data);
+                const gnc_numeric split_units = xaccSplitGetAmount (other);
+                const gnc_numeric split_value = xaccSplitGetValue (other);
+                const GNCAccountType type =
+                    xaccAccountGetType (xaccSplitGetAccount (other));
+
+                if (type == ACCT_TYPE_EXPENSE)
+                {
+                    /* A commission, unless this is a stock donation: a
+                     * two-split transaction whose other split is in this
+                     * account. */
+                    Split* counterpart = xaccSplitGetOtherSplit (other);
+                    if (counterpart == nullptr ||
+                        xaccSplitGetAccount (counterpart) != account)
+                        trans_brokerage = gnc_numeric_add (
+                            trans_brokerage, split_value, txn_frac,
+                            GNC_HOW_RND_ROUND);
+                }
+                else if (type == ACCT_TYPE_INCOME)
+                    trans_income = gnc_numeric_sub (trans_income, split_value,
+                                                    txn_frac, GNC_HOW_RND_ROUND);
+                else if (xaccSplitGetAccount (other) == account)
+                {
+                    trans_shares = gnc_numeric_add (
+                        trans_shares, gnc_numeric_abs (split_units),
+                        units_denom, GNC_HOW_RND_ROUND);
+                    if (gnc_numeric_zero_p (split_units))
+                    {
+                        if (is_spin_off (other, account))
+                        {
+                            if (gnc_numeric_negative_p (split_value))
+                                trans_spinoff = gnc_numeric_sub (
+                                    trans_spinoff, split_value, txn_frac,
+                                    GNC_HOW_RND_ROUND);
+                        }
+                        else if (!gnc_numeric_zero_p (split_value))
+                        {
+                            /* A zero-share split is the register's realised
+                             * gain, whose matching income split has already
+                             * been counted: take it out again. */
+                            trans_income = gnc_numeric_sub (
+                                trans_income, split_value, txn_frac,
+                                GNC_HOW_RND_ROUND);
+                        }
+                    }
+                    else if (gnc_numeric_positive_p (split_value))
+                    {
+                        trans_bought = gnc_numeric_add (
+                            trans_bought, split_value, txn_frac,
+                            GNC_HOW_RND_ROUND);
+                        shares_bought = gnc_numeric_add (shares_bought,
+                                                         split_units,
+                                                         units_denom,
+                                                         GNC_HOW_RND_ROUND);
+                    }
+                    else
+                    {
+                        trans_sold = gnc_numeric_sub (trans_sold, split_value,
+                                                      txn_frac,
+                                                      GNC_HOW_RND_ROUND);
+                        shares_sold = gnc_numeric_add (shares_sold, split_units,
+                                                       units_denom,
+                                                       GNC_HOW_RND_ROUND);
+                    }
+                }
+            }
+
+            income = gnc_numeric_add (income,
+                                      convert_to_report_currency (
+                                          trans_income, txn_currency,
+                                          report_cur, db, options.date),
+                                      currency_frac, GNC_HOW_RND_ROUND);
+            brokerage = gnc_numeric_add (
+                brokerage,
+                convert_to_report_currency (trans_brokerage, txn_currency,
+                                            report_cur, db, options.date),
+                currency_frac, GNC_HOW_RND_ROUND);
+
+            /* Share the transaction's fees between its purchases and its
+             * sales, in proportion to the shares, unless they are being
+             * omitted. */
+            if (show_brokerage && gnc_numeric_positive_p (trans_brokerage) &&
+                gnc_numeric_positive_p (trans_shares))
+            {
+                const gnc_numeric bought_fraction = gnc_numeric_div (
+                    shares_bought, trans_shares, GNC_DENOM_AUTO,
+                    GNC_HOW_DENOM_REDUCE);
+                trans_bought = gnc_numeric_add (
+                    trans_bought,
+                    gnc_numeric_mul (trans_brokerage, bought_fraction, txn_frac,
+                                     GNC_HOW_RND_ROUND),
+                    txn_frac, GNC_HOW_RND_ROUND);
+                const gnc_numeric sold_fraction = gnc_numeric_div (
+                    shares_sold, trans_shares, GNC_DENOM_AUTO,
+                    GNC_HOW_DENOM_REDUCE);
+                trans_sold = gnc_numeric_add (
+                    trans_sold,
+                    gnc_numeric_mul (trans_brokerage, sold_fraction, txn_frac,
+                                     GNC_HOW_RND_ROUND),
+                    txn_frac, GNC_HOW_RND_ROUND);
+            }
+
+            /* A purchase paid for out of the transaction's income (a dividend
+             * reinvestment) is not new money in.  The Scheme report adjusts
+             * it by the residual of a dividend-reinvestment holding account,
+             * which the native report does not detect. */
+            if (gnc_numeric_positive_p (trans_income) &&
+                gnc_numeric_positive_p (trans_bought))
+            {
+                trans_bought = gnc_numeric_sub (trans_bought, trans_income,
+                                                txn_frac, GNC_HOW_RND_ROUND);
+                if (gnc_numeric_negative_p (trans_bought))
+                    trans_bought = gnc_numeric_zero ();
+            }
+
+            money_in = gnc_numeric_add (
+                money_in,
+                convert_to_report_currency (trans_bought, txn_currency,
+                                            report_cur, db, options.date),
+                currency_frac, GNC_HOW_RND_ROUND);
+            money_out = gnc_numeric_add (
+                money_out,
+                convert_to_report_currency (
+                    gnc_numeric_add (trans_sold, trans_spinoff, txn_frac,
+                                     GNC_HOW_RND_ROUND),
+                    txn_currency, report_cur, db, options.date),
+                currency_frac, GNC_HOW_RND_ROUND);
+
+            /* Pass 2: move the basis and take the realised gain. */
+            for (GList* item = xaccTransGetSplitList (txn); item != nullptr;
+                 item = item->next)
+            {
+                auto* other = static_cast<Split*> (item->data);
+                const gnc_numeric split_units = xaccSplitGetAmount (other);
+                const gnc_numeric split_value = xaccSplitGetValue (other);
+
+                if (!gnc_numeric_zero_p (split_units) &&
+                    xaccSplitGetAccount (other) == account)
+                {
+                    const gnc_numeric split_value_currency =
+                        convert_to_report_currency (split_value, txn_currency,
+                                                    report_cur, db,
+                                                    options.date);
+                    const gnc_numeric orig_basis =
+                        sum_basis (basis_list, currency_frac);
+                    gnc_numeric fees_currency = gnc_numeric_zero ();
+                    if (!gnc_numeric_zero_p (trans_shares))
+                    {
+                        const gnc_numeric fee_ratio = gnc_numeric_div (
+                            gnc_numeric_abs (split_units), trans_shares,
+                            GNC_DENOM_AUTO, GNC_HOW_DENOM_REDUCE);
+                        fees_currency = convert_to_report_currency (
+                            gnc_numeric_mul (fee_ratio, trans_brokerage,
+                                             txn_frac, GNC_HOW_RND_ROUND),
+                            txn_currency, report_cur, db, options.date);
+                    }
+                    const gnc_numeric split_value_with_fees =
+                        options.brokerage_fees == "include-in-basis"
+                            ? gnc_numeric_add (split_value_currency,
+                                               fees_currency, currency_frac,
+                                               GNC_HOW_RND_ROUND)
+                            : split_value_currency;
+
+                    basis_list = basis_builder (basis_list, split_units,
+                                                split_value_with_fees,
+                                                options.basis_method,
+                                                currency_frac);
+
+                    if (!gnc_numeric_positive_p (split_value))
+                    {
+                        const gnc_numeric new_basis =
+                            sum_basis (basis_list, currency_frac);
+                        if (gnc_numeric_zero_p (new_basis) ||
+                            gnc_numeric_negative_p (split_value))
+                        {
+                            const gnc_numeric disposal_gain = gnc_numeric_sub (
+                                gnc_numeric_abs (split_value_with_fees),
+                                gnc_numeric_sub (orig_basis, new_basis,
+                                                 currency_frac,
+                                                 GNC_HOW_RND_ROUND),
+                                currency_frac, GNC_HOW_RND_ROUND);
+                            gain = gnc_numeric_add (gain, disposal_gain,
+                                                    currency_frac,
+                                                    GNC_HOW_RND_ROUND);
+                        }
+                    }
+                }
+                else if (is_spin_off (other, account))
+                {
+                    basis_list = basis_builder (
+                        basis_list, split_units,
+                        convert_to_report_currency (split_value, txn_currency,
+                                                    report_cur, db,
+                                                    options.date),
+                        options.basis_method, currency_frac);
+                }
+            }
+        }
+
+        const gnc_numeric basis = sum_basis (basis_list, currency_frac);
+        const gnc_numeric ugain =
+            gnc_numeric_sub (value, basis, currency_frac, GNC_HOW_RND_ROUND);
+        const gnc_numeric both_gain =
+            gnc_numeric_add (gain, ugain, currency_frac, GNC_HOW_RND_ROUND);
+        const gnc_numeric total_return = gnc_numeric_add (both_gain, income,
+                                                          currency_frac,
+                                                          GNC_HOW_RND_ROUND);
+
+        std::vector<Cell> row;
+        row.push_back ({account_name (account), "anchor-cell"});
+        if (options.show_symbol)
+            row.push_back ({gnc_commodity_get_mnemonic (commodity), "text-cell"});
+        if (options.show_listing)
+            row.push_back ({gnc_commodity_get_namespace (commodity),
+                            "text-cell"});
+        if (options.show_shares)
+            row.push_back ({format_shares (shares, options.share_places),
+                            "number-cell"});
+        if (options.show_price)
+        {
+            if (have_price)
+                row.push_back (
+                    {format_amount (price_value,
+                                    gnc_price_get_currency (quote.price)),
+                     "number-cell"});
+            else
+                row.push_back ({format_amount (price_value, report_cur),
+                                "number-cell"});
+        }
+        row.push_back ({have_price ? " " : "**", "text-cell"});
+        row.push_back ({format_amount (basis, report_cur), "number-cell"});
+        row.push_back ({format_amount (value, report_cur), "number-cell"});
+        row.push_back ({format_amount (money_in, report_cur), "number-cell"});
+        row.push_back ({format_amount (money_out, report_cur), "number-cell"});
+        row.push_back ({format_amount (gain, report_cur), "number-cell"});
+        row.push_back ({format_amount (ugain, report_cur), "number-cell"});
+        row.push_back ({format_amount (both_gain, report_cur), "number-cell"});
+        row.push_back (rate_cell (both_gain, money_in));
+        row.push_back ({format_amount (income, report_cur), "number-cell"});
+        if (show_brokerage)
+            row.push_back ({format_amount (brokerage, report_cur),
+                            "number-cell"});
+        row.push_back ({format_amount (total_return, report_cur),
+                        "number-cell"});
+        row.push_back (rate_cell (total_return, money_in));
+        report.table.rows.push_back (std::move (row));
+
+        total_basis = gnc_numeric_add_fixed (total_basis, basis);
+        total_value = gnc_numeric_add_fixed (total_value, value);
+        total_money_in = gnc_numeric_add_fixed (total_money_in, money_in);
+        total_money_out = gnc_numeric_add_fixed (total_money_out, money_out);
+        total_gain = gnc_numeric_add_fixed (total_gain, gain);
+        total_ugain = gnc_numeric_add_fixed (total_ugain, ugain);
+        total_income = gnc_numeric_add_fixed (total_income, income);
+        total_brokerage = gnc_numeric_add_fixed (total_brokerage, brokerage);
+
+        if (quote.price != nullptr)
+            gnc_price_unref (quote.price);
+    }
+
+    if (!report.table.rows.empty ())
+    {
+        const gnc_numeric total_both_gain = gnc_numeric_add_fixed (
+            total_gain, total_ugain);
+        const gnc_numeric total_return = gnc_numeric_add_fixed (
+            total_both_gain, total_income);
+
+        report.table.rows.push_back ({label_cell ("", "", headings.size ())});
+        std::vector<Cell> totals;
+        totals.push_back (label_cell ("Total", "total-label-cell"));
+        int spacer = 0;
+        if (options.show_symbol)
+            ++spacer;
+        if (options.show_listing)
+            ++spacer;
+        if (options.show_shares)
+            ++spacer;
+        if (options.show_price)
+            ++spacer;
+        ++spacer; /* the price-source marker */
+        for (int index = 0; index < spacer; ++index)
+            totals.push_back (label_cell ("", "total-number-cell"));
+        totals.push_back (label_cell (format_amount (total_basis, report_cur),
+                                      "total-number-cell"));
+        totals.push_back (label_cell (format_amount (total_value, report_cur),
+                                      "total-number-cell"));
+        totals.push_back (label_cell (format_amount (total_money_in, report_cur),
+                                      "total-number-cell"));
+        totals.push_back (
+            label_cell (format_amount (total_money_out, report_cur),
+                        "total-number-cell"));
+        totals.push_back (label_cell (format_amount (total_gain, report_cur),
+                                      "total-number-cell"));
+        totals.push_back (label_cell (format_amount (total_ugain, report_cur),
+                                      "total-number-cell"));
+        totals.push_back (
+            label_cell (format_amount (total_both_gain, report_cur),
+                        "total-number-cell"));
+        const Cell rate = rate_cell (total_both_gain, total_money_in);
+        totals.push_back (label_cell (rate.text, "total-number-cell"));
+        totals.push_back (label_cell (format_amount (total_income, report_cur),
+                                      "total-number-cell"));
+        if (show_brokerage)
+            totals.push_back (
+                label_cell (format_amount (total_brokerage, report_cur),
+                            "total-number-cell"));
+        totals.push_back (
+            label_cell (format_amount (total_return, report_cur),
+                        "total-number-cell"));
+        const Cell total_rate = rate_cell (total_return, total_money_in);
+        totals.push_back (label_cell (total_rate.text, "total-number-cell"));
+        report.table.rows.push_back (std::move (totals));
+    }
+    return report;
+}
+
+/* --------------------------------------------------------- IFRS cost basis */
+
+namespace
+{
+
+/* The Scheme report's per-transaction amounts: #f for "the transaction has no
+ * split in that account". */
+struct TxnInfo
+{
+    std::optional<gnc_numeric> stock_amt;
+    std::optional<gnc_numeric> stock_val;
+    std::optional<gnc_numeric> proceeds_val;
+    std::optional<gnc_numeric> fees_cap_val;
+    std::optional<gnc_numeric> fees_exp_val;
+    std::optional<gnc_numeric> dividend_val;
+    std::optional<gnc_numeric> capgains_val;
+};
+
+void
+add_optional (std::optional<gnc_numeric>& into, gnc_numeric value)
+{
+    into = gnc_numeric_add_fixed (into.value_or (gnc_numeric_zero ()), value);
+}
+
+/* The sign tests the report's type table uses, with the Scheme definitions
+ * they come from.  A #f amount never matches a "greater than" test, always
+ * matches a "greater or equal" one, and matches `....` ("is zero or absent")
+ * and `DrCr` ("any") -- but a *number* still has to be zero for `....`, which
+ * is what tells a stock split (no value) from a purchase (a value). */
+enum class SignTest
+{
+    DrGt0,
+    CrGt0,
+    DrGe0,
+    CrGe0,
+    /* `....`: zero, or the transaction has no such amount. */
+    ZeroOrAbsent,
+    /* `DrCr`: always true. */
+    Always,
+};
+
+bool
+sign_test (SignTest test, const std::optional<gnc_numeric>& value)
+{
+    switch (test)
+    {
+    case SignTest::DrGt0:
+        return value.has_value () && gnc_numeric_positive_p (*value);
+    case SignTest::CrGt0:
+        return value.has_value () && gnc_numeric_negative_p (*value);
+    case SignTest::DrGe0:
+        return !value.has_value () || !gnc_numeric_negative_p (*value);
+    case SignTest::CrGe0:
+        return !value.has_value () || !gnc_numeric_positive_p (*value);
+    case SignTest::ZeroOrAbsent:
+        return !value.has_value () || gnc_numeric_zero_p (*value);
+    case SignTest::Always:
+        return true;
+    }
+    return true;
+}
+
+struct TxnType
+{
+    SignTest amt;
+    SignTest val;
+    SignTest proceeds;
+    SignTest fees_cap;
+    SignTest fees_exp;
+    SignTest dividend;
+    SignTest capgains;
+    bool purchase;
+    bool sale;
+    const char* narrative;
+};
+
+/* open-types, long-types and short-types, transcribed row for row: the first
+ * row all of whose tests pass names the transaction.  The columns are the
+ * amount, value, proceeds, capitalised fees, expensed fees, dividend and
+ * capital gain, in that order (the order txn-identify() destructures). */
+const TxnType open_types[] = {
+    {SignTest::DrGt0, SignTest::DrGt0, SignTest::CrGt0, SignTest::DrGe0,
+     SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent,
+     true, false, "Open Long"},
+    {SignTest::CrGt0, SignTest::CrGt0, SignTest::DrGt0, SignTest::DrGe0,
+     SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent,
+     true, false, "Open Short"},
+};
+
+const TxnType long_types[] = {
+    {SignTest::DrGt0, SignTest::DrGt0, SignTest::CrGt0, SignTest::DrGe0,
+     SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent,
+     true, false, "Buy"},
+    {SignTest::CrGt0, SignTest::CrGt0, SignTest::DrGe0, SignTest::ZeroOrAbsent,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::Always, false, true,
+     "Sell"},
+    {SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent, SignTest::DrGt0,
+     SignTest::ZeroOrAbsent, SignTest::DrGe0, SignTest::CrGt0,
+     SignTest::ZeroOrAbsent, false, false, "Dividend"},
+    {SignTest::DrGt0, SignTest::DrGt0, SignTest::DrGt0, SignTest::DrGe0,
+     SignTest::ZeroOrAbsent, SignTest::CrGt0, SignTest::ZeroOrAbsent, true,
+     false, "Dividend reinvestment (w/ remainder)"},
+    {SignTest::DrGt0, SignTest::DrGt0, SignTest::CrGe0, SignTest::DrGe0,
+     SignTest::ZeroOrAbsent, SignTest::CrGt0, SignTest::ZeroOrAbsent, true,
+     false, "Dividend reinvestment (w/o remainder)"},
+    {SignTest::ZeroOrAbsent, SignTest::CrGt0, SignTest::DrGt0,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent,
+     SignTest::ZeroOrAbsent, true, false, "Return of capital"},
+    {SignTest::ZeroOrAbsent, SignTest::CrGt0, SignTest::ZeroOrAbsent,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::DrGt0,
+     SignTest::ZeroOrAbsent, true, false,
+     "Return of capital (reclassification)"},
+    {SignTest::ZeroOrAbsent, SignTest::DrGt0, SignTest::ZeroOrAbsent,
+     SignTest::ZeroOrAbsent, SignTest::DrGe0, SignTest::CrGt0,
+     SignTest::ZeroOrAbsent, true, false, "Notional distribution (dividend)"},
+    {SignTest::ZeroOrAbsent, SignTest::DrGt0, SignTest::ZeroOrAbsent,
+     SignTest::ZeroOrAbsent, SignTest::DrGe0, SignTest::ZeroOrAbsent,
+     SignTest::CrGt0, true, false,
+     "Notional distribution (capital gain)"},
+    {SignTest::DrGt0, SignTest::ZeroOrAbsent, SignTest::CrGe0,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent,
+     SignTest::ZeroOrAbsent, false, false, "Stock split"},
+    {SignTest::CrGt0, SignTest::ZeroOrAbsent, SignTest::CrGe0,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent,
+     SignTest::ZeroOrAbsent, false, false, "Reverse split"},
+    {SignTest::CrGt0, SignTest::CrGt0, SignTest::DrGt0, SignTest::ZeroOrAbsent,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::Always, false, true,
+     "Reverse split w/ cash in lieu for fractionals"},
+};
+
+const TxnType short_types[] = {
+    {SignTest::CrGt0, SignTest::CrGt0, SignTest::DrGt0, SignTest::DrGe0,
+     SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent,
+     true, false, "Short Sell"},
+    {SignTest::DrGt0, SignTest::DrGt0, SignTest::CrGe0, SignTest::ZeroOrAbsent,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::Always, false, true,
+     "Cover Buy"},
+    {SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent, SignTest::CrGt0,
+     SignTest::ZeroOrAbsent, SignTest::DrGe0, SignTest::DrGt0,
+     SignTest::ZeroOrAbsent, false, false, "Compensatory dividend"},
+    {SignTest::ZeroOrAbsent, SignTest::DrGt0, SignTest::CrGt0,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent,
+     SignTest::ZeroOrAbsent, true, false, "Compensatory return of capital"},
+    {SignTest::ZeroOrAbsent, SignTest::DrGt0, SignTest::ZeroOrAbsent,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::CrGt0,
+     SignTest::ZeroOrAbsent, true, false,
+     "Compensatory return of capital (reclassification)"},
+    {SignTest::ZeroOrAbsent, SignTest::CrGt0, SignTest::ZeroOrAbsent,
+     SignTest::ZeroOrAbsent, SignTest::DrGe0, SignTest::DrGt0,
+     SignTest::ZeroOrAbsent, true, false,
+     "Compensatory notional distribution (dividend)"},
+    {SignTest::ZeroOrAbsent, SignTest::CrGt0, SignTest::ZeroOrAbsent,
+     SignTest::ZeroOrAbsent, SignTest::DrGe0, SignTest::ZeroOrAbsent,
+     SignTest::DrGt0, true, false,
+     "Compensatory notional distribution (capital gain)"},
+    {SignTest::CrGt0, SignTest::ZeroOrAbsent, SignTest::CrGe0,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent,
+     SignTest::ZeroOrAbsent, false, false, "Stock split"},
+    {SignTest::DrGt0, SignTest::ZeroOrAbsent, SignTest::CrGe0,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::ZeroOrAbsent,
+     SignTest::ZeroOrAbsent, false, false, "Reverse split"},
+    {SignTest::DrGt0, SignTest::DrGt0, SignTest::CrGt0, SignTest::ZeroOrAbsent,
+     SignTest::DrGe0, SignTest::ZeroOrAbsent, SignTest::Always, false, true,
+     "Reverse split w/ cash in lieu for fractionals"},
+};
+
+struct Identification
+{
+    bool purchase = false;
+    bool sale = false;
+    const char* narrative = "Unknown";
+};
+
+Identification
+identify_transaction (const TxnInfo& info, gnc_numeric cumulative_units)
+{
+    const TxnType* table = long_types;
+    size_t count = sizeof long_types / sizeof long_types[0];
+    if (gnc_numeric_negative_p (cumulative_units))
+    {
+        table = short_types;
+        count = sizeof short_types / sizeof short_types[0];
+    }
+    else if (gnc_numeric_zero_p (cumulative_units))
+    {
+        table = open_types;
+        count = sizeof open_types / sizeof open_types[0];
+    }
+
+    for (size_t index = 0; index < count; ++index)
+    {
+        const TxnType& type = table[index];
+        if (sign_test (type.amt, info.stock_amt) &&
+            sign_test (type.val, info.stock_val) &&
+            sign_test (type.proceeds, info.proceeds_val) &&
+            sign_test (type.fees_cap, info.fees_cap_val) &&
+            sign_test (type.fees_exp, info.fees_exp_val) &&
+            sign_test (type.dividend, info.dividend_val) &&
+            sign_test (type.capgains, info.capgains_val))
+            return {type.purchase, type.sale, type.narrative};
+    }
+    return {};
+}
+
+bool
+split_action_is (Split* split, const std::string& action)
+{
+    const char* value = xaccSplitGetAction (split);
+    return value != nullptr && action == value;
+}
+
+/* txn->info(): the transaction's amounts, one account at a time.  The
+ * capitalised-fee test has to come before the stock-amount test because a
+ * capitalised fee is a split *in* the stock account. */
+TxnInfo
+transaction_info (Transaction* txn, const IfrsOptions& options)
+{
+    TxnInfo info;
+    for (GList* node = xaccTransGetSplitList (txn); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*> (node->data);
+        Account* account = xaccSplitGetAccount (split);
+        if (account == options.proceeds_account)
+            add_optional (info.proceeds_val, xaccSplitGetAmount (split));
+        else if (account == options.capgains_account)
+            add_optional (info.capgains_val, xaccSplitGetAmount (split));
+        else if (account == options.fees_account)
+            add_optional (info.fees_exp_val, xaccSplitGetAmount (split));
+        else if (account == options.dividend_account)
+            add_optional (info.dividend_val, xaccSplitGetAmount (split));
+        else if (account == options.stock_account &&
+                 split_action_is (split, options.cap_fee_action))
+            add_optional (info.fees_cap_val, xaccSplitGetValue (split));
+        else if (account == options.stock_account)
+        {
+            add_optional (info.stock_amt, xaccSplitGetAmount (split));
+            add_optional (info.stock_val, xaccSplitGetValue (split));
+        }
+    }
+    return info;
+}
+
+/* The split list a query over one account and its unique transactions gives:
+ * one split per transaction, in date order. */
+std::vector<Split*>
+account_splits_date_order (Account* account)
+{
+    std::vector<Split*> splits;
+    for (GList* node = xaccAccountGetSplitList (account); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*> (node->data);
+        if (xaccTransGetVoidStatus (xaccSplitGetParent (split)))
+            continue;
+        splits.push_back (split);
+    }
+    std::stable_sort (splits.begin (), splits.end (),
+                      [] (Split* left, Split* right)
+                      {
+                          Transaction* left_txn = xaccSplitGetParent (left);
+                          Transaction* right_txn = xaccSplitGetParent (right);
+                          const time64 left_date = xaccTransGetDate (left_txn);
+                          const time64 right_date = xaccTransGetDate (right_txn);
+                          if (left_date != right_date)
+                              return left_date < right_date;
+                          return xaccTransOrder (left_txn, right_txn) < 0;
+                      });
+
+    /* Unique transactions: keep the first split of each. */
+    std::vector<Split*> unique;
+    std::set<Transaction*> seen;
+    for (Split* split : splits)
+        if (seen.insert (xaccSplitGetParent (split)).second)
+            unique.push_back (split);
+    return unique;
+}
+
+/* An amount in the report currency, or a blank cell when the report is not
+ * formatting its cells and there is no amount. */
+Cell
+amount_cell (const std::optional<gnc_numeric>& amount, gnc_commodity* currency,
+             bool format)
+{
+    if (!amount.has_value ())
+        return blank_cell ();
+    if (!format)
+        return {format_amount (*amount, nullptr), "number-cell"};
+    return {format_amount (*amount, currency), "number-cell"};
+}
+
+} // namespace
+
+IfrsReport
+ifrs_cost_basis (Account* root, const IfrsOptions& options)
+{
+    IfrsReport report;
+    report.title = "IFRS weighted-average cost basis report";
+
+    if (options.stock_account == nullptr)
+    {
+        report.warning = "no-stock-account";
+        return report;
+    }
+
+    gnc_commodity* commodity = xaccAccountGetCommodity (options.stock_account);
+    gnc_commodity* currency =
+        gnc_account_get_currency_or_parent (options.stock_account);
+    if (currency == nullptr)
+        currency = commodity;
+    gnc_commodity* report_cur = report_currency (root, options.currency);
+    if (report_cur == nullptr)
+        report_cur = currency;
+
+    GNCPriceDB* db =
+        gnc_pricedb_get_db (qof_instance_get_book (QOF_INSTANCE (root)));
+
+    /* The document title the Scheme report sets. */
+    {
+        char from[32] = {0};
+        char to[32] = {0};
+        qof_print_date_buff (from, sizeof from, options.start);
+        qof_print_date_buff (to, sizeof to, options.end);
+        report.title = "Average-Cost (Basis) Report: From ";
+        report.title += from;
+        report.title += " to ";
+        report.title += to;
+        report.title += ". Report-currency ";
+        report.title += gnc_commodity_get_mnemonic (report_cur);
+    }
+
+    CellTable& table = report.table;
+    table.headings = {
+        "date", "description", "trans-units", "cumul-units", "note", "curr",
+        "fx", "purchase-val", "purchase-cost", "cash-dividends",
+        "proceeds-val", "proceeds-cost", "conv-purchase-val",
+        "conv-purchase-cost", "conv-dividends", "conv-proceeds-val",
+        "conv-proceeds-cost", "cumulative-average-cost-basis",
+        "average-cost-basis/unit-for-sale", "average-cost-basis-of-sale",
+        "net-proceeds", "gain-post-commission", "gain-pre-commission (calc)",
+        "gain-pre-commission (register)", "gain-pre-commission variance",
+        "cumul-gross-profit", "cumul-net-profit", "cumul-tot-return"};
+
+    const int report_frac = gnc_commodity_get_fraction (report_cur);
+
+    auto convert = [&] (gnc_numeric amount, time64 when)
+    {
+        if (currency == nullptr || report_cur == nullptr ||
+            gnc_commodity_equiv (currency, report_cur))
+            return amount;
+        return gnc_pricedb_convert_balance_nearest_price_t64 (
+            db, amount, currency, report_cur, time64CanonicalDayTime (when));
+    };
+
+    gnc_numeric cumulative_units = gnc_numeric_zero ();
+    gnc_numeric cumulative_basis = gnc_numeric_zero ();
+    gnc_numeric cumulative_gross = gnc_numeric_zero ();
+    gnc_numeric cumulative_net = gnc_numeric_zero ();
+    gnc_numeric cumulative_return = gnc_numeric_zero ();
+
+    for (Split* split : account_splits_date_order (options.stock_account))
+    {
+        Transaction* txn = xaccSplitGetParent (split);
+        const time64 date = xaccTransGetDate (txn);
+
+        /* The identification and the running totals are computed for every
+         * transaction; only the rows are filtered. */
+        const TxnInfo info = transaction_info (txn, options);
+        const std::optional<gnc_numeric> trans_units = info.stock_amt;
+        const std::optional<gnc_numeric> cash_value = info.proceeds_val;
+        const std::optional<gnc_numeric> dividends = info.dividend_val;
+        const std::optional<gnc_numeric> capgains = info.capgains_val;
+        const std::optional<gnc_numeric> fees_expense = info.fees_exp_val;
+
+        const std::optional<gnc_numeric> fees_value =
+            (info.fees_cap_val.has_value () || fees_expense.has_value ())
+                ? std::optional<gnc_numeric> (gnc_numeric_add_fixed (
+                      info.fees_cap_val.value_or (gnc_numeric_zero ()),
+                      fees_expense.value_or (gnc_numeric_zero ())))
+                : std::nullopt;
+        const std::optional<gnc_numeric> trans_value =
+            (info.stock_val.has_value () || info.fees_cap_val.has_value ())
+                ? std::optional<gnc_numeric> (gnc_numeric_add_fixed (
+                      info.stock_val.value_or (gnc_numeric_zero ()),
+                      info.fees_cap_val.value_or (gnc_numeric_zero ())))
+                : std::nullopt;
+
+        const gnc_numeric new_units =
+            gnc_numeric_add_fixed (cumulative_units,
+                                   trans_units.value_or (gnc_numeric_zero ()));
+
+        Identification identified;
+        const char* note = nullptr;
+        if (gnc_numeric_negative_p (new_units) &&
+            gnc_numeric_positive_p (cumulative_units))
+            note = "ERROR: long→short";
+        else if (gnc_numeric_negative_p (cumulative_units) &&
+                 gnc_numeric_positive_p (new_units))
+            note = "ERROR: short→long";
+        else
+        {
+            identified = identify_transaction (info, cumulative_units);
+            note = identified.narrative;
+        }
+
+        const bool sale = identified.sale;
+        const bool purchase = identified.purchase;
+
+        const std::optional<gnc_numeric> purchase_cost =
+            purchase ? fees_value : std::nullopt;
+        std::optional<gnc_numeric> purchase_val;
+        if (purchase && trans_value.has_value ())
+            purchase_val = gnc_numeric_sub_fixed (
+                *trans_value, purchase_cost.value_or (gnc_numeric_zero ()));
+        std::optional<gnc_numeric> cash_dividends;
+        if (dividends.has_value ())
+            cash_dividends = gnc_numeric_neg (*dividends);
+        const std::optional<gnc_numeric> proceeds_cost =
+            sale ? fees_value : std::nullopt;
+        std::optional<gnc_numeric> proceeds_value;
+        if (sale && cash_value.has_value ())
+            proceeds_value = gnc_numeric_add_fixed (
+                *cash_value, proceeds_cost.value_or (gnc_numeric_zero ()));
+
+        const gnc_numeric fx = convert (gnc_numeric_create (1, 1), date);
+
+        std::optional<gnc_numeric> conv_purchase_val;
+        if (purchase_val.has_value ())
+            conv_purchase_val = gnc_numeric_mul (fx, *purchase_val, report_frac,
+                                                 GNC_HOW_RND_ROUND);
+        std::optional<gnc_numeric> conv_purchase_cost;
+        if (purchase_cost.has_value ())
+            conv_purchase_cost = gnc_numeric_mul (fx, *purchase_cost,
+                                                  report_frac,
+                                                  GNC_HOW_RND_ROUND);
+        std::optional<gnc_numeric> conv_dividends;
+        if (cash_dividends.has_value ())
+            conv_dividends = gnc_numeric_mul (fx, *cash_dividends, report_frac,
+                                              GNC_HOW_RND_ROUND);
+        std::optional<gnc_numeric> conv_proceeds_value;
+        if (proceeds_value.has_value ())
+            conv_proceeds_value = gnc_numeric_mul (fx, *proceeds_value,
+                                                   report_frac,
+                                                   GNC_HOW_RND_ROUND);
+        std::optional<gnc_numeric> conv_proceeds_cost;
+        if (proceeds_cost.has_value ())
+            conv_proceeds_cost = gnc_numeric_mul (fx, *proceeds_cost,
+                                                  report_frac,
+                                                  GNC_HOW_RND_ROUND);
+
+        /* The average cost basis: a sale's basis is the running average times
+         * the units sold, and the running basis loses it. */
+        std::optional<gnc_numeric> basis_per_unit;
+        if (!gnc_numeric_zero_p (cumulative_units))
+        {
+            const gnc_numeric average = gnc_numeric_div (
+                cumulative_basis, cumulative_units, GNC_DENOM_AUTO,
+                GNC_HOW_DENOM_REDUCE);
+            basis_per_unit = gnc_numeric_abs (average);
+        }
+        std::optional<gnc_numeric> basis_of_sale;
+        if (proceeds_value.has_value () && basis_per_unit.has_value () &&
+            trans_units.has_value ())
+            basis_of_sale = gnc_numeric_mul (*basis_per_unit, *trans_units,
+                                             GNC_DENOM_AUTO,
+                                             GNC_HOW_DENOM_REDUCE);
+
+        gnc_numeric new_basis = cumulative_basis;
+        if (conv_purchase_val.has_value ())
+            new_basis = gnc_numeric_add (new_basis, *conv_purchase_val, GNC_DENOM_AUTO,
+                                       GNC_HOW_DENOM_REDUCE);
+        if (options.capitalize_purchase_costs && conv_purchase_cost.has_value ())
+            new_basis = gnc_numeric_add (new_basis, *conv_purchase_cost, GNC_DENOM_AUTO,
+                                       GNC_HOW_DENOM_REDUCE);
+        if (basis_of_sale.has_value ())
+            new_basis = gnc_numeric_add (new_basis, *basis_of_sale, GNC_DENOM_AUTO,
+                                       GNC_HOW_DENOM_REDUCE);
+
+        std::optional<gnc_numeric> net_proceeds;
+        if (conv_proceeds_value.has_value ())
+            net_proceeds = gnc_numeric_sub_fixed (
+                *conv_proceeds_value,
+                conv_proceeds_cost.value_or (gnc_numeric_zero ()));
+
+        std::optional<gnc_numeric> gain_post_commission;
+        if (net_proceeds.has_value () || basis_of_sale.has_value () ||
+            (!options.capitalize_purchase_costs &&
+             conv_purchase_cost.has_value ()))
+        {
+            gnc_numeric amount =
+                net_proceeds.value_or (gnc_numeric_zero ());
+            amount = gnc_numeric_add_fixed (
+                amount, basis_of_sale.value_or (gnc_numeric_zero ()));
+            if (!options.capitalize_purchase_costs)
+                amount = gnc_numeric_add_fixed (
+                    amount, conv_purchase_cost.value_or (gnc_numeric_zero ()));
+            gain_post_commission = amount;
+        }
+
+        std::optional<gnc_numeric> gain_pre_commission;
+        if (conv_proceeds_value.has_value () || basis_of_sale.has_value ())
+            gain_pre_commission = gnc_numeric_add_fixed (
+                conv_proceeds_value.value_or (gnc_numeric_zero ()),
+                basis_of_sale.value_or (gnc_numeric_zero ()));
+
+        std::optional<gnc_numeric> gain_variance;
+        if (gain_pre_commission.has_value () || capgains.has_value ())
+            gain_variance = gnc_numeric_add_fixed (
+                gain_pre_commission.value_or (gnc_numeric_zero ()),
+                capgains.value_or (gnc_numeric_zero ()));
+
+        const gnc_numeric new_gross = gnc_numeric_add_fixed (
+            cumulative_gross,
+            gain_pre_commission.value_or (gnc_numeric_zero ()));
+        const gnc_numeric new_net = gnc_numeric_add_fixed (
+            cumulative_net,
+            gain_post_commission.value_or (gnc_numeric_zero ()));
+        const gnc_numeric new_return = gnc_numeric_add_fixed (
+            gnc_numeric_add_fixed (
+                cumulative_return,
+                gain_post_commission.value_or (gnc_numeric_zero ())),
+            conv_dividends.value_or (gnc_numeric_zero ()));
+
+        const bool in_window = options.start < date && date < options.end;
+
+        cumulative_units = new_units;
+        cumulative_basis = new_basis;
+        cumulative_gross = new_gross;
+        cumulative_net = new_net;
+        cumulative_return = new_return;
+
+        if (!in_window)
+            continue;
+
+        std::vector<Cell> row;
+        row.push_back ({printed_date (date), "date-cell"});
+        row.push_back ({xaccTransGetDescription (txn), "text-cell"});
+        row.push_back (trans_units.has_value ()
+                           ? Cell {format_amount (*trans_units, commodity),
+                                   "number-cell"}
+                           : blank_cell ());
+        row.push_back ({format_amount (new_units, commodity), "number-cell"});
+        row.push_back ({note != nullptr ? note : "", "text-cell"});
+        row.push_back ({gnc_commodity_get_mnemonic (currency), "text-cell"});
+        row.push_back ({format_amount (fx, report_cur), "number-cell"});
+        row.push_back (amount_cell (purchase_val, currency, options.format_cells));
+        row.push_back (
+            amount_cell (purchase_cost, currency, options.format_cells));
+        row.push_back (
+            amount_cell (cash_dividends, currency, options.format_cells));
+        row.push_back (
+            amount_cell (proceeds_value, currency, options.format_cells));
+        row.push_back (
+            amount_cell (proceeds_cost, currency, options.format_cells));
+        row.push_back (
+            amount_cell (conv_purchase_val, report_cur, options.format_cells));
+        row.push_back (
+            amount_cell (conv_purchase_cost, report_cur, options.format_cells));
+        row.push_back (
+            amount_cell (conv_dividends, report_cur, options.format_cells));
+        row.push_back (amount_cell (conv_proceeds_value, report_cur,
+                                    options.format_cells));
+        row.push_back (amount_cell (conv_proceeds_cost, report_cur,
+                                    options.format_cells));
+        row.push_back (
+            amount_cell (new_basis, report_cur, options.format_cells));
+        row.push_back (
+            amount_cell (basis_per_unit, report_cur, options.format_cells));
+        row.push_back (amount_cell (
+            basis_of_sale.has_value ()
+                ? std::optional<gnc_numeric> (gnc_numeric_neg (*basis_of_sale))
+                : std::nullopt,
+            report_cur, options.format_cells));
+        row.push_back (
+            amount_cell (net_proceeds, report_cur, options.format_cells));
+        row.push_back (amount_cell (gain_post_commission, report_cur,
+                                    options.format_cells));
+        row.push_back (amount_cell (gain_pre_commission, report_cur,
+                                    options.format_cells));
+        row.push_back (
+            amount_cell (capgains, report_cur, options.format_cells));
+        row.push_back (
+            amount_cell (gain_variance, report_cur, options.format_cells));
+        row.push_back (
+            amount_cell (new_gross, report_cur, options.format_cells));
+        row.push_back (
+            amount_cell (new_net, report_cur, options.format_cells));
+        row.push_back (
+            amount_cell (new_return, report_cur, options.format_cells));
+        table.rows.push_back (std::move (row));
+    }
+    return report;
+}
+
 /* ---------------------------------------------------------- budget report */
 
 namespace
@@ -4349,6 +6116,22 @@ render_no_accounts (const std::string& title, bool with_title_heading)
 }
 
 std::string
+render_warning (const std::string& title, const std::string& heading,
+                const std::string& text)
+{
+    /* gnc:html-make-generic-warning(): the report's name and a colon, the
+     * warning's own heading (which may be empty) and the explanation. */
+    std::ostringstream out;
+    out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
+        << html_escape (title) << "</title><style>" << report_stylesheet ()
+        << "</style></head><body><h3>" << html_escape (title) << ":</h3>\n";
+    if (!heading.empty ())
+        out << "<h3>" << html_escape (heading) << "</h3>\n";
+    out << "<p>" << html_escape (text) << "</p>\n</body></html>\n";
+    return out.str ();
+}
+
+std::string
 render_cell_table (const CellTable& table, const std::string& title)
 {
     std::ostringstream out;
@@ -4400,6 +6183,8 @@ native_report_names ()
     return {"Trial Balance", "Balance Sheet", "Income Statement",
             "Profit & Loss", "Transaction Report", "General Ledger",
             "Receivable Aging", "Payable Aging", "Investment Lots",
+            "Investment Portfolio", "Advanced Portfolio", "Lot Viewer",
+            "IFRS weighted-average cost basis report",
             "Budget Report", "Budget Income Statement",
             "Budget Profit & Loss", "Budget Balance Sheet", "Budget Flow",
             "Printable Invoice", "Receipt", "Tax Invoice",
@@ -4563,6 +6348,108 @@ tax_options (const ReportRequest& request)
     options.alternate_period = request.tax_alternate_period;
     options.currency = request.currency;
     return options;
+}
+
+} // namespace
+
+bool
+ReportRequest::boolean_option (const std::string& name, bool fallback) const
+{
+    const auto found = booleans.find (name);
+    return found != booleans.end () ? found->second : fallback;
+}
+
+std::string
+ReportRequest::text_option (const std::string& name,
+                            const std::string& fallback) const
+{
+    const auto found = texts.find (name);
+    return found != texts.end () ? found->second : fallback;
+}
+
+std::string
+ReportRequest::choice_option (const std::string& name,
+                              const std::string& fallback) const
+{
+    const auto found = choices.find (name);
+    return found != choices.end () ? found->second : fallback;
+}
+
+namespace
+{
+
+/* The Scheme reports' own default price sources: the Investment Portfolio
+ * values at the most recent price and the Advanced Portfolio at the price
+ * nearest its report date. */
+const char*
+default_price_source (bool advanced)
+{
+    return advanced ? "pricedb-nearest" : "pricedb-latest";
+}
+
+PortfolioOptions
+portfolio_options (const ReportRequest& request, bool advanced)
+{
+    PortfolioOptions options;
+    options.date = request.end.value_or (default_end_date ());
+    const std::string source =
+        request.choice_option ("price-source", default_price_source (advanced));
+    if (source == "pricedb-before")
+        options.price_source = PriceSource::Before;
+    else if (source == "pricedb-nearest")
+        options.price_source = PriceSource::Nearest;
+    options.include_zero = request.boolean_option ("include-zero", false);
+    options.accounts = request.accounts;
+    options.basis_method =
+        request.choice_option ("basis-method", "average-basis");
+    options.brokerage_fees =
+        request.choice_option ("brokerage-fees", "include-in-basis");
+    options.show_symbol = request.boolean_option ("show-symbol", true);
+    options.show_listing = request.boolean_option ("show-listing", true);
+    options.show_shares = request.boolean_option ("show-shares", true);
+    options.show_price = request.boolean_option ("show-price", true);
+    return options;
+}
+
+/* A boolean switch descriptor, with the Scheme report's default. */
+OptionDescriptor
+switch_option (const char* name, const char* label, const char* description,
+               bool default_value)
+{
+    OptionDescriptor option;
+    option.name = name;
+    option.type = OptionType::Bool;
+    option.label = label;
+    option.description = description;
+    option.default_value = default_value ? "true" : "false";
+    return option;
+}
+
+OptionDescriptor
+choice_option_descriptor (const char* name, const char* label,
+                          const char* description, const char* default_value,
+                          std::vector<std::string> choices)
+{
+    OptionDescriptor option;
+    option.name = name;
+    option.type = OptionType::Choice;
+    option.label = label;
+    option.description = description;
+    option.default_value = default_value;
+    option.choices = std::move (choices);
+    return option;
+}
+
+OptionDescriptor
+account_selection_option (const char* name, const char* label,
+                          const char* description)
+{
+    OptionDescriptor option;
+    option.name = name;
+    option.type = OptionType::AccountList;
+    option.label = label;
+    option.description = description;
+    return option;
 }
 
 } // namespace
@@ -5039,6 +6926,170 @@ report_options (const std::string& name)
          * the route checks report_has_option() before resolving one. */
         return options;
     }
+    else if (name == "Investment Portfolio" || name == "Advanced Portfolio")
+    {
+        const bool advanced = name == "Advanced Portfolio";
+        if (advanced)
+        {
+            /* advanced-portfolio.scm has one date option ("Date"); the other
+             * end is not a period bound but the date the holding is valued
+             * at, so there is no start date and no period preset. */
+            options.push_back (date_option (
+                "end", "Date",
+                "The date the portfolio is valued at: the units are the "
+                "account's balance at the end of it and the price is the "
+                "price source's price at it.",
+                default_end_date ()));
+        }
+        else
+        {
+            options.push_back (date_option (
+                "start", "Start Date",
+                "Accepted so a date range can be handed to any report; the "
+                "portfolio is valued as of its end date and does not use a "
+                "start date.",
+                default_start_date ()));
+            options.push_back (date_option (
+                "end", "Date",
+                "The date the portfolio is valued at: the units are the "
+                "account's balance at the end of it and the price is the "
+                "price source's price at it.",
+                default_end_date ()));
+        }
+        options.push_back (currency_option ());
+        options.push_back (choice_option_descriptor (
+            "price-source", "Price Source",
+            "The source of price information.  \"pricedb-latest\" is the most "
+            "recent price in the database, \"pricedb-nearest\" the price "
+            "nearest to the report date and \"pricedb-before\" the nearest one "
+            "before it.",
+            advanced ? "pricedb-nearest" : "pricedb-latest",
+            {"pricedb-latest", "pricedb-before", "pricedb-nearest"}));
+        options.push_back (account_selection_option (
+            "accounts", "Accounts",
+            "Stock accounts to report on, as a comma-separated list of account "
+            "GUIDs; each GUID selects that account's subtree.  \"all\" selects "
+            "every account in the book.  Without the option the report's "
+            "default selection applies: every stock and mutual fund account in "
+            "the book."));
+        options.push_back (switch_option (
+            "include-zero", "Include accounts with no shares",
+            "Include accounts that have a zero share balance.", false));
+        if (advanced)
+        {
+            options.push_back (choice_option_descriptor (
+                "basis-method", "Basis calculation method",
+                "How the cost basis is accumulated when a holding is sold.",
+                "average-basis",
+                {"average-basis", "fifo-basis", "filo-basis"}));
+            options.push_back (choice_option_descriptor (
+                "brokerage-fees", "How to report brokerage fees",
+                "Whether commissions are part of the basis, part of the gain, "
+                "or left out of the report.",
+                "include-in-basis",
+                {"include-in-basis", "include-in-gain", "ignore-brokerage"}));
+            options.push_back (switch_option (
+                "show-symbol", "Show ticker symbols",
+                "Display the ticker symbols.", true));
+            options.push_back (switch_option (
+                "show-listing", "Show listings", "Display exchange listings.",
+                true));
+            options.push_back (switch_option (
+                "show-shares", "Show number of shares",
+                "Display numbers of shares in accounts.", true));
+            options.push_back (switch_option (
+                "show-price", "Show prices", "Display share prices.", true));
+        }
+        /* No period preset: the end date is the valuation date, so "all
+         * dates" cannot mean an unbounded end. */
+        return options;
+    }
+    else if (name == "Lot Viewer")
+    {
+        /* lot-viewer.scm's General page: a date interval, one account and a
+         * description filter. */
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the period whose transactions are listed.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the period whose transactions are listed.",
+            default_end_date ()));
+        options.push_back (account_selection_option (
+            "account", "Account",
+            "The account to search for lots, as an account GUID (or \"all\", "
+            "which selects every account and is then narrowed to the first "
+            "one).  Without it the report renders its own default page: the "
+            "Scheme option's unset value is a null account, whose split query "
+            "matches every split in the book, so the page lists every lot the "
+            "book's transactions touch, in the default currency."));
+        options.push_back (OptionDescriptor{
+            "description-filter", OptionType::Text, "Description Filter",
+            "Only transactions whose description contains this string are "
+            "listed.  Empty means every transaction in the period.", "", {}});
+        return options;
+    }
+    else if (name == "IFRS weighted-average cost basis report")
+    {
+        /* ifrs-cost-basis.scm's General page.  The five account selections say
+         * which splits are the stock, the proceeds, the dividends, the
+         * capital gains and the fees; the report identifies each transaction
+         * from their signs. */
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the period whose transaction rows are printed.  "
+            "Earlier transactions still move the running cost basis.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the period whose transaction rows are printed.",
+            default_end_date ()));
+        options.push_back (currency_option ());
+        options.push_back (account_selection_option (
+            "accounts", "Stock Account",
+            "The stock account whose cost basis is accumulated, as an account "
+            "GUID.  Without it the option's own default applies: the first "
+            "stock or mutual fund account in the book, which is what the "
+            "Scheme option resolves to.  A book with no such account renders "
+            "the engine's \"specify report options\" warning."));
+        options.push_back (account_selection_option (
+            "proceeds-account", "Proceeds Account",
+            "The asset or bank account the sale proceeds and purchase "
+            "payments are posted to.  Each of these four selections has the "
+            "same kind of default: the first account in the book of the "
+            "option's own allowed types (an asset or bank account here), which "
+            "is what an unset Scheme option resolves to.  Without a matching "
+            "amount no transaction is identified as a purchase or a sale."));
+        options.push_back (account_selection_option (
+            "dividend-account", "Dividend Account",
+            "The income account dividends are posted to.  Unset, it is the "
+            "first income account in the book."));
+        options.push_back (account_selection_option (
+            "capgains-account", "Cap Gains Account",
+            "The income account the register's realised capital gains are "
+            "posted to.  Unset, it is the first income account in the book."));
+        options.push_back (account_selection_option (
+            "fees-account", "Fees Account",
+            "The expense account commissions are posted to.  Unset, it is the "
+            "first expense account in the book."));
+        options.push_back (OptionDescriptor{
+            "fee-action", OptionType::Text, "Action field filter for fees",
+            "A split in the stock account whose action field equals this "
+            "string is a capitalised fee.", "Fee", {}});
+        options.push_back (switch_option (
+            "format-cells", "Format monetary cells",
+            "Print each amount with its currency.", true));
+        options.push_back (switch_option (
+            "format-short", "Alternative row-style for shorts",
+            "Use the alternate row style for short positions instead of every "
+            "other row.", true));
+        options.push_back (switch_option (
+            "capitalise-purchase-costs", "Capitalise purchase commissions",
+            "Capitalise purchase commissions in the cumulative average cost "
+            "and the gain after commission.", true));
+        return options;
+    }
     else if (name == "Budget Report")
     {
         /* Only the account selection.  The Scheme report's dates are budget
@@ -5489,6 +7540,120 @@ render_report (const std::string& name, Account* root,
         options.end = request.end.value_or (default_aging_date ());
         LotReport report = investment_lots (root, options, request.currency);
         html = render_cell_table (report.table, report.title);
+        return true;
+    }
+    if (name == "Investment Portfolio")
+    {
+        /* An as-of report: the end date is the valuation date, so a start
+         * date is accepted and ignored. */
+        PortfolioOptions options = portfolio_options (request, false);
+        PortfolioReport report =
+            investment_portfolio (root, options, request.currency);
+        if (report.table.rows.empty ())
+        {
+            /* The Scheme report's empty selection renders the engine's
+             * "No accounts selected" warning, not an empty table. */
+            std::vector<Account*> accounts = options.accounts;
+            if (accounts.empty ())
+                accounts = default_portfolio_accounts (root);
+            if (accounts.empty ())
+            {
+                html = render_no_accounts ("Investment Portfolio", false);
+                return true;
+            }
+        }
+        html = render_cell_table (report.table, report.title);
+        return true;
+    }
+    if (name == "Advanced Portfolio")
+    {
+        PortfolioOptions options = portfolio_options (request, true);
+        PortfolioReport report =
+            advanced_portfolio (root, options, request.currency);
+        if (report.table.rows.empty ())
+        {
+            std::vector<Account*> accounts = options.accounts;
+            if (accounts.empty ())
+                accounts = default_portfolio_accounts (root);
+            if (accounts.empty ())
+            {
+                html = render_no_accounts ("Advanced Portfolio", false);
+                return true;
+            }
+        }
+        html = render_cell_table (report.table, report.title);
+        return true;
+    }
+    if (name == "Lot Viewer")
+    {
+        LotViewerOptions options;
+        options.start = request.start.value_or (default_start_date ());
+        options.end = request.end.value_or (default_end_date ());
+        options.account = request.accounts.empty ()
+                              ? first_account_option (request, "account")
+                              : request.accounts.front ();
+        options.root = root;
+        options.description_filter =
+            request.text_option ("description-filter", "");
+        LotViewerReport report = lot_viewer (options);
+        if (report.warning == "no-data")
+            html = render_warning (
+                "Lot Viewer", "No data",
+                "The selected accounts contain no data/transactions (or only "
+                "zeroes) for the selected time period");
+        else
+            html = render_cell_table (report.table, report.title);
+        return true;
+    }
+    if (name == "IFRS weighted-average cost basis report")
+    {
+        IfrsOptions options;
+        options.start = gnc_time64_get_day_start (
+            request.start.value_or (default_start_date ()));
+        options.end = gnc_time64_get_day_start (
+            request.end.value_or (default_end_date ()));
+        /* Each of the five selections falls back to the value the engine's
+         * own account-selection default would produce -- the first account of
+         * its allowed types -- so the report's default run renders the same
+         * ledger the Scheme report's default run does. */
+        options.stock_account =
+            request.accounts.empty ()
+                ? first_account_of_types (root, {ACCT_TYPE_STOCK,
+                                                 ACCT_TYPE_MUTUAL})
+                : request.accounts.front ();
+        options.proceeds_account =
+            first_account_option (request, "proceeds-account");
+        if (options.proceeds_account == nullptr)
+            options.proceeds_account = first_account_of_types (
+                root, {ACCT_TYPE_ASSET, ACCT_TYPE_BANK});
+        options.dividend_account =
+            first_account_option (request, "dividend-account");
+        if (options.dividend_account == nullptr)
+            options.dividend_account =
+                first_account_of_types (root, {ACCT_TYPE_INCOME});
+        options.capgains_account =
+            first_account_option (request, "capgains-account");
+        if (options.capgains_account == nullptr)
+            options.capgains_account =
+                first_account_of_types (root, {ACCT_TYPE_INCOME});
+        options.fees_account = first_account_option (request, "fees-account");
+        if (options.fees_account == nullptr)
+            options.fees_account =
+                first_account_of_types (root, {ACCT_TYPE_EXPENSE});
+        options.cap_fee_action = request.text_option ("fee-action", "Fee");
+        options.format_cells = request.boolean_option ("format-cells", true);
+        options.short_alternate_row =
+            request.boolean_option ("format-short", true);
+        options.capitalize_purchase_costs =
+            request.boolean_option ("capitalise-purchase-costs", true);
+        options.currency = request.currency;
+        IfrsReport report = ifrs_cost_basis (root, options);
+        if (!report.warning.empty ())
+            html = render_warning (report.title, "",
+                                   "This report requires you to specify "
+                                   "certain report options.");
+        else
+            html = render_cell_table (report.table, report.title);
         return true;
     }
     return false;

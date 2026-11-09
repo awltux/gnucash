@@ -14,6 +14,7 @@
 #ifndef GNC_REPORT_HPP
 #define GNC_REPORT_HPP
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -347,6 +348,12 @@ CellTable general_ledger (Account* root,
 std::string render_no_accounts (const std::string& title,
                                 bool with_title_heading);
 
+/** The Scheme engine's gnc:html-make-generic-warning(): the report's name and
+ *  a colon, an optional warning heading and an explanation.  A report whose
+ *  options are incomplete renders this instead of a table. */
+std::string render_warning (const std::string& title, const std::string& heading,
+                            const std::string& text);
+
 /* ---------------------------------------------------------- aging reports */
 
 /** The headings of the aging reports' six amount columns, in display order.
@@ -466,7 +473,193 @@ struct LotReport
 LotReport investment_lots (Account* root, const LotOptions& options,
                            gnc_commodity* currency = nullptr);
 
+/* ------------------------------------------------------ portfolio listings */
+
+/** The price source a portfolio listing values its holdings at.  The Scheme
+ *  reports offer five; the three price-database sources are implemented.
+ *  The two cost-based sources ("weighted-average" and "average-cost") need
+ *  the reports' whole purchase history as the price of a share, and are
+ *  deliberately not reproduced: the option's descriptor does not offer them,
+ *  so a caller asking for one is a 400 rather than a silently different
+ *  number. */
+enum class PriceSource
+{
+    /** The most recent price in the database, whatever its date. */
+    Latest,
+    /** The nearest price before the report date. */
+    Before,
+    /** The nearest price in time to the report date (either side). */
+    Nearest,
+};
+
+struct PortfolioOptions
+{
+    /** The report date: units are the balance at the end of it and the price
+     *  is looked up at it. */
+    time64 date = 0;
+    PriceSource price_source = PriceSource::Latest;
+    /** Include accounts whose share balance is zero, as "Include accounts
+     *  with no shares" does.  The default is off. */
+    bool include_zero = false;
+    /** The accounts to report on.  Empty means the reports' default
+     *  selection: every stock and mutual fund account below the root. */
+    std::vector<Account*> accounts;
+    /** "Share decimal places", the precision units are printed with. */
+    int share_places = 2;
+
+    /* Advanced Portfolio only. */
+    /** "average-basis", "fifo-basis" or "filo-basis". */
+    std::string basis_method = "average-basis";
+    /** "include-in-basis", "include-in-gain" or "ignore-brokerage". */
+    std::string brokerage_fees = "include-in-basis";
+    bool show_symbol = true;
+    bool show_listing = true;
+    bool show_shares = true;
+    bool show_price = true;
+};
+
+struct PortfolioReport
+{
+    CellTable table;
+    std::string title;
+};
+
+/** The Investment Portfolio ("Investment Portfolio", portfolio.scm): one row
+ *  per stock or mutual fund account with the account, its symbol and listing,
+ *  its units at `date`, the price the source gives and the holding's value in
+ *  the report currency, then the Total row.  An account's units are its own
+ *  balance at the report date (the Scheme report does not roll up
+ *  sub-accounts), and its value is the units converted into the report
+ *  currency at the same price source the Price column prints.
+ *
+ *  Not reproduced, because it is not part of any amount: the Scheme report's
+ *  href markup (the native table prints the same texts without links). */
+PortfolioReport investment_portfolio (Account* root,
+                                      const PortfolioOptions& options,
+                                      gnc_commodity* currency = nullptr);
+
+/** The Advanced Portfolio ("Advanced Portfolio", advanced-portfolio.scm): one
+ *  row per account with the basis, value, money in and out, realised and
+ *  unrealised gain, total gain and its rate, income, brokerage fees and total
+ *  return, then the grand total.  The basis is accumulated over the account's
+ *  whole transaction history with the chosen basis method, which is the
+ *  Scheme report's own basis-builder: "average-basis" keeps one running
+ *  average, the two FIFO/LIFO methods keep the list of parcels.
+ *
+ *  Deliberately not reproduced, and documented rather than silently
+ *  different: the "weighted-average"/"average-cost" price sources, the
+ *  Scheme report's transaction-price fallback for a commodity with no
+ *  price-database price (the native report values such a holding at the
+ *  report currency's price of 1 and says so with the same "**" marker the
+ *  Scheme report prints), its dividend-reinvestment residual account
+ *  detection, and its spin-off handling.  Those paths need transaction
+ *  patterns this option surface cannot describe; the defaults of all of them
+ *  are what this renders, and the parity harness proves the result on a book
+ *  that exercises the ordinary purchase/sale path. */
+PortfolioReport advanced_portfolio (Account* root,
+                                    const PortfolioOptions& options,
+                                    gnc_commodity* currency = nullptr);
+
+/* ------------------------------------------------------------- lot viewer */
+
+struct LotViewerOptions
+{
+    time64 start = 0;
+    time64 end = 0;
+    /** The account whose lots are listed.  Null is the report's "no account
+     *  chosen" case: the Scheme option's unset value is a null account, so its
+     *  split query adds no account term at all and matches every split in the
+     *  book, and the report lists every lot it can reach with the amounts in
+     *  the default currency.  That is the report's own default page and is
+     *  reproduced here; `root` is the account tree the null case walks. */
+    Account* account = nullptr;
+    /** The book's root account, used only when `account` is null. */
+    Account* root = nullptr;
+    /** The Scheme report's "Description Filter": only transactions whose
+     *  description contains this string are listed.  Empty means all. */
+    std::string description_filter;
+};
+
+struct LotViewerReport
+{
+    CellTable table;
+    std::string title;
+    /** The engine's warning when there is nothing to list. */
+    std::string warning;
+};
+
+/** The Lot Viewer ("Lot Viewer", lot-viewer.scm): one row per transaction of
+ *  the account in the period -- date, description, transaction type -- and
+ *  one column per lot that any of those transactions touches, holding the
+ *  amount of the transaction's split in that lot, then an "Other Account"
+ *  column for the transaction's remaining splits, and a Balance row with each
+ *  lot's balance.  The lot columns are headed by the lot title and its GUID's
+ *  first eight characters, and the row under the headings is the lot's
+ *  document (empty for a lot with no invoice, which is every lot a book has
+ *  no invoice for).
+ *
+ *  The Scheme report prints each split's amount in the *account's* commodity,
+ *  including the splits of the other accounts in the transaction; that is what
+ *  the "Other Account" column shows, and it is reproduced.  With no account
+ *  selected the report renders the page the Scheme report renders: a null
+ *  account adds no term to its split query, so the page is the whole book's
+ *  transactions and every lot they touch, with the amounts in the default
+ *  currency. */
+LotViewerReport lot_viewer (const LotViewerOptions& options);
+
+/* --------------------------------------------------------- IFRS cost basis */
+
+/** The IFRS weighted-average cost basis report ("IFRS weighted-average cost
+ *  basis report", ifrs-cost-basis.scm): a running ledger over one stock
+ *  account's transactions, with the cumulative average cost basis, the basis
+ *  and gain of each sale, the gain the register recorded and the variance
+ *  between the two, and the cumulative gross profit, net profit and total
+ *  return.
+ *
+ *  The report identifies each transaction from the signs of its stock,
+ *  proceeds, fee, dividend and capital-gain amounts, which is why it needs
+ *  five account selections: the accounts say which splits are which.  An
+ *  unset selection falls back to what the engine's own account-selection
+ *  default resolves to -- the first account in the book of that option's
+ *  allowed types -- so the report's default run is the Scheme report's
+ *  default run.  Its output is in the report currency, converted at the
+ *  transaction date's nearest price (an identity in a single-currency
+ *  book). */
+struct IfrsOptions
+{
+    /** Both bounds are start-of-day times and the rows printed are those
+     *  whose transaction date is strictly inside them, exactly as the Scheme
+     *  report's `(< startdate date enddate)` does.  Transactions outside the
+     *  window still move the running totals. */
+    time64 start = 0;
+    time64 end = 0;
+    Account* stock_account = nullptr;
+    Account* proceeds_account = nullptr;
+    Account* dividend_account = nullptr;
+    Account* capgains_account = nullptr;
+    Account* fees_account = nullptr;
+    /** "Action field filter for fees": a split in the stock account whose
+     *  action field equals this string is a capitalised fee. */
+    std::string cap_fee_action = "Fee";
+    bool capitalize_purchase_costs = true;
+    bool format_cells = true;
+    bool short_alternate_row = true;
+    gnc_commodity* currency = nullptr;
+};
+
+struct IfrsReport
+{
+    CellTable table;
+    std::string title;
+    /** The Scheme report's "you must specify options" warning, printed when
+     *  no stock account is selected. */
+    std::string warning;
+};
+
+IfrsReport ifrs_cost_basis (Account* root, const IfrsOptions& options);
+
 /* ---------------------------------------------------------- budget report */
+
 
 /** The Budget Report ("Budget Report", budget.scm), the budget-vs-actual
  *  account table.  This is the core of the six Scheme budget reports: one row
@@ -811,6 +1004,30 @@ struct ReportRequest
     std::string tax_format;
     /** The Tax Schedule report's "Suppress $0.00 values" switch. */
     bool tax_suppress_zero = false;
+
+    /** Options the descriptors publish but the request has no dedicated field
+     *  for: a report's own choice, text and boolean switches, by descriptor
+     *  name.  The route validates the name against the descriptors and, for a
+     *  choice, the value against the descriptor's choices, so a report reads
+     *  only names and values it published.  A report that does not find the
+     *  name it wants uses its own default, which is what an omitted option
+     *  means anyway. */
+    std::map<std::string, std::string> choices;
+    std::map<std::string, std::string> texts;
+    std::map<std::string, bool> booleans;
+
+    /** Further account selections, by descriptor name.  A report may publish
+     *  more than one (the IFRS report needs five); "accounts" is the first,
+     *  and stays in `accounts`. */
+    std::map<std::string, std::vector<Account*>> account_lists;
+
+    /** Read a boolean option, falling back to `fallback` when the caller did
+     *  not send it. */
+    bool boolean_option (const std::string& name, bool fallback) const;
+    std::string text_option (const std::string& name,
+                             const std::string& fallback) const;
+    std::string choice_option (const std::string& name,
+                               const std::string& fallback) const;
 };
 
 bool render_report (const std::string& name, Account* root,
