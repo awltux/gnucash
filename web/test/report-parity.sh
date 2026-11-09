@@ -10,7 +10,8 @@
 # gnc-webd.  Both run against the same book.
 #
 # [report] defaults to "Trial Balance"; "Balance Sheet", "Income Statement",
-# "Profit & Loss", "Transaction Report", "General Ledger", "Receivable Aging",
+# "Profit & Loss", "Transaction Report", "General Ledger", "General Journal",
+# "Transaction Breakdown Report", "Reconciliation Report", "Receivable Aging",
 # "Payable Aging", "Investment Lots", "Budget Report",
 # "Budget Income Statement", "Budget Profit & Loss", "Budget Balance Sheet",
 # "Budget Flow", "Printable Invoice", "Receipt", "Tax Invoice",
@@ -220,6 +221,9 @@ extractor_for() {
         "Income Statement"|"Profit & Loss") echo balance-sheet ;;
         "Transaction Report") echo transaction-report ;;
         "General Ledger")   echo general-ledger ;;
+        "General Journal")  echo general-journal ;;
+        "Transaction Breakdown Report") echo breakdown ;;
+        "Reconciliation Report") echo reconciliation ;;
         "Receivable Aging"|"Payable Aging") echo aging ;;
         "Investment Lots") echo investment-lots ;;
         "Investment Portfolio") echo portfolio ;;
@@ -248,6 +252,9 @@ report_guid() {
         "Profit & Loss")    echo "8758ba23984c40dea5527f5f0ca2779e" ;;
         "Transaction Report") echo "2fe3b9833af044abb929a88d5a59620f" ;;
         "General Ledger")   echo "2e22929e5c5b4b769f615a815ef0c20f" ;;
+        "General Journal")  echo "25455562bd234dd0b048ecc5a8af9e43" ;;
+        "Transaction Breakdown Report") echo "03603f0443494a6fa790b417f35d90d4" ;;
+        "Reconciliation Report") echo "e45218c6d76f11e7b5ef0800277ef320" ;;
         "Receivable Aging") echo "9cf76bed17f14401b8e3e22d0079cb98" ;;
         "Payable Aging")    echo "e57770f2dbca46619d6dac4ac5469b50" ;;
         "Investment Lots")  echo "ab2acc24afd14630a551f98f1a35fa81" ;;
@@ -279,7 +286,7 @@ report_guid() {
 # therefore need an explicit account selection as well as a period.
 needs_accounts() {
     case "$1" in
-        "Transaction Report"|"General Ledger") return 0 ;;
+        "Transaction Report"|"General Ledger"|"Reconciliation Report") return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -342,7 +349,8 @@ scheme_end_option() {
 # the budget reports have an account selection.
 native_takes_accounts() {
     case "$1" in
-        "Transaction Report"|"General Ledger"|"Budget Report"|\
+        "Transaction Report"|"General Ledger"|"Reconciliation Report"|\
+        "Budget Report"|\
         "Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow"|\
         "Tax Schedule Report/TXF Export"|\
@@ -376,7 +384,7 @@ scheme_account_single() {
 
 
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Investment Portfolio, Advanced Portfolio, Lot Viewer, IFRS weighted-average cost basis report, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export, Customer Report, Vendor Report, Employee Report, Job Report, Customer Summary)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, General Journal, Transaction Breakdown Report, Reconciliation Report, Receivable Aging, Payable Aging, Investment Lots, Investment Portfolio, Advanced Portfolio, Lot Viewer, IFRS weighted-average cost basis report, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export, Customer Report, Vendor Report, Employee Report, Job Report, Customer Summary)"
 
 case "$REPORT" in
     "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
@@ -662,6 +670,38 @@ PY
                             page="General"; name="Capitalise purchase commissions" ;;
                         *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
                     esac ;;
+                "General Journal")
+                    case "$key" in
+                        show_date)              page="Display"; name="Date" ;;
+                        show_num)               page="Display"; name="Num" ;;
+                        show_description)       page="Display"; name="Description" ;;
+                        show_memo)              page="Display"; name="Memo" ;;
+                        show_account)           page="Display"; name="Account" ;;
+                        show_running_balance)   page="Display"; name="Running Balance" ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
+                "Transaction Breakdown Report")
+                    case "$key" in
+                        account)
+                            EXTRA_SCHEME="$EXTRA_SCHEME
+      (gnc-set-option (gnc:optiondb options) \"General\" \"Account\"
+                      (letrec ((loop (lambda (lst)
+                                       (cond ((null? lst) #f)
+                                             ((string=? (gncAccountGetGUID (car lst))
+                                                        \"$value\")
+                                              (car lst))
+                                             (else (loop (cdr lst)))))))
+                        (loop (gnc-account-get-descendants-sorted
+                               (gnc-get-current-root-account)))))"
+                            continue ;;
+                        description-filter)
+                            page="General"; name="Description Filter" ;;
+                        max-columns)
+                            EXTRA_SCHEME="$EXTRA_SCHEME
+      (gnc-set-option (gnc:optiondb options) \"General\" \"Limit for number of columns\" $value)"
+                            continue ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
                 *)
                     case "$key" in
                         title)                 page="Headings 1"; name="Report Title" ;;
@@ -929,6 +969,8 @@ def parse(path, scope=None, top_level=False):
 
 NO_ACCOUNTS = "No accounts selected"
 NO_BUDGET = "No budgets exist"
+NO_DATA = "The selected accounts contain no data/transactions"
+TOO_MANY = "exceeds the limit"
 
 
 def extract(extractor, path, scope=None, top_level=False):
@@ -946,6 +988,10 @@ def extract(extractor, path, scope=None, top_level=False):
         return [("PLACEHOLDER", NO_ACCOUNTS)]
     if not extracted and NO_BUDGET in raw:
         return [("PLACEHOLDER", NO_BUDGET)]
+    if not extracted and NO_DATA in raw:
+        return [("PLACEHOLDER", NO_DATA)]
+    if not extracted and TOO_MANY in raw:
+        return [("PLACEHOLDER", TOO_MANY)]
     return extracted
 
 
@@ -1514,9 +1560,115 @@ def customer_summary(rows):
     return out
 
 
+def general_journal(rows):
+    """The register journal listing.
+
+    A transaction heading row carries a date cell and a description text
+    cell (plus, when the option is on, a number text cell and a transaction
+    balance number cell).  The heading is followed by a spacer row and then
+    one row per split: the split memo and account as text cells and the debit
+    or credit as a number cell.  The two grand-total rows carry a
+    total-label-cell.  The spacer rows (two empty cells) and the Scheme
+    renderer's rule rows are dropped, so the comparison is the listing
+    itself, not the markup between it.
+    """
+    out = []
+    for cells in rows:
+        classes = [c for _, c in cells]
+        texts = [t for t, _ in cells]
+        if not cells:
+            continue
+        if any(c == "hr" for c in classes):
+            continue
+        if len(cells) == 2 and not any(t.strip() for t in texts):
+            continue
+        if "total-label-cell" in classes:
+            label = next(t for t, c in cells if c == "total-label-cell")
+            amounts = tuple(amount(t) for t, c in cells if is_total(c))
+            out.append(("TOTAL", label) + amounts)
+            continue
+        if "date-cell" in classes:
+            when = next(t for t, c in cells if c == "date-cell")
+            values = [t for t, c in cells if c == "text-cell"]
+            while values and not values[-1].strip():
+                values.pop()      # the empty account cell on a heading row
+            numbers = tuple(amount(t) for t, c in cells
+                            if c == "number-cell")
+            out.append(("HEADING", when, tuple(values)) + numbers)
+            continue
+        values = [t for t, c in cells if c == "text-cell"]
+        numbers = tuple(amount(t) for t, c in cells if c == "number-cell")
+        if not numbers and not any(v.strip() for v in values):
+            continue              # the Scheme renderer's rule and spacer rows
+        out.append(("SPLIT", tuple(values)) + numbers)
+    return out
+
+
+def breakdown(rows):
+    """The Transaction Breakdown Report.
+
+    The header is a tree of account names (every cell unclassed); a body row
+    is a transaction's date, number and description followed by one cell per
+    account column, where an account the transaction does not touch has an
+    empty unclassed cell and a touched one a number cell; the last row is the
+    per-account total.  Every header row is compared, so the multi-row
+    account tree is part of the claim.
+    """
+    out = []
+    for cells in rows:
+        classes = [c for _, c in cells]
+        texts = [" ".join(t.split()) for t, _ in cells]
+        if not cells:
+            continue
+        if "total-label-cell" in classes:
+            label = next(t for t, c in cells if c == "total-label-cell")
+            amounts = tuple(amount(t) for t, c in cells if is_total(c))
+            out.append(("TOTAL", label) + amounts)
+            continue
+        if any(is_number(c) for c in classes):
+            values = []
+            for text, cls in cells[3:]:
+                values.append(amount(text) if is_number(cls) else None)
+            out.append(("ROW", texts[0], texts[1], texts[2],
+                        tuple(values)))
+            continue
+        if not any(c for c in classes):
+            out.append(("HEADER", tuple(texts)))
+    return out
+
+
+def reconciliation(rows):
+    """The Reconciliation Report: grouped by reconciled status, one row per
+    split with the date, reconciled date, number, description, transfer and
+    the Funds In/Funds Out pair, then a Total For row per group and the
+    Grand Total."""
+    out = []
+    for cells in rows:
+        classes = [c for _, c in cells]
+        texts = [" ".join(t.split()) for t, _ in cells]
+        if not cells:
+            continue
+        if any(c == "hr" for c in classes):
+            continue
+        if "total-label-cell" in classes:
+            label = next(t for t, c in cells if c == "total-label-cell")
+            amounts = tuple(amount(t) for t, c in cells if is_total(c))
+            if amounts:
+                out.append(("TOTAL", label) + amounts)
+            else:
+                out.append(("GROUP", label))
+            continue
+        if len(cells) >= 8 and classes[1] == "date-cell":
+            out.append(("ROW", texts[1], texts[2], texts[3], texts[4],
+                        texts[5], amount(texts[6]), amount(texts[7])))
+    return out
+
+
 EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "transaction-report": transaction_report,
-              "general-ledger": general_ledger, "aging": aging,
+              "general-ledger": general_ledger,
+              "general-journal": general_journal, "breakdown": breakdown,
+              "reconciliation": reconciliation, "aging": aging,
               "investment-lots": investment_lots,
               "portfolio": portfolio, "advanced-portfolio": portfolio,
               "lot-viewer": lot_viewer, "ifrs": ifrs,

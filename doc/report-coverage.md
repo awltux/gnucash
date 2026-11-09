@@ -935,3 +935,84 @@ Employee Report, Job Report and Customer Summary joined
   `.hpp`, listed in `reports_SOURCES`/`reports_HEADERS` and therefore in
   `set_dist_list`.  Both builds compile with `-Werror`; `ldd` on `gnc-webd` is
   still free of libguile, libgtk and libwebkit.
+
+## 12. Update: the entry-listing reports
+
+Measured at `b4aa63f713` plus this cluster.  The summary at the top of the
+document was written at the earlier measurement and still says 24; section 3.1b
+and section 4.1 already count the four valuation names that landed at
+`b4aa63f713`, so the native total before this cluster was **28**.  This cluster
+adds General Journal, Transaction Breakdown Report and Reconciliation Report:
+**31 of 66 = 47.0% native** (31 of the 65 a US build loads, 30 in a German
+build; 31/65 = 47.7% and 30/65 = 46.2%).  Native plus spec is 36/66 = 54.5%;
+native plus spec plus the 19 closed decisions is 55/66 = 83.3%; the unported
+remainder is 11/66 = 16.7% (9 logic + 2 template).  A Guile-free build's
+`/api/reports` has 35 entries (31 native + 4 built-in specs).
+
+- **General Journal is not the Transaction Report.**  `general-journal.scm`
+  delegates to the register renderer configured in journal mode over a query
+  for every non-void transaction in the book.  It prints a date/description
+  heading per transaction, one line per split with the split memo, full account
+  name and debit or credit, and the Total Debits / Total Credits rows.  It has
+  no account or date option, so its defaults are the whole listing: 8 rows on
+  `sample1` and 221 on `taxreport.gnucash` match the Scheme page.
+- **Transaction Breakdown is a separate report, not a mode of the Transaction
+  Report.**  `txn-columns.scm` has its own GUID, its own option page (one
+  account, a date range, a description filter and a column limit) and its own
+  renderer, which builds one column per account any of the transactions touches
+  and a multi-row account-tree header.  Its default is the engine's "No data"
+  warning (no account selected), reproduced; scoped, `sample1`'s Checking
+  Account in 2018 is 5 rows and the taxreport's Federal:Estimated in 2000 is 9
+  rows.  The `taxreport`'s Checking One in 2000 links more than the default ten
+  accounts, so it renders the Scheme "Too many accounts" warning, reproduced.
+- **Reconciliation is trep with the reconciled-date rule.**  The rule is
+  asymmetric: a reconciled split is included when its *reconciled* date is in
+  the period, and an unreconciled split is always included.  The rows are
+  grouped by reconciled status (Unreconciled, Cleared, Reconciled, Frozen) and
+  the amount columns are the calculated Funds In / Funds Out pair, with a
+  Total For row per group and a Grand Total.  Its default has no account
+  selected: the "No accounts selected" warning plus the report's own
+  explanation, reproduced.  Scoped, `sample1`'s Checking Account in 2018 is 4
+  rows and the taxreport's Checking One in 2000 is 33 rows.
+- **What the fixtures cannot exercise.**  Both books have only unreconciled
+  splits: every `split:reconciled-state` is `n` and there is no
+  `split:date-reconciled` anywhere.  So the reconciled branch of the
+  inclusion rule, and therefore any effect of the date window on which split is
+  included, cannot be exercised by these fixtures; the window changes only the
+  printed interval.  The always-include branch *is* exercised, including a
+  split outside the period: the taxreport's 01/11/01 Fed Est Tax row appears in
+  the 2000 report because it is unreconciled.  `sample1`'s opening balance is
+  indeed unreconciled, so it is in the report for that reason.
+- **Options.**  General Journal publishes its six meaningful register display
+  switches (`show_date`, `show_num`, `show_description`, `show_memo`,
+  `show_account`, `show_running_balance`); all six were compared with the
+  Scheme page through the saved-report path.  Its `Totals` option is not
+  published: through that path the Scheme option does not change the page (the
+  Debit/Credit totals always print), so the effective default is what renders.
+  Transaction Breakdown publishes `account` (the Scheme single-account option,
+  in the route's list form), `start`, `end`, `description-filter` and
+  `max-columns`; the last is the native layer's first `number` option, with the
+  Scheme range 1-100, and the route rejects a non-number or out-of-range value
+  with a 400 that names the option.  Reconciliation publishes `accounts`,
+  `start`, `end` and `show_reconciled_date`; the other trep options stay at
+  their defaults and are documented as not reproduced.  Both the journal's
+  Debit/Credit totals and the reconciliation totals are one pair in the report
+  currency; the Scheme collectors split them per commodity, which a
+  multi-currency book would need, and the fixtures are single-currency.
+- **Parity.**  `report-parity.sh` gained the `general-journal`, `breakdown` and
+  `reconciliation` extractors, the three report GUIDs and the option mappings
+  (the breakdown's single `account` and its number limit).  On both
+  `ext4-web` and `ext4-noguile`, on `sample1` and
+  `doc/examples/taxreport.gnucash`, the defaults and the scoped variants above
+  all match verbatim; the full matrix run for this change is 41 cases per build
+  (every native name, including the three new ones) and all 41 match.
+- **Tests and build hygiene.**  `report-options.sh` checks the three
+  descriptor sets, the new number option's valid range and its two 400s, the
+  unknown-GUID 400, and probes every published option for an effect (the
+  breakdown gets its account and period baseline from the fixture's Checking
+  Account GUID, read from the book).  The smoke test, `report-spec.sh` and
+  `report-options.sh` pass in both builds; both compile with `-Werror`; `ldd`
+  on the Guile-free `gnc-webd` has no `libguile`, `libgtk` or `libwebkit`
+  dependency.  No new files were added (the three reports live in the existing
+  `gnc-report.cpp`), so the distribution lists are unchanged.
+

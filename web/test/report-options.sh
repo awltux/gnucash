@@ -31,6 +31,24 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [ -f "$BOOK" ] || fail "fixture book not found at $BOOK"
 [ -f "$SCHEMAS/gschemas.compiled" ] || SCHEMAS=""
 
+# The Transaction Breakdown Report's account option needs one account with
+# transactions before any of its other options can change the page.  Read the
+# fixture's "Checking Account" GUID from the book so the test works for any
+# book that carries that account (sample1 and the generated books do).
+BREAKDOWN_ACCOUNT=$(python3 - "$BOOK" <<'PY'
+import re
+import sys
+
+raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+for block in re.findall(r'<gnc:account[^>]*>(.*?)</gnc:account>', raw, re.S):
+    if re.search(r'<act:name>Checking Account</act:name>', block):
+        match = re.search(r'<act:id[^>]*>([0-9a-fA-F]{32})</act:id>', block)
+        if match:
+            print(match.group(1))
+            break
+PY
+)
+
 TMP=$(mktemp -d)
 BODY="$TMP/body"
 SERVER_PID=
@@ -118,6 +136,51 @@ expect_body "Transaction Report options" '"default":[]'
 
 expect_status 200 "General Ledger options" "/api/report/General%20Ledger/options"
 expect_body "General Ledger options" '"name":"accounts"'
+
+# The entry-listing cluster.  The General Journal has only the register
+# display switches (no account or date option: its query is every non-void
+# transaction in the book).  The Transaction Breakdown Report has one account,
+# a date range, a description filter and a numeric column limit.  The
+# Reconciliation Report has an account list, a date range and the reconciled
+# date switch.
+expect_status 200 "General Journal options" "/api/report/General%20Journal/options"
+expect_body "General Journal options" '"name":"show_date"'
+expect_body "General Journal options" '"name":"show_running_balance"'
+expect_body "General Journal options" '"type":"bool"'
+expect_not_body "General Journal has no account selection" '"name":"accounts"'
+expect_not_body "General Journal has no date option" '"name":"start"'
+
+expect_status 200 "Transaction Breakdown options" \
+    "/api/report/Transaction%20Breakdown%20Report/options"
+expect_body "Transaction Breakdown options" '"name":"account"'
+expect_body "Transaction Breakdown options" '"type":"account-list"'
+expect_body "Transaction Breakdown options" '"name":"description-filter"'
+expect_body "Transaction Breakdown options" '"type":"text"'
+expect_body "Transaction Breakdown options" '"name":"max-columns"'
+expect_body "Transaction Breakdown options" '"type":"number"'
+expect_body "Transaction Breakdown options" '"default":10'
+expect_not_body "Transaction Breakdown has no account list" '"name":"accounts"'
+
+expect_status 200 "Reconciliation options" \
+    "/api/report/Reconciliation%20Report/options"
+expect_body "Reconciliation options" '"name":"accounts"'
+expect_body "Reconciliation options" '"type":"account-list"'
+expect_body "Reconciliation options" '"name":"show_reconciled_date"'
+expect_body "Reconciliation options" '"name":"start"'
+expect_body "Reconciliation options" '"name":"end"'
+
+expect_status 400 "bad column limit" \
+    "/report/Transaction%20Breakdown%20Report?max-columns=zero"
+expect_body "bad column limit" "invalid number 'zero' for option 'max-columns'"
+expect_status 400 "out-of-range column limit" \
+    "/report/Transaction%20Breakdown%20Report?max-columns=101"
+expect_body "out-of-range column limit" "option 'max-columns' must be between 1 and 100"
+expect_status 400 "unknown account on the breakdown report" \
+    "/report/Transaction%20Breakdown%20Report?account=00000000000000000000000000000000"
+expect_body "unknown account on the breakdown report" "unknown account GUID"
+expect_status 400 "unknown option on the General Journal" \
+    "/report/General%20Journal?bogus=1"
+expect_body "unknown option on the General Journal" "unknown option 'bogus'"
 
 # The aging reports take one date and no account selection: they always age
 # every A/Receivable (or A/Payable) account in the book.
@@ -806,6 +869,11 @@ PY
         base="accounts=all"
     elif grep -q '"name":"invoice"' "$OPTDIR/options.json"; then
         base="invoice=yoyo1"
+    elif [ "$report" = "Transaction Breakdown Report" ]; then
+        # The breakdown report needs one account and a period that contains
+        # data before any of its switches can be seen; sample1's Checking
+        # Account over 2018 is that selection.
+        base="account=$BREAKDOWN_ACCOUNT&start=2018-01-01&end=2018-12-31"
     fi
     fetch "/report/$enc" > /dev/null
     cp "$BODY" "$OPTDIR/no-options.html"
@@ -872,6 +940,7 @@ PY
             account-list)
                 case "$opt" in
                     accounts) probe="accounts=all" ;;
+                    account) probe="account=$BREAKDOWN_ACCOUNT&start=2018-01-01&end=2018-12-31" ;;
                     *) bad "$report advertises account option '$opt' with an unknown name"
                        continue ;;
                 esac ;;
@@ -886,9 +955,15 @@ PY
             text)
                 case "$opt" in
                     title) probe="title=Statement" ;;
+                    description-filter) probe="description-filter=zzz" ;;
                     *) bad "$report advertises text option '$opt' with no probe"
                        continue ;;
                 esac ;;
+            number)
+                # Lower the limit below the number of accounts the selection
+                # links, so the report switches to its "Too many accounts"
+                # warning.  The descriptor's own default is the upper case.
+                probe="$opt=1" ;;
             bool)
                 # Flip the descriptor's default, so the probe asks for the
                 # opposite of what the report already renders.
@@ -911,7 +986,8 @@ PY
                 continue ;;
         esac
 
-        if [ "$opt" = "accounts" ] || [ "$opt" = "invoice" ]; then
+        if [ "$opt" = "accounts" ] || [ "$opt" = "invoice" ] || \
+           [ "$opt" = "account" ]; then
             code=$(fetch "/report/$enc?$probe")
             before="$OPTDIR/no-options.html"
         else

@@ -303,6 +303,11 @@ struct Cell
 struct CellTable
 {
     std::vector<std::string> headings;
+    /** A multi-row header, for the reports whose columns are a tree (the
+     *  Transaction Breakdown Report heads each account column with one row
+     *  per account-tree level).  When this is non-empty it replaces
+     *  `headings`; every row is emitted as a `<tr>` of `<th>` cells. */
+    std::vector<std::vector<Cell>> header_rows;
     std::vector<std::vector<Cell>> rows;
     /** A date-interval line under the title, as the Scheme transaction
      *  engine prints above its table ("01/01/2018 to 12/31/2018"). */
@@ -338,6 +343,104 @@ CellTable general_ledger (Account* root,
                           const std::vector<Account*>& accounts,
                           std::optional<time64> start,
                           std::optional<time64> end);
+
+/* -------------------------------------------------------- entry listings */
+
+/** The General Journal's display switches.  The Scheme report is the
+ *  register renderer in journal mode over every account in the book, and its
+ *  options are the register's display page; the switches here are the ones
+ *  that change the listing.  `show_totals` is not one of them: the Scheme
+ *  report's own "Totals" option has no effect through the saved-report path
+ *  (the Debit/Credit totals always print), so the effective default -- on --
+ *  is what this renders. */
+struct GeneralJournalOptions
+{
+    bool show_date = true;
+    bool show_description = true;
+    bool show_account = true;
+    bool show_num = false;
+    bool show_memo = true;
+    bool show_running_balance = false;
+};
+
+/** The General Journal ("General Journal", general-journal.scm): every
+ *  non-void transaction in the book, in the register's journal layout -- a
+ *  date/description heading per transaction, one line per split with its
+ *  memo, account and debit or credit, and the Total Debits / Total Credits
+ *  totals.  Accounts are printed by full name with the engine's account
+ *  separator, as the register prints them.
+ *
+ *  The totals are one Debit/Credit pair over the whole listing; the register
+ *  prints one pair per commodity, so a book whose journal mixes commodities
+ *  would need that split and is not reproduced.  The fixtures are
+ *  single-currency. */
+CellTable general_journal (Account* root,
+                           const GeneralJournalOptions& options);
+
+/** The Transaction Breakdown Report's options. */
+struct BreakdownOptions
+{
+    /** The Scheme report's single account selection; null is its default and
+     *  renders the engine's "No data" warning. */
+    Account* account = nullptr;
+    std::optional<time64> start;
+    std::optional<time64> end;
+    /** The Scheme report's "Description Filter": a substring of the
+     *  transaction description; empty passes everything. */
+    std::string description_filter;
+    /** The Scheme report's "Limit for number of columns", 1..100. */
+    int max_columns = 10;
+};
+
+/** The Transaction Breakdown Report ("Transaction Breakdown Report",
+ *  txn-columns.scm): the transactions of one account in the period, one row
+ *  per transaction, with one column per account any of those transactions
+ *  touches.  The columns are headed by the account tree and ordered by
+ *  account type then account order; each cell holds the split's value (and,
+ *  when the account's commodity differs from the transaction's, the amount
+ *  in the account's commodity in brackets); the last row totals each account
+ *  over the period. */
+struct BreakdownReport
+{
+    CellTable table;
+    /** No transaction in scope: the Scheme report's "No data" warning. */
+    bool no_data = false;
+    /** More accounts than the column limit: the Scheme report's "Too many
+     *  accounts" warning. */
+    bool too_many_accounts = false;
+};
+
+BreakdownReport transaction_breakdown (Account* root,
+                                       const BreakdownOptions& options);
+
+/** The Reconciliation Report's options.  The report's defining date rule is
+ *  fixed: a reconciled split is included when its reconciled date is in the
+ *  period, and an unreconciled split is always included.  The primary sort
+ *  key is the reconciled status, so the rows are grouped Unreconciled,
+ *  Cleared, Reconciled and Frozen in that order, by date within a group. */
+struct ReconciliationOptions
+{
+    std::vector<Account*> accounts;
+    std::optional<time64> start;
+    std::optional<time64> end;
+    bool show_reconciled_date = true;
+};
+
+/** The Reconciliation Report ("Reconciliation Report", reconcile-report.scm):
+ *  the trep listing with the reconciliation date rule and the Funds In/Funds
+ *  Out calculated columns, grouped by reconciled status, with a Total For
+ *  line per group and a Grand Total.
+ *
+ *  The totals are summed in the report currency; the Scheme report collects
+ *  them per commodity and prints a pair of totals per commodity, which a
+ *  multi-currency selection would need.  The fixtures are single-currency. */
+CellTable reconciliation_report (Account* root,
+                                 const ReconciliationOptions& options);
+
+/** The Reconciliation Report with no account selected: the engine's "No
+ *  accounts selected" warning followed by the report's own explanation, which
+ *  the Scheme renderer passes as its empty-report message. */
+std::string render_reconciliation_no_accounts ();
 
 /** The Scheme engine's warning for a report whose account selection is
  *  empty: "No accounts selected", and the explanation that the report needs
@@ -870,6 +973,8 @@ enum class OptionType
     Text,
     /** A boolean, written "true" or "false". */
     Bool,
+    /** A whole number between `minimum` and `maximum`, written in decimal. */
+    Number,
     /** The id of an invoice in the book (or its GUID). */
     Invoice,
     /** An owner selection: the GUID of a customer, vendor, employee or job,
@@ -889,6 +994,10 @@ struct OptionDescriptor
      *  commodity mnemonic, or the chosen `choices` entry. */
     std::string default_value;
     std::vector<std::string> choices;
+    /** The inclusive range a Number option accepts.  Both zero means no
+     *  bounds. */
+    int minimum = 0;
+    int maximum = 0;
 };
 
 /** The options a native report accepts, in display order.  Empty for a name

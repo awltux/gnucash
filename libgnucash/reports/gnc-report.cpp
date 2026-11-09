@@ -1440,6 +1440,675 @@ general_ledger (Account* root, const std::vector<Account*>& accounts,
     return table;
 }
 
+/* -------------------------------------------------------- entry listings */
+
+namespace
+{
+
+/* Every non-void transaction of the book, in the order the Scheme query
+ * returns them.  The query's primary sort key is the transaction date and its
+ * secondary key is the engine's default split order, which is what
+ * xaccTransOrder() implements (date, closing flag, number, entered date,
+ * description, GUID).  Duplicates are dropped because a transaction has
+ * several splits. */
+std::vector<Transaction*>
+all_transactions (Account* root)
+{
+    std::vector<Account*> accounts;
+    collect_accounts (root, accounts);
+
+    std::vector<Transaction*> transactions;
+    std::set<Transaction*> seen;
+    for (Account* account : accounts)
+    {
+        for (GList* node = xaccAccountGetSplitList (account); node != nullptr;
+             node = node->next)
+        {
+            auto* split = static_cast<Split*> (node->data);
+            Transaction* trans = xaccSplitGetParent (split);
+            if (trans == nullptr || xaccTransGetVoidStatus (trans))
+                continue;
+            if (seen.insert (trans).second)
+                transactions.push_back (trans);
+        }
+    }
+
+    std::stable_sort (transactions.begin (), transactions.end (),
+                      [] (const Transaction* left, const Transaction* right)
+                      {
+                          return xaccTransOrder (left, right) < 0;
+                      });
+    return transactions;
+}
+
+/* The Scheme report's "Num" column for a transaction: the register's
+ * gnc-get-num-action(trans, split), i.e. the transaction number when the book
+ * does not use the split action for it.  The fixtures' books use the
+ * transaction number. */
+std::string
+transaction_num (Transaction* trans)
+{
+    return text_or_empty (xaccTransGetNum (trans));
+}
+
+} // namespace
+
+CellTable
+general_journal (Account* root, const GeneralJournalOptions& options)
+{
+    gnc_commodity* currency = report_currency (root, nullptr);
+
+    CellTable table;
+    std::vector<std::string> headings;
+    if (options.show_date)
+        headings.push_back ("Date");
+    if (options.show_num)
+        headings.push_back ("Num");
+    if (options.show_description || options.show_memo)
+        headings.push_back ("Description");
+    if (options.show_account)
+        headings.push_back ("Account");
+    headings.push_back ("Debit");
+    headings.push_back ("Credit");
+    if (options.show_running_balance)
+        headings.push_back ("Balance");
+    table.headings = std::move (headings);
+    const size_t width = table.headings.size ();
+
+    gnc_numeric grand_debit = gnc_numeric_zero ();
+    gnc_numeric grand_credit = gnc_numeric_zero ();
+
+    for (Transaction* trans : all_transactions (root))
+    {
+        const std::vector<Split*> splits = [trans]
+        {
+            std::vector<Split*> out;
+            for (GList* node = xaccTransGetSplitList (trans); node != nullptr;
+                 node = node->next)
+                out.push_back (static_cast<Split*> (node->data));
+            return out;
+        } ();
+        if (splits.empty ())
+            continue;
+
+        /* The register's Balance column on a transaction heading prints the
+         * first split's running balance (not the transaction net, which is
+         * zero for a balanced transaction).  The first split is the one the
+         * query returns: the split order minimum, which is also what
+         * xaccSplitOrder compares. */
+        Split* leader = nullptr;
+        for (Split* split : splits)
+            if (leader == nullptr || xaccSplitOrder (split, leader) < 0)
+                leader = split;
+        gnc_numeric transaction_balance = gnc_numeric_zero ();
+        if (leader != nullptr)
+        {
+            transaction_balance = xaccSplitGetBalance (leader);
+            if (shows_reversed (xaccSplitGetAccount (leader)))
+                transaction_balance = gnc_numeric_neg (transaction_balance);
+        }
+
+        /* The transaction heading line: date, number, description and empty
+         * amount cells, then (with a running balance) the first split's
+         * running balance.  The register prints the heading as an ordinary
+         * row followed by a spacer row. */
+        std::vector<Cell> heading;
+        if (options.show_date)
+            heading.push_back ({split_date (splits.front ()), "date-cell"});
+        if (options.show_num)
+            heading.push_back ({transaction_num (trans), "text-cell"});
+        if (options.show_description || options.show_memo)
+            heading.push_back (
+                {options.show_description
+                     ? text_or_empty (xaccTransGetDescription (trans))
+                     : std::string (),
+                 "text-cell"});
+        if (options.show_account)
+            heading.push_back ({{}, "text-cell"});
+        heading.push_back ({});
+        heading.push_back ({});
+        if (options.show_running_balance)
+            heading.push_back ({format_amount (transaction_balance, currency),
+                                "number-cell"});
+        table.rows.push_back (std::move (heading));
+
+        std::vector<Cell> spacer;
+        spacer.push_back ({});
+        spacer.push_back ({{}, {}, width > 0 ? static_cast<int> (width) - 1 : 1});
+        table.rows.push_back (std::move (spacer));
+
+        for (Split* split : splits)
+        {
+            Account* account = xaccSplitGetAccount (split);
+            const gnc_numeric amount = xaccSplitGetAmount (split);
+            if (gnc_numeric_positive_p (amount))
+                grand_debit = numeric_add (grand_debit, amount);
+            else if (gnc_numeric_negative_p (amount))
+                grand_credit = numeric_add (grand_credit,
+                                            gnc_numeric_neg (amount));
+
+            std::vector<Cell> row;
+            if (options.show_date)
+                row.push_back ({});
+            if (options.show_num)
+                row.push_back ({text_or_empty (xaccSplitGetAction (split)),
+                                "text-cell"});
+            if (options.show_description || options.show_memo)
+                row.push_back ({options.show_memo
+                                    ? text_or_empty (xaccSplitGetMemo (split))
+                                    : std::string (),
+                                "text-cell"});
+            if (options.show_account)
+                row.push_back ({account_full_name (account), "text-cell"});
+            if (gnc_numeric_negative_p (amount))
+            {
+                row.push_back ({});
+                row.push_back ({format_amount (gnc_numeric_neg (amount),
+                                               currency),
+                                "number-cell"});
+            }
+            else
+            {
+                row.push_back ({format_amount (amount, currency),
+                                "number-cell"});
+                row.push_back ({});
+            }
+            if (options.show_running_balance)
+                row.push_back ({});
+            table.rows.push_back (std::move (row));
+        }
+    }
+
+    if (!table.rows.empty ())
+    {
+        std::vector<Cell> debits;
+        debits.push_back ({});
+        debits.push_back ({"Total Debits", "total-label-cell"});
+        debits.push_back ({format_amount (grand_debit, currency),
+                           "total-number-cell",
+                           width > 1 ? static_cast<int> (width) - 1 : 1});
+        table.rows.push_back (std::move (debits));
+
+        std::vector<Cell> credits;
+        credits.push_back ({});
+        credits.push_back ({"Total Credits", "total-label-cell"});
+        credits.push_back ({format_amount (grand_credit, currency),
+                            "total-number-cell",
+                            width > 1 ? static_cast<int> (width) - 1 : 1});
+        table.rows.push_back (std::move (credits));
+    }
+
+    return table;
+}
+
+/* --------------------------------------------------- transaction breakdown */
+
+namespace
+{
+
+/* The Scheme report's account<? : the engine's own account order. */
+int
+account_order (const Account* left, const Account* right)
+{
+    return xaccAccountOrder (const_cast<Account*> (left),
+                             const_cast<Account*> (right));
+}
+
+/* The Scheme report's account-type<? : assets, liabilities, equity, expenses,
+ * income, with an account type outside that list sorting last. */
+int
+breakdown_type_index (Account* account)
+{
+    const GNCAccountType fundamental =
+        xaccAccountTypeGetFundamental (xaccAccountGetType (account));
+    switch (fundamental)
+    {
+    case ACCT_TYPE_ASSET:     return 0;
+    case ACCT_TYPE_LIABILITY: return 1;
+    case ACCT_TYPE_EQUITY:    return 2;
+    case ACCT_TYPE_EXPENSE:   return 3;
+    case ACCT_TYPE_INCOME:    return 4;
+    default:                  return 5;
+    }
+}
+
+/* The account's full name as a list of names below the book root, i.e.
+ * ("Assets" "Current Assets" "Checking Account"). */
+std::vector<std::string>
+account_name_parts (Account* account)
+{
+    QofBook* book = gnc_account_get_book (account);
+    Account* root = book != nullptr ? gnc_book_get_root_account (book)
+                                    : nullptr;
+    std::vector<std::string> parts;
+    for (Account* current = account; current != nullptr && current != root;
+         current = gnc_account_get_parent (current))
+        parts.insert (parts.begin (), account_name (current));
+    return parts;
+}
+
+/* A cell's text for an amount in `currency`. */
+std::string
+breakdown_amount (gnc_numeric value, gnc_numeric amount,
+                  gnc_commodity* transaction_currency,
+                  gnc_commodity* account_currency)
+{
+    if (gnc_commodity_equal (account_currency, transaction_currency))
+        return format_amount (value, transaction_currency);
+    return "[" + format_amount (value, transaction_currency) + "] " +
+           format_amount (amount, account_currency);
+}
+
+} // namespace
+
+BreakdownReport
+transaction_breakdown (Account* root, const BreakdownOptions& options)
+{
+    /* The query: the selected account's splits, non-void, in the period, and
+     * then the transactions whose description contains the filter. */
+    std::vector<Transaction*> transactions;
+    std::set<Transaction*> seen;
+    if (options.account != nullptr)
+    {
+        for (GList* node = xaccAccountGetSplitList (options.account);
+             node != nullptr; node = node->next)
+        {
+            auto* split = static_cast<Split*> (node->data);
+            Transaction* trans = xaccSplitGetParent (split);
+            if (trans == nullptr)
+                continue;
+            if (xaccTransGetVoidStatus (trans))
+                continue;
+            const time64 date = xaccTransGetDate (trans);
+            if (options.start.has_value () && date < *options.start)
+                continue;
+            if (options.end.has_value () && date > *options.end)
+                continue;
+            const std::string description =
+                text_or_empty (xaccTransGetDescription (trans));
+            if (!options.description_filter.empty () &&
+                description.find (options.description_filter) ==
+                    std::string::npos)
+                continue;
+            if (seen.insert (trans).second)
+                transactions.push_back (trans);
+        }
+    }
+
+    BreakdownReport report;
+    if (transactions.empty ())
+    {
+        report.no_data = true;
+        return report;
+    }
+
+    CellTable& table = report.table;
+
+    /* Every account any of the transactions touches, ordered by account type
+     * then account order, exactly as the Scheme report collects and sorts
+     * them. */
+    std::vector<Account*> accounts;
+    for (Transaction* trans : transactions)
+    {
+        for (GList* node = xaccTransGetSplitList (trans); node != nullptr;
+             node = node->next)
+        {
+            auto* split = static_cast<Split*> (node->data);
+            Account* account = xaccSplitGetAccount (split);
+            if (account == nullptr)
+                continue;
+            if (xaccAccountGetType (account) == ACCT_TYPE_TRADING)
+                continue;
+            if (std::find (accounts.begin (), accounts.end (), account) !=
+                accounts.end ())
+                continue;
+            accounts.push_back (account);
+        }
+    }
+    std::stable_sort (accounts.begin (), accounts.end (),
+                      [] (Account* left, Account* right)
+                      {
+                          return account_order (left, right) < 0;
+                      });
+    std::stable_sort (accounts.begin (), accounts.end (),
+                      [] (Account* left, Account* right)
+                      {
+                          return breakdown_type_index (left) <
+                                 breakdown_type_index (right);
+                      });
+
+    if (static_cast<int> (accounts.size ()) > options.max_columns)
+    {
+        report.too_many_accounts = true;
+        return report;
+    }
+
+    const size_t max_depth = [accounts]
+    {
+        size_t depth = 0;
+        for (Account* account : accounts)
+            depth = std::max<size_t> (
+                depth, gnc_account_get_current_depth (account));
+        return depth;
+    } ();
+
+    /* The header: Date, Num and Desc padded to the depth of the account
+     * column tree, then each account's name parts padded the same way. */
+    std::vector<std::vector<std::string>> header_text (
+        max_depth, std::vector<std::string> (3 + accounts.size ()));
+    const char* fixed[] = {"Date", "Num", "Desc"};
+    for (size_t row = 0; row < max_depth; ++row)
+        for (size_t column = 0; column < 3; ++column)
+            if (row == 0)
+                header_text[row][column] = fixed[column];
+    for (size_t index = 0; index < accounts.size (); ++index)
+    {
+        const std::vector<std::string> parts =
+            account_name_parts (accounts[index]);
+        for (size_t row = 0; row < max_depth; ++row)
+            if (row < parts.size ())
+                header_text[row][3 + index] = parts[row];
+    }
+    for (const std::vector<std::string>& text_row : header_text)
+    {
+        std::vector<Cell> cells;
+        for (const std::string& text : text_row)
+            cells.push_back ({text, {}});
+        table.header_rows.push_back (std::move (cells));
+    }
+
+    std::vector<gnc_numeric> totals (accounts.size (), gnc_numeric_zero ());
+
+    for (Transaction* trans : transactions)
+    {
+        gnc_commodity* transaction_currency = xaccTransGetCurrency (trans);
+        std::vector<Cell> row;
+        char date[32] = {0};
+        qof_print_date_buff (date, sizeof date, xaccTransGetDate (trans));
+        row.push_back ({date, {}});
+        row.push_back ({text_or_empty (xaccTransGetNum (trans)), {}});
+        row.push_back ({text_or_empty (xaccTransGetDescription (trans)), {}});
+
+        for (size_t index = 0; index < accounts.size (); ++index)
+        {
+            Account* account = accounts[index];
+            gnc_numeric value = gnc_numeric_zero ();
+            gnc_numeric amount = gnc_numeric_zero ();
+            bool found = false;
+            for (GList* node = xaccTransGetSplitList (trans); node != nullptr;
+                 node = node->next)
+            {
+                auto* split = static_cast<Split*> (node->data);
+                if (xaccSplitGetAccount (split) != account)
+                    continue;
+                found = true;
+                value = numeric_add (value, xaccSplitGetValue (split));
+                amount = numeric_add (amount, xaccSplitGetAmount (split));
+            }
+            if (!found)
+            {
+                row.push_back ({});
+                continue;
+            }
+            if (shows_reversed (account))
+            {
+                value = gnc_numeric_neg (value);
+                amount = gnc_numeric_neg (amount);
+            }
+            row.push_back ({breakdown_amount (
+                                value, amount, transaction_currency,
+                                xaccAccountGetCommodity (account)),
+                            "number-cell"});
+            totals[index] = numeric_add (totals[index], amount);
+        }
+        table.rows.push_back (std::move (row));
+    }
+
+    gchar* interval = gnc_date_interval_format (
+        options.start.value_or (0), options.end.value_or (
+            options.start.has_value () ? *options.start
+                                       : gnc_time64_get_today_end ()));
+    std::vector<Cell> total_row;
+    total_row.push_back ({"Total For " + std::string (interval != nullptr
+                                                          ? interval
+                                                          : ""),
+                          "total-label-cell", 3});
+    if (interval != nullptr)
+        g_free (interval);
+    for (size_t index = 0; index < accounts.size (); ++index)
+        total_row.push_back (
+            {format_amount (totals[index],
+                            xaccAccountGetCommodity (accounts[index])),
+             "total-number-cell"});
+    table.rows.push_back (std::move (total_row));
+
+    return report;
+}
+
+/* ------------------------------------------------------- reconciliation */
+
+namespace
+{
+
+int
+reconcile_index (char status)
+{
+    switch (status)
+    {
+    case 'n': return 0;
+    case 'c': return 1;
+    case 'y': return 2;
+    case 'f': return 3;
+    default:  return 4;
+    }
+}
+
+std::string
+reconcile_label (char status)
+{
+    switch (status)
+    {
+    case 'n': return "Unreconciled";
+    case 'c': return "Cleared";
+    case 'y': return "Reconciled";
+    case 'f': return "Frozen";
+    default:  return "Voided";
+    }
+}
+
+} // namespace
+
+CellTable
+reconciliation_report (Account* root, const ReconciliationOptions& options)
+{
+    gnc_commodity* currency = report_currency (root, nullptr);
+
+    /* The trep renderer's date rule for this report: a reconciled split is
+     * in the period when its reconciled date is, and every other split is
+     * always included. */
+    Query query;
+    query.scope = root;
+    query.currency = currency;
+    query.skip_voided = true;
+    query.skip_closing = true;
+
+    std::vector<Split*> splits;
+    for (Account* account : options.accounts)
+    {
+        for (GList* node = xaccAccountGetSplitList (account); node != nullptr;
+             node = node->next)
+        {
+            auto* split = static_cast<Split*> (node->data);
+            if (query.skip_voided &&
+                xaccTransGetVoidStatus (xaccSplitGetParent (split)))
+                continue;
+            if (closing_entry_p (query, split))
+                continue;
+            if (xaccSplitGetReconcile (split) == YREC)
+            {
+                const time64 reconciled = xaccSplitGetDateReconciled (split);
+                if (options.start.has_value () && reconciled < *options.start)
+                    continue;
+                if (options.end.has_value () && reconciled > *options.end)
+                    continue;
+            }
+            splits.push_back (split);
+        }
+    }
+
+    /* The Scheme query's default order first, then the report's own sort:
+     * reconciled status (its primary key) and date (its secondary key). */
+    std::stable_sort (splits.begin (), splits.end (),
+                      [] (const Split* left, const Split* right)
+                      {
+                          return xaccSplitOrder (left, right) < 0;
+                      });
+    std::stable_sort (splits.begin (), splits.end (),
+                      [] (const Split* left, const Split* right)
+                      {
+                          const int by_status =
+                              reconcile_index (xaccSplitGetReconcile (left)) -
+                              reconcile_index (xaccSplitGetReconcile (right));
+                          if (by_status != 0)
+                              return by_status < 0;
+                          const time64 left_date = xaccTransGetDate (
+                              xaccSplitGetParent (left));
+                          const time64 right_date = xaccTransGetDate (
+                              xaccSplitGetParent (right));
+                          return left_date < right_date;
+                      });
+
+    CellTable table;
+    table.headings = {"", "Date", "Reconciled Date", "Num", "Description",
+                      "Transfer from/to", "Funds In", "Funds Out"};
+    gchar* interval = gnc_date_interval_format (
+        options.start.value_or (0), options.end.value_or (
+            options.start.has_value () ? *options.start
+                                       : gnc_time64_get_today_end ()));
+    if (interval != nullptr)
+    {
+        table.subtitle = interval;
+        g_free (interval);
+    }
+
+    auto add_total = [&table, currency] (const std::string& label,
+                                         gnc_numeric funds_in,
+                                         gnc_numeric funds_out)
+    {
+        std::vector<Cell> row;
+        row.push_back ({});
+        row.push_back ({label, "total-label-cell", 5});
+        row.push_back ({format_amount (funds_in, currency),
+                        "total-number-cell"});
+        row.push_back ({format_amount (funds_out, currency),
+                        "total-number-cell"});
+        table.rows.push_back (std::move (row));
+    };
+
+    char group_status = '\0';
+    bool in_group = false;
+    gnc_numeric group_in = gnc_numeric_zero ();
+    gnc_numeric group_out = gnc_numeric_zero ();
+    gnc_numeric grand_in = gnc_numeric_zero ();
+    gnc_numeric grand_out = gnc_numeric_zero ();
+
+    for (Split* split : splits)
+    {
+        const char status = xaccSplitGetReconcile (split);
+        if (!in_group || status != group_status)
+        {
+            if (in_group)
+                add_total ("Total For " + reconcile_label (group_status),
+                           group_in, group_out);
+            group_status = status;
+            in_group = true;
+            group_in = gnc_numeric_zero ();
+            group_out = gnc_numeric_zero ();
+            table.rows.push_back (
+                {{reconcile_label (status), "total-label-cell", 6}, {}, {}});
+        }
+
+        Transaction* trans = xaccSplitGetParent (split);
+        const gnc_numeric amount = xaccSplitGetAmount (split);
+        const bool funds_in = gnc_numeric_positive_p (amount);
+        const gnc_numeric shown = funds_in ? amount : gnc_numeric_neg (amount);
+        if (funds_in)
+        {
+            group_in = numeric_add (group_in, amount);
+            grand_in = numeric_add (grand_in, amount);
+        }
+        else
+        {
+            group_out = numeric_add (group_out, shown);
+            grand_out = numeric_add (grand_out, shown);
+        }
+
+        std::vector<Cell> row;
+        row.push_back ({});
+        row.push_back ({split_date (split), "date-cell"});
+        if (options.show_reconciled_date)
+        {
+            if (status == YREC && xaccSplitGetDateReconciled (split) != 0)
+            {
+                char date[32] = {0};
+                qof_print_date_buff (date, sizeof date,
+                                     xaccSplitGetDateReconciled (split));
+                row.push_back ({date, "date-cell"});
+            }
+            else
+                row.push_back ({});
+        }
+        row.push_back ({transaction_num (trans), "text-cell"});
+        row.push_back ({text_or_empty (xaccTransGetDescription (trans)),
+                        "text-cell"});
+        row.push_back ({transfer_name (split), {}});
+        row.push_back (funds_in
+                           ? Cell{format_amount (shown, currency), "number-cell"}
+                           : Cell{});
+        row.push_back (!funds_in
+                           ? Cell{format_amount (shown, currency), "number-cell"}
+                           : Cell{});
+        table.rows.push_back (std::move (row));
+    }
+
+    if (in_group)
+        add_total ("Total For " + reconcile_label (group_status), group_in,
+                   group_out);
+
+    if (!splits.empty ())
+    {
+        /* The Scheme grand-total row starts with the label (it has no
+         * indenting cell), unlike the per-group total rows. */
+        std::vector<Cell> row;
+        row.push_back ({"Grand Total", "total-label-cell", 6});
+        row.push_back ({format_amount (grand_in, currency),
+                        "total-number-cell"});
+        row.push_back ({format_amount (grand_out, currency),
+                        "total-number-cell"});
+        table.rows.push_back (std::move (row));
+    }
+
+    return table;
+}
+
+std::string
+render_reconciliation_no_accounts ()
+{
+    std::ostringstream out;
+    out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
+        << "Reconciliation Report</title><style>" << report_stylesheet ()
+        << "</style></head><body><h3>Reconciliation Report:</h3>\n"
+        << "<h3>No accounts selected</h3>\n"
+        << "<p>This report requires accounts to be selected in the report "
+           "options.</p>\n"
+        << "<p>The reconcile report is designed to be similar to the formal "
+           "reconciliation tool.  Please select the account from Report "
+           "Options.  Please note the dates specified in the options will "
+           "apply to the Reconciliation Date.</p>\n"
+        << "</body></html>\n";
+    return out.str ();
+}
+
 Table
 trial_balance (Account* root, std::optional<time64> end_date,
                gnc_commodity* requested_currency)
@@ -6146,8 +6815,28 @@ render_cell_table (const CellTable& table, const std::string& title)
         out << "<h3>" << html_escape (table.subtitle) << "</h3>\n";
     out << "<table cellspacing='0' cellpadding='4' border='0'>";
     /* A report may put its column headings in the body instead (the lots
-     * report repeats a heading row per account), so the header is optional. */
-    if (!table.headings.empty ())
+     * report repeats a heading row per account), so the header is optional.
+     * A report whose columns are a tree supplies several header rows. */
+    if (!table.header_rows.empty ())
+    {
+        out << "<thead>";
+        for (const std::vector<Cell>& row : table.header_rows)
+        {
+            out << "<tr>";
+            for (const Cell& cell : row)
+            {
+                out << "<th";
+                if (cell.span > 1)
+                    out << " colspan='" << cell.span << "'";
+                out << ">";
+                out << (cell.text.empty () ? " " : html_escape (cell.text));
+                out << "</th>";
+            }
+            out << "</tr>";
+        }
+        out << "</thead>";
+    }
+    else if (!table.headings.empty ())
     {
         out << "<thead><tr>";
         for (const std::string& heading : table.headings)
@@ -6182,6 +6871,8 @@ native_report_names ()
 {
     return {"Trial Balance", "Balance Sheet", "Income Statement",
             "Profit & Loss", "Transaction Report", "General Ledger",
+            "General Journal", "Transaction Breakdown Report",
+            "Reconciliation Report",
             "Receivable Aging", "Payable Aging", "Investment Lots",
             "Investment Portfolio", "Advanced Portfolio", "Lot Viewer",
             "IFRS weighted-average cost basis report",
@@ -6887,6 +7578,124 @@ report_options (const std::string& name)
             default_end_date ()));
         options.push_back (accounts_option ());
     }
+    else if (name == "General Journal")
+    {
+        /* general-journal.scm inherits the register report's options and then
+         * sets its own defaults on them: journal layout, two amount columns,
+         * no number column, no running balance.  Only the switches that
+         * change this listing are published; the shares/price/value columns
+         * and the amount single/two-column choice are not, because the
+         * native listing has one fixed pair of amount columns.  The Scheme
+         * "Totals" option is also not published: through the saved-report
+         * path it does not change the page (the Debit/Credit totals always
+         * print), so the effective default is what renders. */
+        struct Switch
+        {
+            const char* name;
+            const char* label;
+            const char* description;
+            bool default_value;
+        };
+        static const Switch switches[] = {
+            {"show_date", "Date", "Display the transaction date?", true},
+            {"show_num", "Num", "Display the transaction number?", false},
+            {"show_description", "Description",
+             "Display the transaction description on the heading line?", true},
+            {"show_memo", "Memo",
+             "Display the split memo on each split line?", true},
+            {"show_account", "Account", "Display the split's account?", true},
+            {"show_running_balance", "Running Balance",
+             "Display a Balance column?  The register prints the transaction's "
+             "net on its heading line, not a cumulative balance.", false},
+        };
+        for (const Switch& item : switches)
+            options.push_back (switch_option (item.name, item.label,
+                                              item.description,
+                                              item.default_value));
+        return options;
+    }
+    else if (name == "Transaction Breakdown Report")
+    {
+        /* txn-columns.scm: one account, a date range, a description filter
+         * and the column limit.  The Scheme account option is a single
+         * account (GncOptionAccountValue); the route's account selection is a
+         * list, so this publishes the same name as an account list and the
+         * report takes its first entry, which is what the harness sends. */
+        OptionDescriptor account;
+        account.name = "account";
+        account.type = OptionType::AccountList;
+        account.label = "Account";
+        account.description =
+            "The account whose transactions are broken down, by GUID.  The "
+            "Scheme option takes a single account; this accepts the same "
+            "list form as the other reports and uses the first account.  "
+            "Without it the report renders the Scheme \"No data\" warning.";
+        options.push_back (account);
+
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the period whose transactions are printed.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the period whose transactions are printed.",
+            default_end_date ()));
+
+        OptionDescriptor filter;
+        filter.name = "description-filter";
+        filter.type = OptionType::Text;
+        filter.label = "Description Filter";
+        filter.description =
+            "Print only transactions whose description contains this text; "
+            "empty prints every transaction in the period.";
+        filter.default_value = "";
+        options.push_back (filter);
+
+        OptionDescriptor limit;
+        limit.name = "max-columns";
+        limit.type = OptionType::Number;
+        limit.label = "Limit for number of columns";
+        limit.description =
+            "The largest number of account columns the report will render; "
+            "above it the report prints its \"Too many accounts\" warning, "
+            "as the Scheme report does.";
+        limit.default_value = "10";
+        limit.minimum = 1;
+        limit.maximum = 100;
+        options.push_back (limit);
+        return options;
+    }
+    else if (name == "Reconciliation Report")
+    {
+        /* reconcile-report.scm is trep-engine with different defaults: the
+         * primary sort key is the reconciled status, the date filter is the
+         * reconciled date (an unreconciled split is always included), and the
+         * Funds In/Funds Out calculated columns replace the debit/credit
+         * pair.  The account list and the two dates are the option surface
+         * this exposes; the display switches the Scheme report flips
+         * (Reconciled Date on, Running Balance and Memo off) are its
+         * defaults, and the remaining trep options stay at theirs. */
+        options.push_back (accounts_option ());
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the period a reconciled split's reconciled date "
+            "must fall in.  An unreconciled split is always included, "
+            "whatever this date is, which is why the option is accepted but "
+            "has no effect on a book whose splits are all unreconciled -- the "
+            "two fixture books in this tree are that case.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the period a reconciled split's reconciled date "
+            "must fall in.  An unreconciled split is always included, "
+            "whatever this date is; the descriptor for start says what that "
+            "means for the fixtures.",
+            default_end_date ()));
+        options.push_back (switch_option (
+            "show_reconciled_date", "Reconciled Date",
+            "Display the date a reconciled split was reconciled?", true));
+        return options;
+    }
     else if (name == "Receivable Aging" || name == "Payable Aging")
     {
         /* The aging reports take one date: the Scheme report's "To" option,
@@ -7528,6 +8337,98 @@ render_report (const std::string& name, Account* root,
         CellTable table = general_ledger (root, request.accounts, start, end);
         table.subtitle = interval;
         html = render_cell_table (table, "General Ledger");
+        return true;
+    }
+    if (name == "General Journal")
+    {
+        /* The Scheme report's query is hard-wired to every non-void
+         * transaction in the book: it has no account, date or scope option,
+         * so the defaults are the whole listing.  Only the register display
+         * switches are options. */
+        GeneralJournalOptions options;
+        options.show_date = request.boolean_option ("show_date", true);
+        options.show_num = request.boolean_option ("show_num", false);
+        options.show_description =
+            request.boolean_option ("show_description", true);
+        options.show_memo = request.boolean_option ("show_memo", true);
+        options.show_account = request.boolean_option ("show_account", true);
+        options.show_running_balance =
+            request.boolean_option ("show_running_balance", false);
+        html = render_cell_table (general_journal (root, options),
+                                  "General Journal");
+        return true;
+    }
+    if (name == "Transaction Breakdown Report")
+    {
+        BreakdownOptions options;
+        const auto account = request.account_lists.find ("account");
+        if (account != request.account_lists.end () &&
+            !account->second.empty ())
+            options.account = account->second.front ();
+        options.start = start;
+        options.end = end;
+        options.description_filter =
+            request.text_option ("description-filter", "");
+        options.max_columns = 10;
+        if (const auto limit = request.texts.find ("max-columns");
+            limit != request.texts.end ())
+        {
+            char* end_text = nullptr;
+            const long parsed = std::strtol (limit->second.c_str (),
+                                             &end_text, 10);
+            if (end_text != limit->second.c_str ())
+                options.max_columns = static_cast<int> (
+                    std::min<long> (std::max<long> (parsed, 1), 100));
+        }
+
+        BreakdownReport report = transaction_breakdown (root, options);
+        if (report.no_data)
+        {
+            html = render_warning (
+                "Transaction Breakdown Report", "No data",
+                "The selected accounts contain no data/transactions (or only "
+                "zeroes) for the selected time period");
+            return true;
+        }
+        if (report.too_many_accounts)
+        {
+            html = render_warning (
+                "Transaction Breakdown Report", "Too many accounts",
+                "The number of accounts linked by the transactions found "
+                "exceeds the limit.  Select a different subset of "
+                "transactions, or increase the limit in the options.");
+            return true;
+        }
+        html = render_cell_table (report.table,
+                                  "Transaction Breakdown Report");
+        return true;
+    }
+    if (name == "Reconciliation Report")
+    {
+        /* reconcile-report.scm's own defaults: no account selected, which is
+         * the engine's "No accounts selected" warning plus the report's
+         * explanation. */
+        if (request.accounts.empty ())
+        {
+            html = render_reconciliation_no_accounts ();
+            return true;
+        }
+        ReconciliationOptions options;
+        options.accounts = request.accounts;
+        options.start = start;
+        options.end = end;
+        options.show_reconciled_date =
+            request.boolean_option ("show_reconciled_date", true);
+        CellTable table = reconciliation_report (root, options);
+        if (table.rows.empty ())
+        {
+            html = render_warning (
+                "Reconciliation Report", "No matching transactions found",
+                "No transactions were found that match the time interval and "
+                "account selection specified in the Options panel.");
+            return true;
+        }
+        html = render_cell_table (table, "Reconciliation Report");
         return true;
     }
     if (name == "Investment Lots")

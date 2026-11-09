@@ -16,6 +16,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <cstdlib>
 
 #include <algorithm>
 #include <set>
@@ -287,6 +288,7 @@ option_type_name (gnc::report::OptionType type)
     case gnc::report::OptionType::Choice:      return "choice";
     case gnc::report::OptionType::Text:        return "text";
     case gnc::report::OptionType::Bool:        return "bool";
+    case gnc::report::OptionType::Number:      return "number";
     case gnc::report::OptionType::Invoice:     return "invoice";
     case gnc::report::OptionType::Owner:       return "owner";
     }
@@ -306,12 +308,14 @@ option_json (const gnc::report::OptionDescriptor& option)
     out += json_escape (option.description.c_str ());
     out += "\",\"default\":";
     /* An account selection defaults to the empty list, a boolean to a JSON
-     * boolean, everything else to a string; keep the JSON types honest so a
-     * form can use them as is. */
+     * boolean, a number to a JSON number, everything else to a string; keep
+     * the JSON types honest so a form can use them as is. */
     if (option.type == gnc::report::OptionType::AccountList)
         out += "[]";
     else if (option.type == gnc::report::OptionType::Bool)
         out += option.default_value == "true" ? "true" : "false";
+    else if (option.type == gnc::report::OptionType::Number)
+        out += option.default_value.empty () ? "0" : option.default_value;
     else
     {
         out += "\"";
@@ -1164,9 +1168,11 @@ build_report_request (const std::string& report, const std::string& query,
             else if (report == "Customer Summary")
                 accepted = gnc::report::set_customer_summary_option (
                     request.customer_summary_options, param.name, value);
-            else
+            else if (report == "Printable Invoice")
                 accepted = gnc::report::set_invoice_print_option (
                     request.invoice_options, param.name, value);
+            else
+                accepted = false;
             if (!accepted)
             {
                 /* A switch the report publishes and this route has no
@@ -1175,6 +1181,29 @@ build_report_request (const std::string& report, const std::string& query,
                  * one. */
                 request.booleans[param.name] = value;
             }
+            break;
+        }
+
+        case gnc::report::OptionType::Number:
+        {
+            char* end_text = nullptr;
+            const long value = std::strtol (param.value.c_str (), &end_text, 10);
+            if (end_text == param.value.c_str () || *end_text != '\0')
+            {
+                error = "invalid number '" + param.value + "' for option '" +
+                        param.name + "' (expected a whole number)";
+                return false;
+            }
+            if ((descriptor->minimum != 0 || descriptor->maximum != 0) &&
+                (value < descriptor->minimum || value > descriptor->maximum))
+            {
+                error = "option '" + param.name + "' must be between " +
+                        std::to_string (descriptor->minimum) + " and " +
+                        std::to_string (descriptor->maximum) + " (got " +
+                        param.value + ")";
+                return false;
+            }
+            request.texts[param.name] = std::to_string (value);
             break;
         }
 
