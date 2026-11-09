@@ -3,6 +3,7 @@
 #
 # Usage: report-parity.sh <guile-build> <native-build> <source-dir>
 #                         [book] [report] [start] [end] [accounts] [invoice]
+#                         [options]
 #
 # <guile-build> must contain bin/gnucash-cli (a WITH_GNUCASH build); override
 # the binary with GNC_CLI=/path/to/gnucash-cli.  <native-build> contains
@@ -12,7 +13,8 @@
 # "Profit & Loss", "Transaction Report", "General Ledger", "Receivable Aging",
 # "Payable Aging", "Investment Lots", "Budget Report",
 # "Budget Income Statement", "Budget Profit & Loss", "Budget Balance Sheet",
-# "Budget Flow" and "Printable Invoice" are supported.
+# "Budget Flow", "Printable Invoice", "Receipt", "Tax Invoice" and
+# "Australian Tax Invoice" are supported.
 # Each report has its own extractor (see extractor_for below), because the
 # reports do not agree on what a row is: the Trial Balance is (account, debit,
 # credit), the balance sheet and P&L are (label, amount) with section headings
@@ -23,6 +25,14 @@
 # tax, the total, any payment row and the amount due.  Both engines put those
 # in a div.entries-table with the same cell classes, so the same parser reads
 # the Scheme document and the native one.
+#
+# The Receipt and the two Tax Invoice variants have their own extractors
+# because their rows are different documents, not cell-class variants: the
+# Receipt prints one row per line with a tax marker, an item count, and tax /
+# payment / amount-due rows only when the document has them; the Tax Invoice
+# prints the tax rate and the tax-inclusive total per line.  The extractors
+# keep the cells both engines agree on, including the Receipt's marker and the
+# Tax Invoice's "n/a" tax rate, rather than reducing both to a grand total.
 #
 # [start] and [end] are optional YYYY-MM-DD dates.  [accounts] is optional:
 # "all", or a comma-separated list of account GUIDs.  Each GUID means that
@@ -71,6 +81,14 @@
 # needs; the native route takes the id itself.  Its dates are the posted and
 # due dates on the invoice, not report options, so start/end are refused.
 #
+# [options] is an optional "name=value&..." string for the document report's
+# display switches (show_date, show_tax_rate, show_units, show_contact,
+# show_address, show_invoice_number, show_company_name,
+# invoice_number_next_to_title, show_job_name, show_job_number,
+# show_net_price, border_collapse) and its title.  The harness sets the same
+# Scheme options through the saved report, so a flipped switch is compared
+# with the oracle rather than only checked for changing the page.
+#
 # The Investment Lots report needs a book with a stock account, lots and a
 # price database; no fixture book has one, so generate it the same way and
 # pass it as [book]:
@@ -115,6 +133,7 @@ START=${6:-}
 END=${7:-}
 ACCOUNTS=${8:-}
 INVOICE=${9:-}
+EXTRA_OPTIONS=${10:-}
 
 CLI=${GNC_CLI:-$GUILE_BUILD/bin/gnucash-cli}
 WEBDBIN="$NATIVE_BUILD/bin/gnc-webd"
@@ -139,6 +158,8 @@ extractor_for() {
         "Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo budget-statement ;;
         "Printable Invoice") echo invoice ;;
+        "Receipt") echo receipt ;;
+        "Tax Invoice"|"Australian Tax Invoice") echo tax-invoice ;;
         *) return 1 ;;
     esac
 }
@@ -160,6 +181,9 @@ report_guid() {
         "Budget Balance Sheet")    echo "ecc35ea9dbfa4e20ba389fc85d59cb69" ;;
         "Budget Flow")             echo "e6e34fa3b6e748debde3cb3bc76d3e53" ;;
         "Printable Invoice")       echo "5123a759ceb9483abf2182d01c140e8d" ;;
+        "Receipt")                 echo "7eb3df21073d4c33920a0257da15fba5" ;;
+        "Tax Invoice")             echo "0769e242be474010b4acf264a5512e6e" ;;
+        "Australian Tax Invoice")  echo "3dbbc2584da64e7a8674355bc3fbfe3d" ;;
         *) return 1 ;;
     esac
 }
@@ -190,8 +214,9 @@ scheme_start_option() {
         # Budget Report has no date option at all.
         "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo "" ;;
-        # The invoice document's dates come from the invoice itself.
-        "Printable Invoice") echo "" ;;
+        # The invoice documents' dates come from the invoice itself.
+        "Printable Invoice"|"Receipt"|"Tax Invoice"|\
+        "Australian Tax Invoice") echo "" ;;
         *) echo "Start Date" ;;
     esac
 }
@@ -204,7 +229,8 @@ scheme_end_option() {
         "Investment Lots") echo "End date" ;;
         "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo "" ;;
-        "Printable Invoice") echo "" ;;
+        "Printable Invoice"|"Receipt"|"Tax Invoice"|\
+        "Australian Tax Invoice") echo "" ;;
         *) echo "End Date" ;;
     esac
 }
@@ -231,7 +257,7 @@ scheme_account_option() {
 }
 
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, Receivable Aging, Payable Aging, Investment Lots, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Receipt, Tax Invoice, Australian Tax Invoice)"
 
 case "$REPORT" in
     "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
@@ -239,7 +265,8 @@ case "$REPORT" in
         if [ -n "$START" ] || [ -n "$END" ]; then
             fail "the $REPORT period range is a range of budget periods, not dates"
         fi ;;
-    "Printable Invoice")
+    "Printable Invoice"|"Receipt"|"Tax Invoice"|\
+    "Australian Tax Invoice")
         if [ -n "$START" ] || [ -n "$END" ]; then
             fail "the $REPORT dates come from the invoice, not from report options"
         fi
@@ -367,6 +394,45 @@ PY
         INVOICE_OPTION="(gnc-set-option (gnc:optiondb options) \"General\" \"Invoice Number\" \"$INVOICE_GUID\")"
     fi
 
+    # The document display switches are Scheme booleans on the "Elements"
+    # page (the Report Title is on "Headings 1").  Translate the route's
+    # names and true/false spelling so the oracle is asked for exactly the
+    # same document the native route renders.
+    EXTRA_SCHEME=""
+    if [ -n "$EXTRA_OPTIONS" ]; then
+        OLDIFS=$IFS
+        IFS='&'
+        for pair in $EXTRA_OPTIONS; do
+            key=${pair%%=*}
+            value=${pair#*=}
+            case "$key" in
+                title)                 page="Headings 1"; name="Report Title" ;;
+                show_date)             page="Elements"; name="column: Date" ;;
+                show_tax_rate)         page="Elements"; name="column: Tax Rate" ;;
+                show_units)            page="Elements"; name="column: Units" ;;
+                show_contact)          page="Elements"; name="row: Contact" ;;
+                show_address)          page="Elements"; name="row: Address" ;;
+                show_invoice_number)   page="Elements"; name="row: Invoice Number" ;;
+                show_company_name)     page="Elements"; name="row: Company Name" ;;
+                invoice_number_next_to_title)
+                    page="Elements"; name="Invoice Number next to title" ;;
+                show_job_name)         page="Elements"; name="Show Job name" ;;
+                show_job_number)       page="Elements"; name="Show Job number" ;;
+                show_net_price)        page="Elements"; name="Show net price" ;;
+                border_collapse)       page="Display"; name="table-border-collapse" ;;
+                *) fail "no Scheme mapping for option '$key'" ;;
+            esac
+            case "$value" in
+                true)  scheme_value="#t" ;;
+                false) scheme_value="#f" ;;
+                *)     scheme_value="\"$value\"" ;;
+            esac
+            EXTRA_SCHEME="$EXTRA_SCHEME
+      (gnc-set-option (gnc:optiondb options) \"$page\" \"$name\" $scheme_value)"
+        done
+        IFS=$OLDIFS
+    fi
+
     mkdir -p "$(dirname "$SAVED_REPORTS")"
     if [ -f "$SAVED_REPORTS" ]; then
         SAVED_REPORTS_BACKUP="$TMP/saved-reports.orig"
@@ -382,6 +448,7 @@ PY
       $DATE_OPTIONS
       $ACCOUNT_OPTION
       $INVOICE_OPTION
+      $EXTRA_SCHEME
       options))
   (gnc:define-report
     'version 1
@@ -465,6 +532,9 @@ if [ -n "$INVOICE" ]; then
     ENCODED_INVOICE=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$INVOICE")
     add_param "invoice=$ENCODED_INVOICE"
 fi
+if [ -n "$EXTRA_OPTIONS" ]; then
+    add_param "$EXTRA_OPTIONS"
+fi
 [ -n "$REQUEST_QUERY" ] && REQUEST_QUERY="?$REQUEST_QUERY"
 curl -fsS "${URL%/}/report/$REQUEST_NAME$REQUEST_QUERY" -o "$TMP/native.html" \
     || { cat "$TMP/server.log" >&2; fail "the native report request failed"; }
@@ -493,23 +563,37 @@ class TableParser(HTMLParser):
         self.row = None
         self.cell = None
         self.cell_class = ""
-        # A document (the invoice) has header tables around the one table it
-        # compares; scope limits collection to the div that carries the
-        # entries, so the client and company tables cannot leak into the rows.
+        # A document has header tables around the one table it compares;
+        # scope limits collection to the element that carries the entries, so
+        # the client and company tables cannot leak into the rows.  The
+        # printable invoice scopes by div class, the receipt by div id, and
+        # the tax invoices by table class.
         self.scope = scope
         self.in_scope = scope is None
+        self.scope_tag = None
         self.scope_depth = 0
+
+    def _matches(self, tag, attrs):
+        if self.scope is None:
+            return False
+        if tag == "div":
+            return (self.scope in attrs.get("class", "").split()
+                    or attrs.get("id", "") == self.scope)
+        if tag == "table":
+            return self.scope in attrs.get("class", "").split()
+        return False
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
-        if tag == "div" and self.scope is not None:
-            classes = attrs.get("class", "").split()
-            if self.scope in classes:
-                self.in_scope = True
+        if self.scope is not None:
+            if not self.in_scope:
+                if self._matches(tag, attrs):
+                    self.in_scope = True
+                    self.scope_tag = tag
+                    self.scope_depth = 1
+                return
+            if tag == self.scope_tag:
                 self.scope_depth += 1
-            return
-        if not self.in_scope:
-            return
         if tag == "tr":
             self.row = []
         elif tag in ("td", "th") and self.row is not None:
@@ -517,12 +601,14 @@ class TableParser(HTMLParser):
             self.cell_class = attrs.get("class", "")
 
     def handle_endtag(self, tag):
-        if tag == "div" and self.scope is not None:
-            if self.in_scope and self.scope_depth > 0:
+        if self.scope is not None:
+            if not self.in_scope:
+                return
+            if tag == self.scope_tag:
                 self.scope_depth -= 1
                 if self.scope_depth == 0:
                     self.in_scope = False
-            return
+                return
         if tag in ("td", "th") and self.row is not None and self.cell is not None:
             text = " ".join("".join(self.cell).split())
             self.row.append((text, self.cell_class))
@@ -883,20 +969,118 @@ def invoice(rows):
     return out
 
 
+DATE = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}")
+
+
+def receipt(rows):
+    """The Receipt document: its columns, lines, item count and totals.
+
+    The receipt is a different document, not an invoice with fewer cells.
+    It always prints the five product columns, then one row per line with the
+    tax marker in the amount cell, then the item count, then (only when the
+    document has them) the Net Price / Tax Amount / Total Price subtotals,
+    the payments and the amount due.  Keeping the marker and the count in the
+    extract makes the receipt's differences from an invoice part of the
+    parity claim instead of hiding them behind a total.
+    """
+    out = []
+    for cells in rows:
+        texts = [t for t, _ in cells]
+        if not texts:
+            continue
+        if texts[0] == "Date" and "Descr." in texts:
+            out.append(("COLUMNS", tuple(texts)))
+            continue
+        if len(cells) == 5:
+            marker = bool(re.search(r"(?:^|\s)T$", texts[4]))
+            out.append(("ITEM", texts[0], texts[1], amount(texts[2]),
+                        amount(texts[3]), amount(texts[4]), marker))
+            continue
+        if len(cells) == 1:
+            match = re.search(r"(\d+)\s*$", texts[0])
+            out.append(("COUNT", int(match.group(1)) if match else texts[0]))
+            continue
+        if len(cells) == 3 and "Payment received" in texts[1]:
+            out.append(("PAYMENT", texts[0], texts[1], amount(texts[2])))
+            continue
+        if len(cells) == 2:
+            if not texts[0] and texts[1]:
+                out.append(("NOTE", texts[1]))
+            elif texts[0]:
+                out.append(("TOTAL", texts[0], amount(texts[1])))
+            continue
+    return out
+
+
+def tax_invoice(rows):
+    """The Tax Invoice document: its column layout, lines, subtotal and due.
+
+    The Scheme template adds optional columns to the same table (Date, Units,
+    the discount pair, Net Price / Tax Rate / Tax Amount), so the extractor
+    reads the header row first and maps each line by column name.  A tax rate
+    is text ("10.00%" or "n/a"), not an amount: the point of this document is
+    the tax fields, and the "n/a" on an untaxed line is a value the two
+    engines must agree on.  The subtotal row's blank tax-rate cell is kept as
+    None, so a filled cell cannot pass for a blank one.
+    """
+    out = []
+    columns = None
+    for cells in rows:
+        texts = [t for t, _ in cells]
+        if not texts:
+            continue
+        if columns is None and "Description" in texts:
+            columns = texts
+            out.append(("COLUMNS", tuple(texts)))
+            continue
+        if columns is None:
+            continue
+        if len(cells) == len(columns):
+            values = []
+            for label, text in zip(columns, texts):
+                if label in ("Date", "Description", "Units", "Tax Rate",
+                             "GST Rate"):
+                    values.append(text)
+                else:
+                    values.append(amount(text) if text.strip() else None)
+            out.append(("ITEM", tuple(values)))
+            continue
+        if texts[0] == "Sub-total":
+            values = tuple(amount(t) if t.strip() else None
+                           for t in texts[1:])
+            out.append(("SUBTOTAL", texts[0], values))
+            continue
+        if "Payment received" in texts:
+            index = next(i for i, t in enumerate(texts)
+                         if t.startswith("Payment received"))
+            date = texts[0] if index > 0 and DATE.fullmatch(texts[0]) else ""
+            out.append(("PAYMENT", date, texts[index],
+                        amount(texts[index + 1])))
+            continue
+        if texts[0].startswith("Amount Due"):
+            out.append(("TOTAL", texts[0], amount(texts[1])))
+            continue
+    return out
+
+
 EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "transaction-report": transaction_report,
               "general-ledger": general_ledger, "aging": aging,
               "investment-lots": investment_lots,
               "budget-report": budget_report,
               "budget-statement": budget_statement,
-              "invoice": invoice}
+              "invoice": invoice, "receipt": receipt,
+              "tax-invoice": tax_invoice}
 
 extractor = EXTRACTORS[sys.argv[3]]
 report = sys.argv[4]
-# The invoice extractor is the one report whose rows live in a specific div:
-# the document has header tables (client, company, invoice details) that must
-# not be mistaken for line items.
-scope = "entries-table" if sys.argv[3] == "invoice" else None
+# The document extractors scope the parse to the entries of their document:
+# the printable invoice's div, the receipt's products div, and the tax
+# invoice's table.  All of them have header tables (client, company, details)
+# that must not be mistaken for line items.
+SCOPES = {"invoice": "entries-table", "receipt": "products",
+          "tax-invoice": "entries"}
+scope = SCOPES.get(sys.argv[3])
 scheme = extract(extractor, sys.argv[1], scope)
 native = extract(extractor, sys.argv[2], scope)
 

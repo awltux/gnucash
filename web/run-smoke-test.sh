@@ -86,7 +86,8 @@ for native_report in "Balance Sheet" "Income Statement" "Profit & Loss" \
                      "Receivable Aging" "Payable Aging" "Investment Lots" \
                      "Budget Report" "Budget Income Statement" \
                      "Budget Profit & Loss" "Budget Balance Sheet" \
-                     "Budget Flow" "Printable Invoice"; do
+                     "Budget Flow" "Printable Invoice" "Receipt" \
+                     "Tax Invoice" "Australian Tax Invoice"; do
     echo "$reports" | grep -q "\"$native_report\"" \
         || fail "report list has no $native_report"
 done
@@ -217,6 +218,31 @@ invalid_invoice=$(curl -sS -o /dev/null -w '%{http_code}' \
     "${URL}report/Printable%20Invoice?invoice=NO-SUCH-INVOICE")
 [ "$invalid_invoice" = "400" ] \
     || fail "an unknown invoice answered $invalid_invoice (expected 400)"
+
+# The receipt and the two tax invoice variants are native documents too.
+# sample1's single document is a vendor bill: the Tax Invoice prints it, and
+# the Receipt deliberately refuses it because receipt.scm is customer-only.
+for document_report in "Receipt" "Tax%20Invoice" \
+                       "Australian%20Tax%20Invoice"; do
+    warning=$(curl -fsS "${URL}report/$document_report") \
+        || { cat "$LOG" >&2; fail "GET $document_report failed"; }
+    echo "$warning" | grep -q "No invoice has been selected" \
+        || fail "$document_report does not explain that an invoice must be chosen"
+done
+tax_invoice=$(curl -fsS "${URL}report/Tax%20Invoice?invoice=yoyo1") \
+    || { cat "$LOG" >&2; fail "GET Tax Invoice?invoice=yoyo1 failed"; }
+echo "$tax_invoice" | grep -q "class='entries'" \
+    || fail "the tax invoice has no entries table"
+echo "$tax_invoice" | grep -q "Yoyodyne, Inc." \
+    || fail "the tax invoice lost the book's vendor"
+receipt_warning=$(curl -fsS "${URL}report/Receipt?invoice=yoyo1") \
+    || { cat "$LOG" >&2; fail "GET Receipt?invoice=yoyo1 failed"; }
+echo "$receipt_warning" | grep -q "customer (sales) invoices only" \
+    || fail "the receipt does not refuse a vendor bill"
+invalid_tax_invoice=$(curl -sS -o /dev/null -w '%{http_code}' \
+    "${URL}report/Tax%20Invoice?invoice=NO-SUCH-INVOICE")
+[ "$invalid_tax_invoice" = "400" ] \
+    || fail "an unknown tax invoice answered $invalid_tax_invoice (expected 400)"
 
 if [ "$HAS_GUILE" = 1 ]; then
     # The Scheme engine is still the fallback for reports not ported yet.

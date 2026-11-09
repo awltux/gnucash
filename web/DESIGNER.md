@@ -93,7 +93,7 @@ period unit is rejected the same way.
 ## Built-in specs
 
 `gnc-webd` defines four report specs in code, so a fresh build — with or
-without Guile — offers reports beyond the native fourteen:
+without Guile — offers reports beyond the native reports:
 
 | id | report | scope and chart |
 |---|---|---|

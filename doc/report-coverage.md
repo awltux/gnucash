@@ -141,13 +141,13 @@ The classes are the task's, applied as follows:
 | 25 | Reconciliation Report | `reports/standard/reconcile-report.scm` | logic | Trep renderer with a reconcile-date predicate instead of the posted-date range. |
 | 26 | Transaction Breakdown Report | `reports/standard/txn-columns.scm` | logic | One generated column per split/account per transaction; custom cell layout. |
 | 27 | Vendor Report | `reports/standard/new-owner-report.scm` | logic | Owner report with `GNC-OWNER-VENDOR`. |
-| 28 | Australian Tax Invoice | `reports/standard/taxinvoice.scm` | template | Eguile invoice template with Australian tax fields (`support/taxinvoice.eguile.scm`). |
+| 28 | Australian Tax Invoice | `reports/standard/taxinvoice.scm` | native | `native_report_names()`; taxinvoice.scm registers it with the same eguile renderer and a locale option set, so the native Tax Invoice renderer runs it with the Australian headings. |
 | 29 | Balance Sheet (eguile) | `reports/standard/balsheet-eg.scm` | template | Eguile page over balance-sheet data (`support/balsheet-eg.eguile.scm`). |
 | 30 | Easy Invoice | `reports/standard/invoice.scm` | template | HTML invoice document built from invoice/owner objects. |
 | 31 | Fancy Invoice | `reports/standard/invoice.scm` | template | Same invoice document with the styled layout. |
 | 32 | Printable Invoice | `reports/standard/invoice.scm` | template | Same invoice document with the print layout. |
-| 33 | Receipt | `reports/standard/receipt.scm` | template | Eguile receipt over an invoice (`support/receipt.eguile.scm`). |
-| 34 | Tax Invoice | `reports/standard/taxinvoice.scm` | template | Eguile invoice template with tax columns. |
+| 33 | Receipt | `reports/standard/receipt.scm` | native | `native_report_names()`; a sibling renderer over `InvoiceDocument`, customer-only, with the paid-document rows. |
+| 34 | Tax Invoice | `reports/standard/taxinvoice.scm` | native | `native_report_names()`; a sibling renderer over `InvoiceDocument` with the tax-rate and tax-inclusive columns. |
 | 35 | Tax Report / TXF Export | `reports/locale-specific/de_DE/taxtxf.scm` | template | Locale tax-line table plus TXF/XML export; needs the German tax code table and writers. |
 | 36 | Tax Schedule Report/TXF Export | `reports/locale-specific/us/taxtxf.scm` | template | Same machinery for the US schedule; hand-built HTML, not eguile. |
 | 37 | Assets | `reports/standard/account-piecharts.scm` | other | Pie chart of asset account balances. |
@@ -535,52 +535,71 @@ and the rest of the 56 non-native names remain visibly unavailable.
 
 Measured after `d2e3a8c722`, on the book `web/test/make-invoice-book.py`
 generates.  This is the first step of option C in `doc/eguile-decision.md`:
-the invoice model now exists in the native layer, and one document -- the
-**Printable Invoice** -- is rendered from it in C++/HTML.  No template
+the invoice model now exists in the native layer, and four documents -- the
+**Printable Invoice**, the **Receipt**, the **Tax Invoice** and its
+**Australian** option set -- are rendered from it in C++/HTML.  No template
 language was added.
 
-- **Native names: 15 of 66.**  `Printable Invoice` joined
-  `native_report_names()`, so the count that was 14 in section 9 is now 15
-  (13 implementations, because Income Statement/P&L and Budget Income
-  Statement/P&L each share one, and the invoice renderer is its own).
-  It is native in both builds: in the Guile build the native dispatch takes
-  the name before the Scheme fallback; without Guile it is one of the 15
-  names `/api/reports` lists.
+- **Native names: 18 of 66.**  `Printable Invoice` joined
+  `native_report_names()` first; `Receipt`, `Tax Invoice` and `Australian
+  Tax Invoice` followed.  The last two are one renderer, because
+  taxinvoice.scm registers the Australian report with the same eguile
+  renderer and a different option set.  They are native in both builds: in
+  the Guile build the native dispatch takes the name before the Scheme
+  fallback; without Guile they are three of the 18 names `/api/reports`
+  lists.
 - **The model is reusable and separate from the HTML.**  `libgnucash/reports/
   gnc-invoice.{hpp,cpp}` reads a `GncInvoice` -- owner (with the job chain
   resolved), document id and type, posted/opened/due dates, billing terms,
   notes, currency, entries (date, description, action, quantity, unit price,
-  discount and type, taxable flag, tax table, rounded net/tax/discount
-  amounts), per-account tax totals, applied lot payments and the
+  net unit price, discount and type, taxable flag, tax table and its
+  percentage/value entries, rounded net/tax/discount amounts), company
+  identity including the contact person and website URL, the owner job's
+  name and number, per-account tax totals, applied lot payments and the
   subtotal/tax/total/amount-due -- into plain structs, and owns the currency
-  formatting the Scheme documents use.  `gnc-invoice-print.cpp` is the
-  first consumer; a receipt or tax invoice is a sibling renderer over the
-  same tree.
-- **The document is the Printable Invoice**, the base of the three Scheme
-  invoice variants: it is the one whose stylesheet is the shared base CSS
-  with no layout overrides (Easy and Fancy add rules and change header
-  rows), so it is the smallest correct layout to reproduce.
-- **Options.**  The report publishes the invoice selector (`invoice`, by
-  document id or GUID), the Scheme "Custom Title", the nine display
-  columns and seven print switches (due date, subtotal, billing id, owner
-  id, notes, terms, payments), with the Scheme report's defaults.  A
-  missing or unknown invoice, a bad boolean and every option the report
-  does not publish are 400s that name the problem; an empty selector is the
-  Scheme "No valid invoice selected" warning.  Not reproduced, and
-  documented in `gnc-report.hpp`: the layout-row/CSS/picture options, the
-  payable-to and company-contact strings, extra notes, minimum entries,
-  detailed tax summary, references and job details.
+  formatting the Scheme documents use.  `gnc-invoice-print.cpp` is the first
+  consumer; `gnc-invoice-receipt.cpp` and `gnc-invoice-tax.cpp` are sibling
+  renderers over the same tree.
+- **The documents differ by design, not by chance.**  The Printable Invoice
+  is the base customer/vendor layout.  The Receipt is the paid-document
+  layout: always the four product columns and the item count, the tax rows
+  only when an entry has a tax table, and the Total Price row only when a
+  payment exists; it refuses a bill because receipt.scm is customer-only.
+  The Tax Invoice adds the per-line tax rate (including "n/a" for an
+  untaxed line), the tax amount and the tax-inclusive Total Price, and the
+  optional discount/units/date columns; a vendor bill has no tax or discount
+  columns and no subtotal row at all.  The Australian variant is the same
+  renderer with the headings and default title changed.
+- **Options.**  Each report publishes the selector (`invoice`, by document
+  id or GUID) and the display switches its Scheme report actually uses:
+  the Printable Invoice's nine columns and seven print switches;
+  the Tax Invoice's eleven Element switches plus the table-border switch
+  and Report Title; the Receipt has no display boolean at all.  A missing
+  or unknown invoice, a bad boolean and every option a report does not
+  publish are 400s that name the problem; an empty selector is the Scheme
+  "No invoice selected" warning.  Not reproduced, and documented in
+  `gnc-report.hpp`: the layout-row/CSS/picture/font/logo options, extra
+  notes, and the Tax Invoice's heading-text options (the renderer keeps the
+  Scheme default headings; the Australian ones differ).
 - **Parity is a document extractor, not cell text.**  `report-parity.sh`
-  gained an `invoice` extractor: it scopes the parse to `div.entries-table`
-  and compares `(description, quantity, unit price, amount)` for every line,
-  then the payment row and the `Net Price`/`Tax`/`Total Price`/`Amount Due`
-  totals as numbers.  On the generated book both engines extract the same
-  eight rows (three line items, four totals and one payment), including the
-  10% discount on the third line and the 10% tax on two lines, in both
-  `ext4-web` and `ext4-noguile`.
-- **Unlocks.**  The receipt and tax invoice renderers, and the tax reports'
-  per-tax-code aggregation, can consume `InvoiceDocument` without another
-  engine read.  The seam for a template engine is the model/renderer split:
-  a template would produce `InvoiceDocument` or render from it, not replace
-  the engine access.
+  gained three extractors.  `invoice` scopes to `div.entries-table` and
+  compares `(description, quantity, unit price, amount)` for every line,
+  then the payment and the `Net Price`/`Tax`/`Total Price`/`Amount Due`
+  totals.  `receipt` scopes to the products div and keeps the item count and
+  the tax marker in the amount cell, so the receipt's shorter row set is
+  part of the comparison.  `tax-invoice` scopes to `table.entries`, reads
+  the header row and keeps the tax rate string (including "n/a"), the
+  discount pair, the subtotal's blank tax-rate cell and the tax-inclusive
+  line total.  On the generated book both engines extract the same rows in
+  both `ext4-web` and `ext4-noguile`, including the 10% discount and 10% tax
+  on the customer invoice and the untaxed vendor bill (`BILL-2001`) for the
+  Tax Invoice.  `report-parity.sh` also accepts a `[options]` argument, so
+  flipped switches (date/units/tax-rate columns, title, number-next-to-title,
+  border collapse) are compared with the oracle rather than only checked for
+  changing the page.
+- **Unlocks.**  The tax reports' per-tax-code aggregation can consume
+  `InvoiceDocument` without another engine read; the tax table entries are
+  now in the model.  The seam for a template engine is the model/renderer
+  split: a template would produce `InvoiceDocument` or render from it, not
+  replace the engine access.
 

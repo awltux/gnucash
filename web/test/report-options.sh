@@ -249,6 +249,100 @@ expect_status 400 "title on another report" \
     "/report/Trial%20Balance?title=Statement"
 expect_body "title on another report" "unknown option 'title'"
 
+# The Receipt and the two Tax Invoice variants are documents too.  They all
+# take the invoice selector; the tax invoices publish the Elements switches
+# they actually use, and the receipt publishes none (its Scheme layout has no
+# display boolean).  The generated invoice book is where a customer document
+# can be rendered; sample1's single vendor bill is enough to prove the
+# selector, the vendor-side Tax Invoice and the receipt's refusal of a bill.
+echo "== the other invoice documents"
+expect_status 200 "Receipt options" "/api/report/Receipt/options"
+expect_body "Receipt options" '"report":"Receipt"'
+expect_body "Receipt options" '"name":"invoice"'
+expect_body "Receipt options" '"type":"invoice"'
+expect_not_body "Receipt options has no title" '"name":"title"'
+expect_not_body "Receipt options has no date range" '"name":"start"'
+expect_not_body "Receipt options has no account selection" '"name":"accounts"'
+expect_not_body "Receipt options has no period preset" '"name":"period"'
+
+for entry in "Tax%20Invoice|Tax Invoice|Invoice" \
+             "Australian%20Tax%20Invoice|Australian Tax Invoice|Tax Invoice"
+do
+    enc=${entry%%|*}
+    rest=${entry#*|}
+    name=${rest%%|*}
+    default_title=${rest#*|}
+    expect_status 200 "$name options" "/api/report/$enc/options"
+    expect_body "$name options" "\"report\":\"$name\""
+    expect_body "$name options" '"name":"invoice"'
+    expect_body "$name options" '"name":"title"'
+    expect_body "$name options" "\"default\":\"$default_title\""
+    for switch in show_date show_tax_rate show_units show_contact \
+                  show_address show_invoice_number show_company_name \
+                  invoice_number_next_to_title show_job_name \
+                  show_job_number show_net_price border_collapse
+    do
+        expect_body "$name options" "\"name\":\"$switch\""
+    done
+    expect_not_body "$name options has no date range" '"name":"start"'
+    expect_not_body "$name options has no account selection" \
+        '"name":"accounts"'
+    expect_not_body "$name options has no period preset" '"name":"period"'
+    expect_not_body "$name options has no currency" '"name":"currency"'
+    expect_status 400 "start on the $name" "/report/$enc?start=2026-01-01"
+    expect_body "start on the $name" "does not accept a 'start' option"
+    expect_status 400 "accounts on the $name" "/report/$enc?accounts=all"
+    expect_body "accounts on the $name" "does not accept an 'accounts' option"
+    expect_status 400 "period on the $name" "/report/$enc?period=all"
+    expect_body "period on the $name" "does not accept a 'period' option"
+    expect_status 400 "unknown option on the $name" "/report/$enc?bogus=1"
+    expect_body "unknown option on the $name" "unknown option 'bogus'"
+    expect_status 400 "bad boolean on the $name" \
+        "/report/$enc?show_date=maybe"
+    expect_body "bad boolean on the $name" "invalid boolean 'maybe'"
+    expect_status 400 "empty invoice on the $name" "/report/$enc?invoice="
+    expect_body "empty invoice on the $name" "empty 'invoice' value"
+    expect_status 400 "unknown invoice on the $name" \
+        "/report/$enc?invoice=NO-SUCH-INVOICE"
+    expect_body "unknown invoice on the $name" \
+        "unknown invoice 'NO-SUCH-INVOICE'"
+    fetch "/report/$enc" > /dev/null
+    expect_body "$name unselected warning" "No invoice has been selected"
+    fetch "/report/$enc?invoice=yoyo1" > /dev/null
+    expect_body "$name vendor bill renders" "entries"
+    expect_body "$name vendor bill renders its owner" "Yoyodyne, Inc."
+done
+
+expect_status 400 "title on the Receipt" "/report/Receipt?title=Receipt"
+expect_body "title on the Receipt" "unknown option 'title'"
+fetch "/report/Receipt?invoice=yoyo1" > /dev/null
+expect_body "the Receipt refuses a bill" \
+    "designed for customer (sales) invoices only"
+fetch "/report/Receipt" > /dev/null
+expect_body "an unselected Receipt warns" "No invoice has been selected"
+
+# The Tax Invoice switches that are observable on the fixture book: the
+# custom title, the date column, the number-next-to-title row and the border
+# switch.  The ones whose data is absent from this book are documented no-ops
+# and are covered by the generic loop below.
+fetch "/report/Tax%20Invoice?invoice=yoyo1" > /dev/null
+cp "$BODY" "$TMP/tax-baseline.html"
+fetch "/report/Tax%20Invoice?invoice=yoyo1&title=Statement" > /dev/null
+if cmp -s "$TMP/tax-baseline.html" "$BODY"; then
+    bad "the Tax Invoice custom title does not change the document"
+else
+    ok "the Tax Invoice custom title changes the document"
+fi
+fetch "/report/Tax%20Invoice?invoice=yoyo1&show_date=false" > /dev/null
+if grep -q "<th align='center'>Date</th>" "$BODY"; then
+    bad "the Tax Invoice show_date=false kept the date column"
+else
+    ok "the Tax Invoice show_date=false removes the date column"
+fi
+fetch "/report/Tax%20Invoice?invoice=yoyo1&invoice_number_next_to_title=true" \
+    > /dev/null
+expect_body "the Tax Invoice number next to the title" "Invoice&nbsp;yoyo1"
+
 echo "== the report list"
 expect_status 200 "plain list" "/api/reports"
 expect_body "plain list" '"Trial Balance"'
@@ -522,6 +616,26 @@ PY
                     # sample1's bill has no notes, no terms and no payments, so
                     # these switches have nothing to show on it.  The generated
                     # invoice book exercises them (report-parity.sh).
+                    if grep -qF 'has no effect' "$OPTDIR/options.json"; then
+                        ok "$report $opt has nothing to show on this book; the descriptor says so"
+                    else
+                        bad "$report $opt is a no-op but the descriptor does not say so"
+                    fi ;;
+                "Tax Invoice:show_tax_rate"|"Tax Invoice:show_contact"|\
+                "Tax Invoice:show_address"|"Tax Invoice:show_job_name"|\
+                "Tax Invoice:show_job_number"|"Tax Invoice:show_net_price"|\
+                "Australian Tax Invoice:show_tax_rate"|\
+                "Australian Tax Invoice:show_contact"|\
+                "Australian Tax Invoice:show_address"|\
+                "Australian Tax Invoice:show_job_name"|\
+                "Australian Tax Invoice:show_job_number"|\
+                "Australian Tax Invoice:show_net_price")
+                    # sample1's only document is an untaxed vendor bill with
+                    # no tax table, no job, no company contact person and the
+                    # same net and gross price, so those switches have
+                    # nothing to show.  The customer-invoice side, where they
+                    # do change the document, is covered by report-parity.sh
+                    # on the generated invoice book.
                     if grep -qF 'has no effect' "$OPTDIR/options.json"; then
                         ok "$report $opt has nothing to show on this book; the descriptor says so"
                     else

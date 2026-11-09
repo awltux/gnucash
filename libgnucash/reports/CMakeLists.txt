@@ -8,6 +8,8 @@ set (reports_SOURCES
   gnc-report.cpp
   gnc-invoice.cpp
   gnc-invoice-print.cpp
+  gnc-invoice-receipt.cpp
+  gnc-invoice-tax.cpp
 )
 
 set (reports_HEADERS

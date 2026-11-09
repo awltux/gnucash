@@ -259,9 +259,11 @@ def main(argv):
     w('        <slot:value type="frame">')
     for key, value in (
             ("Company Name", "Example Trading Co"),
+            ("Company Contact Person", "Jane Doe"),
             ("Company Address", "99 Market Street\nChicago, IL 60601"),
             ("Company Phone Number", "555-0100"),
             ("Company Email Address", "billing@example.com"),
+            ("Company Website URL", "https://example.com"),
             ("Company ID", "EIN-12-3456789")):
         w('          <slot>')
         w(f'            <slot:key>{key}</slot:key>')

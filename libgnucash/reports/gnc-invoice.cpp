@@ -166,6 +166,8 @@ company_owner (QofBook* book)
         return company;
     company.name = business_option (book, "Company Name");
     company.id = business_option (book, "Company ID");
+    company.contact = business_option (book, "Company Contact Person");
+    company.url = business_option (book, "Company Website URL");
     split_lines (business_option (book, "Company Address"), company.address);
     company.address.phone = business_option (book, "Company Phone Number");
     company.address.fax = business_option (book, "Company Fax Number");
@@ -209,6 +211,8 @@ document_line (GncEntry* entry, bool customer_doc, bool credit_note)
     line.quantity = gncEntryGetDocQuantity (entry, credit_note ? TRUE : FALSE);
     line.unit_price = customer_doc ? gncEntryGetInvPrice (entry)
                                    : gncEntryGetBillPrice (entry);
+    line.net_unit_price = gncEntryGetPrice (entry, customer_doc ? TRUE : FALSE,
+                                            TRUE);
     line.discount = customer_doc ? gncEntryGetInvDiscount (entry)
                                  : gnc_numeric_zero ();
     line.discount_type = customer_doc &&
@@ -224,6 +228,19 @@ document_line (GncEntry* entry, bool customer_doc, bool credit_note)
     {
         line.tax_table = text_or_empty (gncTaxTableGetName (table));
         line.taxable = line.taxable && !line.tax_table.empty ();
+        for (GList* node = gncTaxTableGetEntries (table); node != nullptr;
+             node = node->next)
+        {
+            GncTaxTableEntry* tax_entry =
+                static_cast<GncTaxTableEntry*> (node->data);
+            if (tax_entry == nullptr)
+                continue;
+            TaxRateEntry rate;
+            rate.percent =
+                gncTaxTableEntryGetType (tax_entry) != GNC_AMT_TYPE_VALUE;
+            rate.amount = gncTaxTableEntryGetAmount (tax_entry);
+            line.tax_rates.push_back (rate);
+        }
     }
     else
         line.taxable = false;
@@ -393,7 +410,16 @@ invoice_document (GncInvoice* invoice, InvoiceDocument& document)
     document.id = text_or_empty (gncInvoiceGetID (invoice));
     document.billing_id = text_or_empty (gncInvoiceGetBillingID (invoice));
     document.notes = text_or_empty (gncInvoiceGetNotes (invoice));
-    document.owner = document_owner (gncInvoiceGetOwner (invoice));
+    const GncOwner* owner = gncInvoiceGetOwner (invoice);
+    document.owner = document_owner (owner);
+    /* The Tax Invoice's Job rows read the job from the invoice's own owner,
+     * not from the end owner the address chain resolves to. */
+    GncJob* job = owner != nullptr ? gncOwnerGetJob (owner) : nullptr;
+    if (job != nullptr)
+    {
+        document.job_name = text_or_empty (gncJobGetName (job));
+        document.job_number = text_or_empty (gncJobGetID (job));
+    }
     document.company = company_owner (gncInvoiceGetBook (invoice));
     document.kind = document_kind (invoice);
     document.posted = gncInvoiceIsPosted (invoice) != FALSE;

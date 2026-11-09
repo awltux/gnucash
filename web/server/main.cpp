@@ -1064,7 +1064,13 @@ build_report_request (const std::string& report, const std::string& query,
         case gnc::report::OptionType::Text:
         {
             if (param.name == "title")
-                request.invoice_options.custom_title = param.value;
+            {
+                if (report == "Tax Invoice" ||
+                    report == "Australian Tax Invoice")
+                    request.tax_invoice_options.custom_title = param.value;
+                else
+                    request.invoice_options.custom_title = param.value;
+            }
             else
             {
                 error = "report '" + report + "' has no text option '" +
@@ -1087,8 +1093,15 @@ build_report_request (const std::string& report, const std::string& query,
                         param.name + "' (expected true or false)";
                 return false;
             }
-            if (!gnc::report::set_invoice_print_option (
-                    request.invoice_options, param.name, value))
+            bool accepted = false;
+            if (report == "Tax Invoice" ||
+                report == "Australian Tax Invoice")
+                accepted = gnc::report::set_tax_invoice_option (
+                    request.tax_invoice_options, param.name, value);
+            else
+                accepted = gnc::report::set_invoice_print_option (
+                    request.invoice_options, param.name, value);
+            if (!accepted)
             {
                 error = "report '" + report + "' has no boolean option '" +
                         param.name + "'";

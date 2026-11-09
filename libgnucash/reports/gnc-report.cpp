@@ -4401,7 +4401,8 @@ native_report_names ()
             "Receivable Aging", "Payable Aging", "Investment Lots",
             "Budget Report", "Budget Income Statement",
             "Budget Profit & Loss", "Budget Balance Sheet", "Budget Flow",
-            "Printable Invoice"};
+            "Printable Invoice", "Receipt", "Tax Invoice",
+            "Australian Tax Invoice"};
 }
 
 /* --------------------------------------------------------------- options */
@@ -4640,6 +4641,109 @@ report_options (const std::string& name)
             option.label = display.label;
             option.description = display.description;
             option.default_value = display.default_value ? "true" : "false";
+            options.push_back (option);
+        }
+        return options;
+    }
+
+    if (name == "Receipt")
+    {
+        /* The Scheme receipt's own option page is the invoice selector, a
+         * set of heading strings (which the native layout keeps fixed) and
+         * the template/CSS/font/logo files.  It has no display boolean at
+         * all: the layout prints the tax and total rows whenever the
+         * document has them. */
+        OptionDescriptor invoice;
+        invoice.name = "invoice";
+        invoice.type = OptionType::Invoice;
+        invoice.label = "Invoice Number";
+        invoice.description =
+            "The customer invoice to print as a receipt, by its document id "
+            "(for example \"INV-1001\") or by its GUID.  Without it the "
+            "report renders the Scheme \"No invoice selected\" explanation.";
+        options.push_back (invoice);
+        return options;
+    }
+
+    if (name == "Tax Invoice" || name == "Australian Tax Invoice")
+    {
+        /* The Scheme taxinvoice.scm "Elements" page, plus the Report Title.
+         * Both registered reports share this renderer; the Australian one
+         * changes only the default title and the heading texts the renderer
+         * derives from its locale flag. */
+        const bool australian = name == "Australian Tax Invoice";
+        OptionDescriptor invoice;
+        invoice.name = "invoice";
+        invoice.type = OptionType::Invoice;
+        invoice.label = "Invoice Number";
+        invoice.description =
+            "The invoice or bill to print, by its document id (for example "
+            "\"INV-1001\") or by its GUID.  Without it the report renders "
+            "the Scheme \"No invoice has been selected\" explanation.";
+        options.push_back (invoice);
+
+        OptionDescriptor title;
+        title.name = "title";
+        title.type = OptionType::Text;
+        title.label = "Report Title";
+        title.description =
+            "The heading printed above the document.  The Scheme default is "
+            "\"Invoice\" (\"Tax Invoice\" for the Australian variant).";
+        title.default_value = australian ? "Tax Invoice" : "Invoice";
+        options.push_back (title);
+
+        struct Switch
+        {
+            const char* name;
+            const char* label;
+            const char* description;
+            bool default_value;
+        };
+        static const Switch switches[] = {
+            {"show_date", "column: Date", "Display the date?", true},
+            {"show_tax_rate", "column: Tax Rate",
+             "Display the Tax Rate column?  A document with no tax table has "
+             "no tax columns at all, so the option has no effect there.",
+             true},
+            {"show_units", "column: Units",
+             "Display the Units column?  A document whose entries have no "
+             "action has no Units column to show.", true},
+            {"show_contact", "row: Contact",
+             "Display the company contact row?  A book with no Company "
+             "Contact Person has nothing to show, so the option has no "
+             "effect there.", true},
+            {"show_address", "row: Address",
+             "Display the company address?  A book with no Company Address "
+             "has nothing to show, so the option has no effect there.", true},
+            {"show_invoice_number", "row: Invoice Number",
+             "Display the invoice number row?", true},
+            {"show_company_name", "row: Company Name",
+             "Display the customer or vendor name above the address?", true},
+            {"invoice_number_next_to_title", "Invoice Number next to title",
+             "Print the invoice number next to the title as well as in the "
+             "details table?", false},
+            {"show_job_name", "Show Job name",
+             "Display the job name?  An invoice whose owner is not a job has "
+             "no job name to show, so the option has no effect there.", true},
+            {"show_job_number", "Show Job number",
+             "Display the job number?  An invoice whose owner is not a job "
+             "has no job number to show, so the option has no effect there.",
+             false},
+            {"show_net_price", "Show net price",
+             "Print the unit price net of included tax?  An untaxed document "
+             "has the same net and gross price, so the option has no effect "
+             "there.", false},
+            {"border_collapse", "table-border-collapse",
+             "Use border-collapse on the document's tables?", false},
+        };
+        for (const Switch& item : switches)
+        {
+            OptionDescriptor option;
+            option.name = item.name;
+            option.type = OptionType::Bool;
+            option.label = item.label;
+            option.description = item.description;
+            option.default_value = item.default_value ? "true" : "false";
             options.push_back (option);
         }
         return options;
@@ -4985,6 +5089,48 @@ render_report (const std::string& name, Account* root,
             return true;
         }
         html = render_printable_invoice (document, request.invoice_options);
+        return true;
+    }
+
+    if (name == "Receipt")
+    {
+        if (request.invoice.empty ())
+        {
+            html = render_receipt_not_selected ();
+            return true;
+        }
+        InvoiceDocument document;
+        std::string error;
+        if (!find_invoice_document (root, request.invoice, document, &error))
+        {
+            html = render_receipt_not_selected ();
+            return true;
+        }
+        /* receipt.scm accepts a customer invoice only: it checks the end
+         * owner's type, not the document type, so a customer credit note is
+         * printable as a receipt as well. */
+        html = document.owner.kind == OwnerKind::Customer
+                   ? render_receipt (document)
+                   : render_receipt_not_customer ();
+        return true;
+    }
+
+    if (name == "Tax Invoice" || name == "Australian Tax Invoice")
+    {
+        if (request.invoice.empty ())
+        {
+            html = render_tax_invoice_not_selected ();
+            return true;
+        }
+        InvoiceDocument document;
+        std::string error;
+        if (!find_invoice_document (root, request.invoice, document, &error))
+        {
+            html = render_tax_invoice_not_selected ();
+            return true;
+        }
+        html = render_tax_invoice (document, request.tax_invoice_options,
+                                   name == "Australian Tax Invoice");
         return true;
     }
 

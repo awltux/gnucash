@@ -684,6 +684,10 @@ struct ReportRequest
     /** The invoice report's display switches; the defaults are the Scheme
      *  report's defaults. */
     InvoicePrintOptions invoice_options;
+    /** The Tax Invoice report's display switches; the Australian variant
+     *  shares them and changes only the headings the renderer derives from
+     *  its `australian` flag. */
+    TaxInvoiceOptions tax_invoice_options;
 };
 
 bool render_report (const std::string& name, Account* root,
