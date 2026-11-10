@@ -55,6 +55,14 @@ using tax::TaxCode;
 
 const char* const crlf = "\r\n";
 
+/* The sentence the report prints instead of a table when the book has no
+ * tax-related account whose TXF code the report can use.  One copy, so the
+ * tax-codes spec's empty page is the report's. */
+const char* const no_tax_accounts_message =
+    "No Tax Related accounts were found with your account selection. Change "
+    "your selection or go to the Edit->Tax Report Options dialog to set up "
+    "tax-related accounts.";
+
 gnc_numeric
 numeric_add (gnc_numeric left, gnc_numeric right)
 {
@@ -426,34 +434,50 @@ append_txf_record (std::ostringstream& out, const Entry& entry, bool detail,
 
 } // namespace
 
-TaxScheduleReport
-tax_schedule (Account* root, const TaxScheduleOptions& options)
+namespace
 {
-    TaxScheduleReport report;
-    report.title = "Taxable Income/Deductible Expenses";
 
-    gnc_commodity* currency =
-        options.currency != nullptr ? options.currency
-                                    : gnc_default_report_currency ();
-    if (currency == nullptr && root != nullptr)
-        currency = xaccAccountGetCommodity (root);
+/* Everything tax_schedule() reads from the book before it lays the table out:
+ * the resolved period and tax year, the book's tax entity, the commodity and
+ * the tax-related accounts' entries in the schedule's order.  Split out so the
+ * report and the tax-codes spec table read one collection instead of two
+ * walks that could drift apart. */
+struct TaxScheduleData
+{
+    gnc_commodity* currency = nullptr;
+    std::string entity;
+    const char* tax_name = nullptr;
+    time64 from_value = 0;
+    time64 to_value = 0;
+    int tax_year = 0;
+    std::vector<Entry> entries;
+};
 
-    const std::string entity =
-        gnc_get_current_book_tax_type () != nullptr
-            ? gnc_get_current_book_tax_type ()
-            : "";
-    const char* tax_name = gnc_get_current_book_tax_name ();
+TaxScheduleData
+collect_tax_schedule (Account* root, const TaxScheduleOptions& options)
+{
+    TaxScheduleData data;
+
+    data.currency = options.currency != nullptr ? options.currency
+                                                : gnc_default_report_currency ();
+    if (data.currency == nullptr && root != nullptr)
+        data.currency = xaccAccountGetCommodity (root);
+
+    data.entity = gnc_get_current_book_tax_type () != nullptr
+                      ? gnc_get_current_book_tax_type ()
+                      : "";
+    data.tax_name = gnc_get_current_book_tax_name ();
 
     /* The period.  The Scheme report's "Alternate Period" presets override
      * the From/To dates; from-to is the default and uses them as given. */
-    time64 from_value = options.start.value_or (default_start_date ());
-    time64 to_value = options.end.value_or (default_end_date ());
+    data.from_value = options.start.value_or (default_start_date ());
+    data.to_value = options.end.value_or (default_end_date ());
     const std::string alternate =
         options.alternate_period.empty () ? "from-to"
                                           : options.alternate_period;
     if (alternate != "from-to")
     {
-        GDate from_date = time64_to_gdate (from_value);
+        GDate from_date = time64_to_gdate (data.from_value);
         const int year = g_date_get_year (&from_date);
         const bool last_year =
             alternate.find ("last") != std::string::npos;
@@ -481,12 +505,126 @@ tax_schedule (Account* root, const TaxScheduleOptions& options)
             start_month = 9;
             end_month = 12;
         }
-        from_value = gnc_dmy2time64 (1, start_month, start_year);
-        to_value = gnc_dmy2time64_end (end_day, end_month, start_year);
+        data.from_value = gnc_dmy2time64 (1, start_month, start_year);
+        data.to_value = gnc_dmy2time64_end (end_day, end_month, start_year);
     }
 
-    const GDate from_date = time64_to_gdate (from_value);
-    const int tax_year = g_date_get_year (&from_date);
+    const GDate from_date = time64_to_gdate (data.from_value);
+    data.tax_year = g_date_get_year (&from_date);
+
+    /* The account scope: every tax-related account below the root, or the
+     * caller's selection (already expanded to subtrees by the route), with
+     * non-tax-related accounts filtered out, as validate() does. */
+    std::vector<Account*> accounts = options.accounts;
+    if (accounts.empty () && root != nullptr)
+    {
+        gnc_account_foreach_descendant (
+            root,
+            [&accounts] (Account* account) { accounts.push_back (account); });
+    }
+
+    for (Account* account : accounts)
+    {
+        if (account == nullptr || !xaccAccountGetTaxRelated (account))
+            continue;
+        const char* raw_code = xaccAccountGetTaxUSCode (account);
+        if (raw_code == nullptr || raw_code[0] == '\0')
+            continue;
+        const std::string code_text = raw_code;
+        const GNCAccountType type = xaccAccountGetType (account);
+        const TaxCode* info = tax::lookup (class_for (type), data.entity.c_str (),
+                                           code_text.c_str ());
+        if (info == nullptr)
+            continue;
+        if (info->last_year != 0 && data.tax_year > info->last_year)
+            continue;
+
+        Entry entry;
+        entry.account = account;
+        entry.type = type;
+        entry.info = info;
+        entry.form = info->form;
+        entry.copy = std::to_string (xaccAccountGetTaxUSCopyNumber (account));
+        entry.line = line_for_year (*info, data.tax_year);
+        entry.code = code_text;
+        entry.name = account_full_name (account);
+
+        gnc_numeric raw = gnc_numeric_zero ();
+        gnc_account_foreach_split_between_dates (
+            account, data.from_value, data.to_value, false,
+            [&entry, &raw] (Split* split)
+            {
+                entry.splits.push_back (split);
+                raw = numeric_add (raw, xaccSplitGetAmount (split));
+            });
+        entry.total_as_dr = raw;
+        entry.total = reverses_balance (type) ? gnc_numeric_neg (raw) : raw;
+        data.entries.push_back (entry);
+    }
+
+    std::sort (data.entries.begin (), data.entries.end (), entry_less);
+    return data;
+}
+
+} // namespace
+
+std::vector<TaxCodeTotal>
+tax_code_totals (Account* root, const TaxScheduleOptions& options)
+{
+    const TaxScheduleData data = collect_tax_schedule (root, options);
+
+    /* The schedule's grouping key, walked in its sorted order: a new code
+     * starts when the form (with its copy suffix), the line or the code
+     * differs, which is the boundary flush_code() prints a total at.  The
+     * total is the sum of the accounts' figures, exactly the line_total the
+     * report accumulates for the block. */
+    std::vector<TaxCodeTotal> totals;
+    std::string current_form;
+    std::string current_line;
+    std::string current_code;
+    bool have_group = false;
+
+    for (const Entry& entry : data.entries)
+    {
+        const std::string form = form_display (entry);
+        const bool new_code = !have_group || form != current_form ||
+                              entry.line != current_line ||
+                              entry.code != current_code;
+        if (new_code)
+        {
+            TaxCodeTotal total;
+            total.form = form;
+            total.line = entry.line;
+            total.code =
+                std::string (entry.info->description != nullptr
+                                 ? entry.info->description
+                                 : "") +
+                " (" + code_digits (entry.code) + ")";
+            totals.push_back (std::move (total));
+            current_form = form;
+            current_line = entry.line;
+            current_code = entry.code;
+            have_group = true;
+        }
+        totals.back ().total = numeric_add (totals.back ().total, entry.total);
+    }
+    return totals;
+}
+
+TaxScheduleReport
+tax_schedule (Account* root, const TaxScheduleOptions& options)
+{
+    TaxScheduleReport report;
+    report.title = "Taxable Income/Deductible Expenses";
+
+    const TaxScheduleData data = collect_tax_schedule (root, options);
+    gnc_commodity* currency = data.currency;
+    const std::string& entity = data.entity;
+    const char* tax_name = data.tax_name;
+    const time64 from_value = data.from_value;
+    const time64 to_value = data.to_value;
+    const int tax_year = data.tax_year;
+    const std::vector<Entry>& entries = data.entries;
 
     report.from_date = from_value;
     report.to_date = to_value;
@@ -500,59 +638,6 @@ tax_schedule (Account* root, const TaxScheduleOptions& options)
              << txf_date (to_value) << " | Tax Year " << tax_year
              << " | Tax Entity Type: " << entity_description (entity);
     report.table.subtitle = subtitle.str ();
-
-    /* The account scope: every tax-related account below the root, or the
-     * caller's selection (already expanded to subtrees by the route), with
-     * non-tax-related accounts filtered out, as validate() does. */
-    std::vector<Account*> accounts = options.accounts;
-    if (accounts.empty () && root != nullptr)
-    {
-        gnc_account_foreach_descendant (
-            root,
-            [&accounts] (Account* account) { accounts.push_back (account); });
-    }
-
-    std::vector<Entry> entries;
-    for (Account* account : accounts)
-    {
-        if (account == nullptr || !xaccAccountGetTaxRelated (account))
-            continue;
-        const char* raw_code = xaccAccountGetTaxUSCode (account);
-        if (raw_code == nullptr || raw_code[0] == '\0')
-            continue;
-        const std::string code_text = raw_code;
-        const GNCAccountType type = xaccAccountGetType (account);
-        const TaxCode* info =
-            tax::lookup (class_for (type), entity.c_str (), code_text.c_str ());
-        if (info == nullptr)
-            continue;
-        if (info->last_year != 0 && tax_year > info->last_year)
-            continue;
-
-        Entry entry;
-        entry.account = account;
-        entry.type = type;
-        entry.info = info;
-        entry.form = info->form;
-        entry.copy = std::to_string (xaccAccountGetTaxUSCopyNumber (account));
-        entry.line = line_for_year (*info, tax_year);
-        entry.code = code_text;
-        entry.name = account_full_name (account);
-
-        gnc_numeric raw = gnc_numeric_zero ();
-        gnc_account_foreach_split_between_dates (
-            account, from_value, to_value, false,
-            [&entry, &raw] (Split* split)
-            {
-                entry.splits.push_back (split);
-                raw = numeric_add (raw, xaccSplitGetAmount (split));
-            });
-        entry.total_as_dr = raw;
-        entry.total = reverses_balance (type) ? gnc_numeric_neg (raw) : raw;
-        entries.push_back (entry);
-    }
-
-    std::sort (entries.begin (), entries.end (), entry_less);
 
     /* ------------------------------------------------------------ table */
     gnc_numeric line_total = gnc_numeric_zero ();
@@ -709,10 +794,7 @@ tax_schedule (Account* root, const TaxScheduleOptions& options)
 
     if (report.table.rows.empty ())
     {
-        report.table.subtitle =
-            "No Tax Related accounts were found with your account selection. "
-            "Change your selection or go to the Edit->Tax Report Options "
-            "dialog to set up tax-related accounts.";
+        report.table.subtitle = no_tax_accounts_message;
     }
 
     /* -------------------------------------------------------------- TXF */
@@ -852,6 +934,12 @@ tax_txf (Account* root, const TaxScheduleOptions& options, std::string& out)
 {
     out = tax_schedule (root, options).txf;
     return true;
+}
+
+const char*
+tax_schedule_empty_message ()
+{
+    return no_tax_accounts_message;
 }
 
 } // namespace report

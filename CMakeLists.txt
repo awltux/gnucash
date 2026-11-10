@@ -990,6 +990,12 @@ set(web_DIST
   web/test/report-spec.sh
   web/test/report-spec-listings.sh
   web/test/report-spec-balance-sheet.sh
+  web/test/report-spec-aging.sh
+  web/test/report-spec-lots.sh
+  web/test/report-spec-budgets.sh
+  web/test/report-spec-tax-codes.sh
+  web/test/report-spec-cash-flow.sh
+  web/test/report-spec-documents.sh
   web/test/tax-txf-parity.sh
   web/test/demo-book-check.sh
   web/test/ui-test.mjs)

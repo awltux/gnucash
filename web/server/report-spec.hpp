@@ -16,6 +16,7 @@
 #ifndef GNC_WEB_REPORT_SPEC_HPP
 #define GNC_WEB_REPORT_SPEC_HPP
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -51,13 +52,18 @@ struct ReportSpec
      *  book, unlike the localStorage saved views. */
     std::vector<std::string> tags;
     /** "accounts" (the default, and what a spec without the field means),
-     *  "splits", "balance-sheet", "invoices", "lots" or "budgets".  A split spec's
+     *  "splits", "balance-sheet", "invoices", "lots", "budgets",
+     *  "tax-codes", "cash-flow" or "document".  A split spec's
      *  `columns` are split columns, its rows are the book's individual splits,
      *  and `split_grouping` decides their order and sections.  An invoices
      *  spec's rows are the aging reports' owners or the documents they age, and
      *  `invoice_owner`, `invoice_grouping` and `bucket_basis` say which.  A
      *  lots spec is the Lot Viewer's table: one row per transaction, one
-     *  column per lot the transactions touch. */
+     *  column per lot the transactions touch.  A tax-codes spec is the US Tax
+     *  Schedule's code totals, a cash-flow spec is the Cash Flow statement's
+     *  rows, and a document spec is not a table at all: it holds a document
+     *  report's name, the invoice to print and that report's own print
+     *  options, and it renders through the document renderer. */
     std::string source = "accounts";
     std::vector<std::string> columns;
     /** "none" (the default), "account", "account-code" or "transaction"; only
@@ -81,6 +87,22 @@ struct ReportSpec
      *  "lots".  Only transactions whose description contains this string are
      *  listed, and empty lists every transaction in the period. */
     std::string description_filter;
+    /** The document report a `source` "document" spec renders: one of the
+     *  native document reports ("Printable Invoice", "Easy Invoice", "Fancy
+     *  Invoice", "Receipt", "Tax Invoice" or "Australian Tax Invoice").  A
+     *  document is not a table, so the spec holds this and the document's own
+     *  options rather than columns and a query. */
+    std::string document;
+    /** The document's "Invoice Number": the id (or GUID) of the invoice,
+     *  credit note, bill or voucher to print.  Empty is the report's own "no
+     *  invoice selected" case, which renders its warning page. */
+    std::string invoice;
+    /** The document report's own print options, by the names its descriptors
+     *  publish ("show_date", "css", "title", "minimum_entries", ...), with
+     *  their values as the route would receive them.  An option left out keeps
+     *  the report's default, so a spec that sets none renders the report's own
+     *  default document. */
+    std::map<std::string, std::string> document_options;
     std::string grouping = "none";
     std::string period_unit = "year";
     /** "activity" (the default) or "cumulative"; cumulative turns a period
@@ -126,6 +148,24 @@ const std::vector<std::string>& lots_columns ();
  *  "Bgt <date>"/"Act <date>" pair per period in this order.  One definition
  *  serves validation, serialization and /api/spec/options. */
 const std::vector<std::string>& budget_columns ();
+
+/** The columns a tax-codes spec has, in display order: the form the code
+ *  prints on, its line, the code's description and the amount the schedule
+ *  totals for it.  The report's fields, so not a choice; one definition serves
+ *  validation, serialization and /api/spec/options. */
+const std::vector<std::string>& tax_codes_columns ();
+
+/** The columns a cash-flow spec has, in display order: the row's account (or
+ *  its section/total label) and the three figures the statement
+ *  classification produces -- money in, money out and their net.  One row
+ *  carries one of the three, which is the one amount the statement prints. */
+const std::vector<std::string>& cash_flow_columns ();
+
+/** The document reports a `source` "document" spec may render, in display
+ *  order: the four Scheme documents and the two tax invoices.  A document spec
+ *  names one of these in `document`; the list is the same set the native
+ *  layer registers, so a spec cannot name a report that is not a document. */
+const std::vector<std::string>& document_reports ();
 
 /** Where saved reports live: $GNC_WEBUI_REPORTS when set (the tests use a
  *  temporary file), else $XDG_DATA_HOME/gnucash/webui/reports.json, else

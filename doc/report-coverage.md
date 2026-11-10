@@ -179,8 +179,17 @@ behaviour was changed by the measurement itself; the later stages edited
   one owner-history renderer plus Customer Summary), and the three cross-tab
   statements (the multicolumn Balance Sheet and Income Statement and the
   Equity Statement).
-- **Spec: 2 names** are expressible in the designer as it stands today
-  (Net Worth Barchart and Net Worth Linechart, as built-in specs).  The other
+- **Spec: 2 names** are expressible in the designer as built-in specs
+  (Net Worth Barchart and Net Worth Linechart).  Twelve more native reports are
+  expressible as *source* specs, which is the designer's other half: the
+  balance-sheet source (Balance Sheet), the invoices source (the two aging
+  reports), the lots source (Lot Viewer), the budgets source (Budget Report),
+  the tax-codes source (Tax Schedule Report/TXF Export), the cash-flow source
+  (Cash Flow) and the document source (the six documents: Printable, Easy and
+  Fancy Invoice, Receipt, Tax Invoice and Australian Tax Invoice).  A source
+  spec renders the report's own cells, so "expressible" here is a stronger
+  claim than the built-in specs' starting points; each source is listed with
+  what it does and does not carry in the sections named above.  The other
   three names the earlier measurement called spec-expressible â€” Account
   Summary, Income/Expense Chart and Income & Expense Linechart â€” are closed
   with the reasons in section 3.5.  The **6 built-in specs** are extra
@@ -1632,3 +1641,144 @@ still has 69.
   compile with `-Werror`; `ldd` on `ext4-noguile`'s `gnc-webd` still has no
   `libguile`, `libgtk` or `libwebkit`; `run-smoke-test.sh`, `report-spec.sh`
   and `report-options.sh` pass in both builds.
+
+## 16. Update: the tax-codes, cash-flow and document sources
+
+Three more sources, and the last three families the designer's note said it
+could not express.  All three follow the shape of the balance-sheet, invoices,
+lots and budgets sources: a fixed column list served by one function in
+`web/server/report-spec.cpp`, a producer in `libgnucash/reports/gnc-report.cpp`,
+an `/api/spec/options` entry, a designer note, and a gate harness comparing the
+spec's cells with the native report's.
+
+### 16.1 The tax-codes source (the US Tax Schedule)
+
+The rows are the schedule's tax codes: one row per code, with the form the
+code prints on (`F1040`, `Sched A`, `W-2`, and the report's `(n)` copy suffix),
+its line, the code's own description with its TXF digits, and the amount the
+schedule totals for that code.  The columns are `form`, `line`, `code` and
+`amount`, fixed in that order; the options are the report's own — `start` and
+`end` (From/To), `accounts` (its account selection; empty is every tax-related
+account below the root) and `currency`.
+
+The figures are the schedule's, not a second calculation: `gnc-tax.cpp`'s
+entry collection was split out of `tax_schedule()` (`collect_tax_schedule()`),
+and `tax_code_totals()` groups those entries by the same (form, line, code) key
+the report's `flush_code()` totals, summing the same per-account figures.
+`tax_codes_spec_table()` renders them, so the spec cannot disagree with the
+schedule about a code's amount.
+
+**What it does not carry.**  The report also prints one row per tax-related
+account with that account's own total, and its form and line headings; the
+spec's table is the code axis those rows make up, so its cells are the
+report's code totals rather than its whole page.  The designer note therefore
+says **approximate** rather than exact.  The TXF export, the "Suppress $0.00
+values" switch and the estimated-tax "Alternate Period" presets are the
+report's own outputs and options, not spec fields; the empty page (a book with
+no tax setup) is the report's own — title, the "No Tax Related accounts were
+found..." explanation and an empty table, read from one shared string.
+
+**Evidence.**  `web/test/report-spec-tax-codes.sh` writes (or is given) a book
+with a US tax setup (`web/test/make-tax-book.py`), renders the native schedule
+and the spec, and checks: the native page's **61 rows** as
+`report-parity.sh` counts them (its `tax_schedule()` extractor: headings plus
+every total); then every "Total For ... (NNN)" row's form, line, code and
+amount against the spec's rows — **11 code totals** on that book, matching in
+order and value; a saved report; the `/api/spec/options` entry; the designer's
+starting point; the 400s for every field the report does not have; and the
+empty page on `sample1`, which has no tax codes.
+
+The task's brief said "61 rows on `taxreport`".  That is not what the fixture
+does: `doc/examples/taxreport.gnucash` has tax-related accounts with TXF codes
+but **no book-level tax type**, so the native schedule finds no entity to look
+a code up in and prints its empty page — `report-parity.sh` on that book says
+"MATCH: both reports are empty".  The 61 rows are the generated tax book's
+(2026), which is the book the parity matrix's tax case has always used.  The
+harness names the book it needs and generates it rather than pretending the
+fixture has the figure.
+
+### 16.2 The cash-flow source (the Cash Flow statement)
+
+The rows are the statement's own: the "Money into selected accounts comes
+from" section, one row per contributing account, the Money In total, the "Money
+out of selected accounts goes to" section, its accounts, Money Out, and the
+Difference.  On `taxreport` over 2000-2001 that is **56 rows**, the same rows
+the statement prints.
+
+The classification is `cash_flow_flows()`, which the statement and the Cash
+Flow Barchart already share; the row layout was factored out of `cash_flow()`
+into `cash_flow_rows()` so the statement's cells and the spec's typed cells are
+two projections of one list.  The columns tell the three figures apart:
+`account`, `money-in`, `money-out` and `net`.  A row carries only the figure it
+is about — an account its own side, the Money In and Money Out rows their
+totals, the Difference row the net — which is the one amount per row the
+statement prints, and the empty cells print nothing, as the statement's do.
+
+**What it does not carry.**  The "Selected Accounts" list above the table is
+page furniture, not a cell, and a table has no preamble.  The display-depth,
+full-name, include-trading and show-exchange-rates switches are the report's
+display options.  An empty date is the report's default period (the accounting
+period), not "no bound", because that is what the `/report` route does.
+
+**The barchart is not this source, and that is now stated.**  The Cash Flow
+Barchart's axis is a date-interval series: its own Step Size option cuts the
+period into intervals and each bar is one interval's total from the same
+classification.  A spec's chart is drawn over the table's own rows, which here
+are accounts, so a cash-flow spec's chart would plot accounts, not intervals.
+The designer note for the barchart says exactly that and names what a source
+would need (a step-size field and one row per interval).  No new mechanism was
+added to force it.
+
+**Evidence.**  `web/test/report-spec-cash-flow.sh`: the 56-row comparison on
+`taxreport`, the row count on both pages, a scoped run (the report's Account
+option is the spec's `accounts`), a saved report, the options entry, the
+designer's starting point (exact), the barchart's "no spec" note, the 400s, and
+the no-contribution page on `sample1` (five rows: two headings and three
+totals), which also proves the default period is the report's.
+
+### 16.3 The document kind (the six documents)
+
+A document is not a table, so a document spec is not a table spec.  It holds:
+
+- `document`: the report name, one of Printable Invoice, Easy Invoice, Fancy
+  Invoice, Receipt, Tax Invoice or Australian Tax Invoice;
+- `invoice`: the document to print, by id or GUID (empty is the report's own
+  "no invoice selected" page);
+- `document_options`: that report's own print options, by the names its
+  descriptors publish (`title`, `css`, `show_date`, `show_quantity`,
+  `minimum_entries`, `row2_right`, ...).  An option left out keeps the
+  report's default, and a name the report does not publish — or a value of the
+  wrong type — is a 400.
+
+Rendering runs the same code the `/report/<document>` route runs: `main.cpp`
+turns the spec's fields into the route's query parameters and calls
+`build_report_request()` and `render_report()`, so the document renderer and
+its option validation are the only ones involved.  There is no table, no
+column list and no chart; the spec refuses `columns`, `grouping`, dates,
+`currency`, `accounts`, `account_types` and `chart` by name.
+
+**Evidence.**  `web/test/report-spec-documents.sh` compares **bytes**: every
+layout on `INV-1001` (Printable, Easy, Fancy, Receipt, Tax Invoice,
+Australian Tax Invoice), a spec that sets three print options against the same
+options on the route, a spec with no invoice against the route's warning page,
+and a saved document.  All are byte-identical (the run prints each document's
+size).  The designer note for each of the six says **exact** and explains that
+the spec holds options and renders through the document renderer.
+
+### 16.4 Tests and build hygiene
+
+The three harnesses add 126 checks (43 cash-flow, 36 tax-codes, 47 documents;
+the cash-flow and tax-codes ones run in both builds).  `report-spec.sh`
+(140), `report-options.sh` (941), the five earlier harnesses, the smoke test
+and the 62-case parity matrix are unchanged and pass; the two net-worth cases
+stay in their original slots.  Both builds compile with no warnings under the
+project's warning set, `ldd` on `ext4-noguile`'s `gnc-webd` still has no
+`libguile`, `libgtk` or `libwebkit`, and the 41-page rendering corpus is
+byte-identical because the refactors are projections, not re-layouts: the same
+`cash_flow()` output and the same `tax_schedule()` output before and after.
+
+The one place a document can differ from the route is the page title: a spec
+prints its own `title`, the route prints the report's name, so the same
+document under a renamed spec has a different `<title>` and `<h3>`.  The
+harness compares documents whose spec title is the report's name, which is what
+"the same document" means; the note says the copy has its own name and title.

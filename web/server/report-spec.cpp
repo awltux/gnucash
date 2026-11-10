@@ -205,6 +205,17 @@ chart_series_refusal (const std::string& source)
     if (source == "budgets")
         return "a budgets spec has no 'chart_series': the Budget Report prints "
                "its period-column table, not a chart";
+    if (source == "tax-codes")
+        return "a tax-codes spec has no 'chart_series': the tax schedule "
+               "prints its code table, not a chart";
+    if (source == "cash-flow")
+        return "a cash-flow spec has no 'chart_series': the statement prints "
+               "its account rows, and the Cash Flow Barchart plots money in, "
+               "money out and net over a date-interval axis, not over these "
+               "rows";
+    if (source == "document")
+        return "a document spec has no 'chart_series': it prints a document, "
+               "not a table";
     return "a split listing has no chart_series: a chart plots account or "
            "period amounts";
 }
@@ -221,7 +232,7 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         "split_grouping", "invoice_grouping", "invoice_owner", "bucket_basis",
         "description_filter", "grouping", "period_unit", "period_mode", "start",
         "end", "date_preset", "currency", "accounts", "account_types", "chart",
-        "chart_series", "builtin"};
+        "chart_series", "builtin", "document", "invoice", "document_options"};
     for (const auto& entry : value.object)
     {
         if (allowed.count (entry.first) == 0)
@@ -293,11 +304,138 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     const bool invoice_source = spec.source == "invoices";
     const bool lots_source = spec.source == "lots";
     const bool budget_source = spec.source == "budgets";
+    const bool tax_codes_source = spec.source == "tax-codes";
+    const bool cash_flow_source = spec.source == "cash-flow";
+    const bool document_source = spec.source == "document";
     if (!split_source && !balance_sheet_source && !invoice_source &&
-        !lots_source && !budget_source && spec.source != "accounts")
+        !lots_source && !budget_source && !tax_codes_source &&
+        !cash_flow_source && !document_source && spec.source != "accounts")
         return fail (error, "unknown source '" + spec.source +
                              "' (expected accounts, splits, balance-sheet, "
-                             "invoices, lots or budgets)");
+                             "invoices, lots, budgets, tax-codes, cash-flow or "
+                             "document)");
+
+    /* A document spec is not a table.  It names one of the native document
+     * reports, the invoice to print and that report's own print options, and
+     * it renders through the document renderer; the table fields below are
+     * refused on it by name.  The three fields are read here, before them,
+     * because a document spec has none of the table vocabulary. */
+    spec.document.clear ();
+    if (!optional_string (value, "document", spec.document, present, error))
+        return false;
+    spec.invoice.clear ();
+    if (!optional_string (value, "invoice", spec.invoice, present, error))
+        return false;
+
+    spec.document_options.clear ();
+    const json::Value* document_options = value.find ("document_options");
+    if (document_options != nullptr && !document_options->is_null ())
+    {
+        if (!document_options->is_object ())
+            return fail (error, "'document_options' must be an object of option "
+                                 "names and values");
+        for (const auto& entry : document_options->object)
+        {
+            if (!entry.second.is_string ())
+                return fail (error, "'document_options." + entry.first +
+                                     "' must be a string (the value the report "
+                                     "route would receive)");
+            spec.document_options[entry.first] = entry.second.string;
+        }
+    }
+
+    if (!document_source &&
+        (!spec.document.empty () || !spec.invoice.empty () ||
+         !spec.document_options.empty ()))
+        return fail (error, "'document', 'invoice' and 'document_options' are "
+                             "for a spec with source 'document': a report that "
+                             "is not a document has no invoice to print and no "
+                             "print options");
+
+    if (document_source)
+    {
+        const std::vector<std::string>& reports = document_reports ();
+        if (spec.document.empty ())
+            return fail (error, "a document spec needs 'document': one of " +
+                                 joined (reports));
+        if (std::find (reports.begin (), reports.end (), spec.document) ==
+            reports.end ())
+            return fail (error, "unknown document '" + spec.document +
+                                 "' (expected " + joined (reports) + ")");
+
+        const auto descriptors = gnc::report::report_options (spec.document);
+        if (descriptors.empty ())
+            return fail (error, "the native layer does not know the document '" +
+                                 spec.document + "'");
+        for (const auto& option : spec.document_options)
+        {
+            const gnc::report::OptionDescriptor* descriptor = nullptr;
+            for (const auto& candidate : descriptors)
+                if (candidate.name == option.first)
+                    descriptor = &candidate;
+            if (descriptor == nullptr)
+                return fail (error, "'" + option.first +
+                                     "' is not a print option of the '" +
+                                     spec.document + "' document");
+            switch (descriptor->type)
+            {
+            case gnc::report::OptionType::Bool:
+                if (option.second != "true" && option.second != "false" &&
+                    option.second != "1" && option.second != "0")
+                    return fail (error, "option '" + option.first +
+                                         "' is a switch (expected true or "
+                                         "false)");
+                break;
+            case gnc::report::OptionType::Number:
+            {
+                char* end_text = nullptr;
+                const long number =
+                    std::strtol (option.second.c_str (), &end_text, 10);
+                if (end_text == option.second.c_str () || *end_text != '\0')
+                    return fail (error, "option '" + option.first +
+                                         "' is a whole number");
+                if ((descriptor->minimum != 0 || descriptor->maximum != 0) &&
+                    (number < descriptor->minimum ||
+                     number > descriptor->maximum))
+                    return fail (error, "option '" + option.first +
+                                         "' must be between " +
+                                         std::to_string (descriptor->minimum) +
+                                         " and " +
+                                         std::to_string (descriptor->maximum));
+                break;
+            }
+            case gnc::report::OptionType::Text:
+                if (option.second.size () > 8000)
+                    return fail (error, "option '" + option.first +
+                                         "' is longer than 8000 characters");
+                break;
+            case gnc::report::OptionType::Invoice:
+                return fail (error, "the document's invoice is the spec's "
+                                     "'invoice' field, not a print option");
+            default:
+                return fail (error, "option '" + option.first +
+                                     "' is not a print option the document "
+                                     "spec can set");
+            }
+        }
+
+        if (!spec.invoice.empty ())
+        {
+            if (spec.invoice.size () > 80)
+                return fail (error, "'invoice' is longer than 80 characters");
+            if (check_book)
+            {
+                if (root == nullptr)
+                    return fail (error, "no book is open");
+                gnc::report::InvoiceDocument document;
+                std::string why;
+                if (!gnc::report::find_invoice_document (root, spec.invoice,
+                                                         document, &why))
+                    return fail (error, "unknown invoice '" + spec.invoice +
+                                         "': " + why);
+            }
+        }
+    }
 
     /* The invoice source's three settings are read before the columns: which
      * row set the spec has decides which columns it may name.  A field on a
@@ -449,6 +587,43 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                 spec.columns, error))
             return false;
     }
+    else if (tax_codes_source)
+    {
+        /* The schedule's fields are its columns and are not a choice: the form
+         * the code prints on, its line, the code's own description and the
+         * amount the schedule totals for it.  A caller asking for another
+         * column, or another order, is asking for a different report. */
+        if (!fixed_columns (
+                columns, tax_codes_columns (),
+                "'columns' is fixed on a tax-codes spec: the tax schedule "
+                "totals one amount per tax code, so its table is 'form', "
+                "'line', 'code' and 'amount', in that order",
+                spec.columns, error))
+            return false;
+    }
+    else if (cash_flow_source)
+    {
+        /* The statement's rows carry one figure each -- an account's side, the
+         * Money In or Money Out total, or the Difference -- and the columns say
+         * which of the three a row's figure is.  That is the report's table,
+         * so the columns are not a choice. */
+        if (!fixed_columns (
+                columns, cash_flow_columns (),
+                "'columns' is fixed on a cash-flow spec: the Cash Flow "
+                "statement prints one figure per row, so its table is "
+                "'account', 'money-in', 'money-out' and 'net', in that order",
+                spec.columns, error))
+            return false;
+    }
+    else if (document_source)
+    {
+        if (columns != nullptr && !columns->is_null () &&
+            (!columns->is_array () || !columns->array.empty ()))
+            return fail (error, "a document spec has no 'columns': it is not a "
+                                 "table, it prints the document the 'document' "
+                                 "field names");
+        spec.columns.clear ();
+    }
     else
     {
         if (columns == nullptr || !columns->is_array () ||
@@ -519,6 +694,16 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                              "Report's rows are its account tree, drawn to the "
                              "report's own display depth, and its columns are "
                              "the budget's periods");
+    if (tax_codes_source && spec.grouping != "none")
+        return fail (error, "a tax-codes spec has no 'grouping': the tax "
+                             "schedule's rows are its codes, grouped by the "
+                             "form and line the report assigns them");
+    if (cash_flow_source && spec.grouping != "none")
+        return fail (error, "a cash-flow spec has no 'grouping': the Cash Flow "
+                             "statement's rows are its own three sections");
+    if (document_source && spec.grouping != "none")
+        return fail (error, "a document spec has no 'grouping': it prints a "
+                             "document, not a table");
 
     spec.split_grouping = "none";
     if (!optional_string (value, "split_grouping", spec.split_grouping, present,
@@ -559,6 +744,11 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                              "structure is the budget's own recurrence, which "
                              "the report reads from the budget, not from a "
                              "spec setting");
+    if ((tax_codes_source || cash_flow_source || document_source) &&
+        spec.period_unit != "year")
+        return fail (error, "a " + spec.source +
+                             " spec has no 'period_unit': its rows are the "
+                             "report's own, not periods");
 
     spec.period_mode = "activity";
     if (!optional_string (value, "period_mode", spec.period_mode, present,
@@ -583,6 +773,11 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "a budgets spec has no 'period_mode': every budget "
                              "period column is that period's own budgeted and "
                              "actual amounts, not a running balance");
+    if ((tax_codes_source || cash_flow_source || document_source) &&
+        spec.period_mode != "activity")
+        return fail (error, "a " + spec.source +
+                             " spec has no 'period_mode': its rows are the "
+                             "report's own amounts, not period balances");
     if (spec.period_mode == "cumulative" && spec.grouping != "period")
         return fail (error, "period_mode 'cumulative' needs grouping "
                              "'period'");
@@ -662,6 +857,31 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                              "Report prints each amount in its account's "
                              "commodity");
 
+    /* The tax schedule and the Cash Flow statement take the report's two
+     * literal dates and its commodity: neither publishes a period preset, so
+     * a preset that resolved to a range would be the spec's invention. */
+    if ((tax_codes_source || cash_flow_source) &&
+        !spec.query.date_preset.empty ())
+        return fail (error, "a " + spec.source +
+                             " spec has no 'date_preset': the report's dates "
+                             "are its own Start and End options, and no preset "
+                             "resolves to them");
+
+    /* A document has no dates, no commodity and no account scope: it prints
+     * one invoice, in that invoice's own currency. */
+    if (document_source && !spec.query.start.empty ())
+        return fail (error, "a document spec has no 'start': it prints one "
+                             "document, not a period");
+    if (document_source && !spec.query.end.empty ())
+        return fail (error, "a document spec has no 'end': it prints one "
+                             "document, not a period");
+    if (document_source && !spec.query.date_preset.empty ())
+        return fail (error, "a document spec has no 'date_preset': it prints "
+                             "one document, not a period");
+    if (document_source && !spec.query.currency.empty ())
+        return fail (error, "a document spec has no 'currency': the document "
+                             "prints its invoice's own currency");
+
     if (!spec.query.date_preset.empty () &&
         (!spec.query.start.empty () || !spec.query.end.empty ()))
         return fail (error, "'date_preset' cannot be combined with 'start' "
@@ -706,7 +926,15 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     }
 
     spec.query.accounts.clear ();
+    /* A document prints one invoice: an account selection is not a setting it
+     * has, so it is refused before its GUIDs are looked up (the field is what
+     * is wrong, not the GUIDs).  An empty list is what the store writes for a
+     * spec that selects none, so it is not a selection. */
     const json::Value* accounts = value.find ("accounts");
+    if (document_source && accounts != nullptr && accounts->is_array () &&
+        !accounts->array.empty ())
+        return fail (error, "a document spec has no 'accounts': it prints one "
+                             "invoice, not a selection of accounts");
     if (accounts != nullptr && !accounts->is_null ())
     {
         if (!accounts->is_array ())
@@ -739,6 +967,10 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
 
     spec.account_types.clear ();
     const json::Value* account_types = value.find ("account_types");
+    if (document_source && account_types != nullptr &&
+        account_types->is_array () && !account_types->array.empty ())
+        return fail (error, "a document spec has no 'account_types': it prints "
+                             "one invoice, not a selection of accounts");
     if (account_types != nullptr && !account_types->is_null ())
     {
         if (!account_types->is_array ())
@@ -784,6 +1016,21 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                              "A/Payable account in the book, as the report "
                              "does, so it has no 'account_types'; "
                              "'invoice_owner' chooses the side");
+
+    /* The tax schedule's account selection is its own option: every
+     * tax-related account below the root, or the accounts it names.  It has no
+     * type filter.  A document has no account scope at all. */
+    if ((tax_codes_source || cash_flow_source) &&
+        !spec.account_types.empty ())
+        return fail (error, "a " + spec.source +
+                             " spec has no 'account_types': its account "
+                             "selection is its own 'accounts' option");
+    if (document_source && !spec.query.accounts.empty ())
+        return fail (error, "a document spec has no 'accounts': it prints one "
+                             "invoice, not a selection of accounts");
+    if (document_source && !spec.account_types.empty ())
+        return fail (error, "a document spec has no 'account_types': it prints "
+                             "one invoice, not a selection of accounts");
 
     if (split_source && spec.split_grouping == "transaction")
     {
@@ -850,10 +1097,22 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (budget_source && !spec.chart.empty ())
         return fail (error, "a budgets spec has no 'chart': the Budget Report "
                              "prints its period-column table, not a chart");
+    if (tax_codes_source && !spec.chart.empty ())
+        return fail (error, "a tax-codes spec has no 'chart': the tax schedule "
+                             "prints its code table, not a chart");
+    if (cash_flow_source && !spec.chart.empty ())
+        return fail (error, "a cash-flow spec has no 'chart': the statement "
+                             "prints its account rows, not a chart; the Cash "
+                             "Flow Barchart's series are intervals over time, "
+                             "which is a different axis");
+    if (document_source && !spec.chart.empty ())
+        return fail (error, "a document spec has no 'chart': it prints a "
+                             "document, not a table");
 
     spec.chart_series.clear ();
     if (split_source || balance_sheet_source || invoice_source || lots_source ||
-        budget_source)
+        budget_source || tax_codes_source || cash_flow_source ||
+        document_source)
     {
         const json::Value* series = value.find ("chart_series");
         if (series != nullptr && !series->is_null () && series->is_array () &&
@@ -1035,6 +1294,42 @@ budget_columns ()
     return columns;
 }
 
+const std::vector<std::string>&
+tax_codes_columns ()
+{
+    /* The tax schedule's own fields, in the order its blocks print them: the
+     * form/schedule, the line, the code's description and the amount it totals.
+     * The row is the code, so each of the four appears exactly once. */
+    static const std::vector<std::string> columns = {"form", "line", "code",
+                                                     "amount"};
+    return columns;
+}
+
+const std::vector<std::string>&
+cash_flow_columns ()
+{
+    /* The statement prints one figure per row: an account's own side, the
+     * Money In or Money Out total, or the Difference.  Naming the three figures
+     * is what lets a cell hold the one the row is about and a blank for the
+     * others, which is the statement's own empty cell. */
+    static const std::vector<std::string> columns = {"account", "money-in",
+                                                     "money-out", "net"};
+    return columns;
+}
+
+const std::vector<std::string>&
+document_reports ()
+{
+    /* The native document renderers: the four Scheme documents and the two tax
+     * invoices.  A document spec names one of these; the list is the one
+     * document_reports() publishes, so a spec cannot name a report that is not
+     * a document. */
+    static const std::vector<std::string> reports = {
+        "Printable Invoice", "Easy Invoice",   "Fancy Invoice", "Receipt",
+        "Tax Invoice",       "Australian Tax Invoice"};
+    return reports;
+}
+
 std::string
 spec_store_path ()
 {
@@ -1195,6 +1490,21 @@ spec_to_json (const ReportSpec& spec, bool builtin)
     }
     if (spec.source == "lots")
         out << json_field ("description_filter", spec.description_filter) << ",";
+    if (spec.source == "document")
+    {
+        out << json_field ("document", spec.document) << ",";
+        out << json_field ("invoice", spec.invoice) << ",";
+        out << "\"document_options\":{";
+        bool first_option = true;
+        for (const auto& option : spec.document_options)
+        {
+            if (!first_option)
+                out << ",";
+            first_option = false;
+            out << json::quote (option.first) << ":" << json::quote (option.second);
+        }
+        out << "},";
+    }
     out << json_field ("grouping", spec.grouping) << ",";
     out << json_field ("period_unit", spec.period_unit) << ",";
     out << json_field ("period_mode", spec.period_mode) << ",";
@@ -1657,26 +1967,25 @@ no_spec_note (const std::string& name)
                "report needs a budget-period selector and the flow's section "
                "and total rules -- a second source, not a field on this one.";
     }
-    if (one_of (name, {"Printable Invoice", "Easy Invoice", "Fancy Invoice",
-                       "Receipt", "Tax Invoice", "Australian Tax Invoice",
-                       "Customer Report", "Vendor Report", "Employee Report",
+    if (one_of (name, {"Customer Report", "Vendor Report", "Employee Report",
                        "Job Report", "Customer Summary"}))
     {
         return "It prints a document built from an invoice or an owner "
                "object, with the layout's own headings and totals.  A spec's "
                "rows are account amounts, so it cannot describe the document.";
     }
-    if (name == "Tax Schedule Report/TXF Export")
+    if (name == "Cash Flow Barchart")
     {
-        return "It reads the book's tax codes and can also emit a TXF file.  "
-               "A spec has no tax-code row or column and cannot produce the "
-               "export.";
-    }
-    if (name == "Cash Flow" || name == "Cash Flow Barchart")
-    {
-        return "It classifies splits into cash-flow categories and draws a "
-               "selected-account table.  A spec has no category column, so it "
-               "cannot describe the report.";
+        return "It plots money in, money out and net flow over a date-interval "
+               "axis: its own Step Size option cuts the period into intervals "
+               "(day to year) and each bar is one interval's total from "
+               "cash_flow_flows().  The Cash Flow source is the statement's "
+               "account rows -- money in and money out per contributing account "
+               "-- and a spec's chart is drawn over the table's own rows, so a "
+               "cash-flow spec's chart would plot accounts, not intervals.  "
+               "Expressing this report needs a date-interval axis (a step-size "
+               "field and one row per interval), which is a second source, not "
+               "a setting on the cash-flow one.";
     }
     if (name == "Income and GST Statement")
     {
@@ -1900,6 +2209,105 @@ native_designer_info (const std::string& report, NativeDesignerInfo& info)
         return true;
     }
 
+    if (report == "Tax Schedule Report/TXF Export")
+    {
+        /* Close, and labelled as approximate: the spec is the schedule's code
+         * axis, not its whole page (the report also prints an account row per
+         * tax-related account).  The dates and the commodity carry over. */
+        ReportSpec spec;
+        spec.name = report + " (starting point)";
+        spec.title = spec.name;
+        spec.source = "tax-codes";
+        spec.columns = tax_codes_columns ();
+        apply_default_dates (spec, options);
+        info.spec = std::move (spec);
+        info.has_spec = true;
+        info.equivalence = "approximate";
+        info.note =
+            "It lists the same tax codes over the report's own period: one row "
+            "per code with the form the code prints on, its line, its "
+            "description and the amount the schedule totals for it, from the "
+            "same tax-related accounts, the same TXF code table and the same "
+            "sign reversal.  The report also prints one row per account with "
+            "that account's own total, and its form and line headings; the "
+            "spec's table is the code totals those rows make up, so its cells "
+            "are the report's code totals rather than its whole page.  'start' "
+            "and 'end' are the report's From/To, 'accounts' its account "
+            "selection (empty is every tax-related account below the root) and "
+            "'currency' the commodity it prints.  The TXF export, the "
+            "suppress-zero switch and the alternate-period presets are the "
+            "report's own outputs and options, not spec fields: a book with no "
+            "tax setup renders the report's own empty page.";
+        return true;
+    }
+
+    if (report == "Cash Flow")
+    {
+        /* The statement's rows are exactly a spec's table, so the only things
+         * that carry over are the two dates, the account selection and the
+         * commodity (and the copy gets its own name and title). */
+        ReportSpec spec;
+        spec.name = report + " (copy)";
+        spec.title = spec.name;
+        spec.source = "cash-flow";
+        spec.columns = cash_flow_columns ();
+        apply_default_dates (spec, options);
+        info.spec = std::move (spec);
+        info.has_spec = true;
+        info.equivalence = "exact";
+        info.note =
+            "Its cells are the report's own: the 'Money into selected accounts "
+            "comes from' and 'Money out of selected accounts goes to' sections, "
+            "one row per contributing account with the amount that came in or "
+            "went out, the Money In and Money Out totals and the Difference, "
+            "all from cash_flow_flows() -- the classification the statement and "
+            "the Cash Flow Barchart both plot.  'start' and 'end' are the "
+            "report's two dates, 'accounts' its account selection (empty is its "
+            "default: every bank, cash, asset, stock and mutual fund account) "
+            "and 'currency' the commodity it converts into.  The 'Selected "
+            "Accounts' list the Scheme page prints above the table is page "
+            "furniture, not a cell, so a table spec does not carry it, and the "
+            "display-depth, full-name, include-trading and show-exchange-rates "
+            "switches are the report's display options rather than spec fields. "
+            "The copy has its own name and title; its cells are the report's "
+            "cells.";
+        return true;
+    }
+
+    if (one_of (report, {"Printable Invoice", "Easy Invoice", "Fancy Invoice",
+                         "Receipt", "Tax Invoice",
+                         "Australian Tax Invoice"}))
+    {
+        /* A document is not a table: the spec holds the document's name, the
+         * invoice and the document's own print options, and the document
+         * renderer prints it.  The starting point is the report's default
+         * document -- no invoice selected, every print option at its default. */
+        ReportSpec spec;
+        spec.name = report + " (copy)";
+        spec.title = spec.name;
+        spec.source = "document";
+        spec.document = report;
+        info.spec = std::move (spec);
+        info.has_spec = true;
+        info.equivalence = "exact";
+        info.note =
+            "A document is not a table, so a document spec is not a table spec: "
+            "it holds the document report's name ('document'), the document to "
+            "print ('invoice', by id or GUID) and that report's own print "
+            "options ('document_options', by the names its descriptors "
+            "publish), and it renders through the document renderer -- the same "
+            "code the /report/<document> route runs, so the same invoice and "
+            "the same options print the same bytes.  With no invoice the spec "
+            "prints the report's own 'no invoice selected' page, and with no "
+            "options it prints the report's default document: the print "
+            "options' defaults are the report's.  The document's option surface "
+            "is the report's, so a name the report does not publish is refused "
+            "by name, and the invoice is the spec's 'invoice' field rather than "
+            "a print option.  The copy has its own name and title; its document "
+            "is the report's.";
+        return true;
+    }
+
     if (report == "Income Statement" || report == "Profit & Loss")
     {
         /* Close, and labelled as approximate: the accounts and the period are
@@ -2112,6 +2520,22 @@ render_spec_html (const ReportSpec& spec, Account* root, std::string& html,
          * cannot ask for a column the report does not print. */
         table.source = gnc::report::SpecSource::Lots;
         table.lot_description_filter = spec.description_filter;
+    }
+    else if (spec.source == "tax-codes")
+    {
+        /* The tax schedule's own code totals: the period, the account
+         * selection and the commodity are the report's options, and the rows
+         * and amounts come from the report's collection.  Nothing is copied
+         * from spec.columns, so a spec cannot ask for a column the report does
+         * not print. */
+        table.source = gnc::report::SpecSource::TaxCodes;
+    }
+    else if (spec.source == "cash-flow")
+    {
+        /* The Cash Flow statement's own rows, from cash_flow_flows(), which is
+         * what the statement and the barchart both plot.  Again the columns
+         * are the report's, not the spec's. */
+        table.source = gnc::report::SpecSource::CashFlow;
     }
     else
     {

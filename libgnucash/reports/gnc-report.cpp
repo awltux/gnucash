@@ -1290,6 +1290,20 @@ render_aging_warning (const std::string& title, const std::string& warning)
 
 } // namespace
 
+namespace
+{
+
+/* The title a spec's document carries: the spec's own title, or the
+ * designer's default when it has none.  Every source's page uses the same
+ * rule, so it lives in one place. */
+std::string
+spec_page_title (const TableSpec& spec)
+{
+    return spec.title.empty () ? std::string ("Custom Report") : spec.title;
+}
+
+} // namespace
+
 bool
 render_table_spec (const TableSpec& requested, Account* root, std::string& html,
                    std::string* error)
@@ -1303,15 +1317,11 @@ render_table_spec (const TableSpec& requested, Account* root, std::string& html,
          * owner side.  When there is nothing to age the report prints its
          * explanation instead of a table, so the spec does too. */
         const Table table = invoices_table (root, requested);
+        const std::string title = spec_page_title (requested);
         if (table.warning.empty ())
-            html = render_html (table, requested.title.empty ()
-                                          ? "Custom Report"
-                                          : requested.title);
+            html = render_html (table, title);
         else
-            html = render_aging_warning (requested.title.empty ()
-                                             ? "Custom Report"
-                                             : requested.title,
-                                         table.warning);
+            html = render_aging_warning (title, table.warning);
         return true;
     }
 
@@ -1321,14 +1331,11 @@ render_table_spec (const TableSpec& requested, Account* root, std::string& html,
          * book's, computed by the producer from the data), and its "No data"
          * page when the period holds no split. */
         const Table table = lots_spec_table (root, requested);
+        const std::string title = spec_page_title (requested);
         if (table.warning.empty ())
-            html = render_html (table, requested.title.empty ()
-                                          ? "Custom Report"
-                                          : requested.title);
+            html = render_html (table, title);
         else
-            html = render_warning (requested.title.empty () ? "Custom Report"
-                                                            : requested.title,
-                                   "No data", table.warning);
+            html = render_warning (title, "No data", table.warning);
         return true;
     }
 
@@ -1338,12 +1345,58 @@ render_table_spec (const TableSpec& requested, Account* root, std::string& html,
          * column axis.  A book with no budget is the report's explanation
          * page, not an empty table. */
         const Table table = budget_spec_table (root, requested);
-        const std::string title = requested.title.empty () ? "Custom Report"
-                                                           : requested.title;
+        const std::string title = spec_page_title (requested);
         if (table.warning.empty ())
             html = render_html (table, title);
         else
             html = render_no_budget (title);
+        return true;
+    }
+
+    if (requested.source == SpecSource::TaxCodes)
+    {
+        /* The schedule's code totals, from the report's own collection.  The
+         * columns are the report's fields; the period, the account selection
+         * and the commodity are the spec's.  A book with no tax-related
+         * account the report can use renders the report's own empty page,
+         * which is its title, the explanation and an empty table. */
+        TaxScheduleOptions options;
+        options.start = requested.start;
+        options.end = requested.end;
+        options.accounts = requested.accounts;
+        options.currency = requested.currency;
+        const std::string title = spec_page_title (requested);
+        const Table table = tax_codes_spec_table (root, options);
+        if (table.rows.empty ())
+        {
+            CellTable empty;
+            empty.subtitle = tax_schedule_empty_message ();
+            html = render_cell_table (empty, title);
+        }
+        else
+            html = render_html (table, title);
+        return true;
+    }
+
+    if (requested.source == SpecSource::CashFlow)
+    {
+        /* The statement's own rows, rendered as the typed cells the spec
+         * model carries.  An empty selection after the report's default is
+         * its "No accounts selected" warning page, not an empty table. */
+        CashFlowOptions options;
+        /* The statement's own defaults: the accounting period, exactly what
+         * the /report route passes when the caller gives no dates.  An unset
+         * date is not "no bound" for this report. */
+        options.start = requested.start.value_or (default_start_date ());
+        options.end = requested.end.value_or (default_end_date ());
+        options.accounts = requested.accounts;
+        options.currency = requested.currency;
+        const std::string title = spec_page_title (requested);
+        const Table table = cash_flow_spec_table (root, options);
+        if (!table.warning.empty ())
+            html = render_no_accounts ("Cash Flow", false);
+        else
+            html = render_html (table, title);
         return true;
     }
 
@@ -1356,8 +1409,7 @@ render_table_spec (const TableSpec& requested, Account* root, std::string& html,
             return false;
         }
         html = render_html (split_table (root, requested),
-                            requested.title.empty () ? "Custom Report"
-                                                     : requested.title);
+                            spec_page_title (requested));
         return true;
     }
 
@@ -1367,8 +1419,7 @@ render_table_spec (const TableSpec& requested, Account* root, std::string& html,
          * columns, sections and signs are the report's (see
          * balance_sheet_spec_table()). */
         html = render_html (balance_sheet_spec_table (root, requested),
-                            requested.title.empty () ? "Custom Report"
-                                                     : requested.title);
+                            spec_page_title (requested));
         return true;
     }
 
@@ -1526,8 +1577,7 @@ render_table_spec (const TableSpec& requested, Account* root, std::string& html,
         }
     }
 
-    html = render_html (table, spec.title.empty () ? "Custom Report"
-                                                   : spec.title);
+    html = render_html (table, spec_page_title (spec));
     return true;
 }
 
@@ -4391,6 +4441,71 @@ cash_flow_flows (const std::vector<Account*>& accounts,
     return flows;
 }
 
+/* One row of the Cash Flow statement's table, before either renderer lays it
+ * out: a section heading (no amount at all), an account that contributed on
+ * one side, or a total line.  The statement's cells and the cash-flow spec's
+ * typed cells are both projections of this one list, so the two documents
+ * cannot disagree about a row, its label or its figure. */
+struct CashFlowRow
+{
+    enum class Kind
+    {
+        Section,
+        Account,
+        Total,
+    };
+
+    /** Which of the statement's three figures the row is about: the money
+     *  that came in, the money that went out, or their difference.  A section
+     *  heading is about neither. */
+    enum class Side
+    {
+        None,
+        In,
+        Out,
+        Net,
+    };
+
+    Kind kind = Kind::Account;
+    Side side = Side::None;
+    std::string label;
+    gnc_numeric amount = gnc_numeric_zero ();
+};
+
+std::vector<CashFlowRow>
+cash_flow_rows (const CashFlowFlows& flows, const CashFlowOptions& options)
+{
+    std::vector<CashFlowRow> rows;
+    auto add_section = [&] (const std::string& heading,
+                            const std::vector<CashFlowBucket>& buckets,
+                            const std::string& total_label, gnc_numeric total,
+                            CashFlowRow::Side side)
+    {
+        rows.push_back ({CashFlowRow::Kind::Section, CashFlowRow::Side::None,
+                         heading, gnc_numeric_zero ()});
+        for (const CashFlowBucket& bucket : buckets)
+        {
+            const std::string label =
+                options.show_full_names ? account_full_name (bucket.account)
+                                        : account_name (bucket.account);
+            rows.push_back (
+                {CashFlowRow::Kind::Account, side, label, bucket.total});
+        }
+        rows.push_back (
+            {CashFlowRow::Kind::Total, side, total_label, total});
+    };
+
+    add_section ("Money into selected accounts comes from", flows.money_in,
+                 "Money In", flows.money_in_total, CashFlowRow::Side::In);
+    add_section ("Money out of selected accounts goes to", flows.money_out,
+                 "Money Out", flows.money_out_total, CashFlowRow::Side::Out);
+    rows.push_back ({CashFlowRow::Kind::Total, CashFlowRow::Side::Net,
+                     "Difference",
+                     numeric_add (flows.money_in_total,
+                                  gnc_numeric_neg (flows.money_out_total))});
+    return rows;
+}
+
 } // namespace
 
 CashFlowReport
@@ -4424,10 +4539,6 @@ cash_flow (Account* root, const CashFlowOptions& options)
     const CashFlowFlows flows =
         cash_flow_flows (accounts, options.start, options.end,
                          options.include_trading, report_cur, db);
-    const std::vector<CashFlowBucket>& money_in = flows.money_in;
-    const std::vector<CashFlowBucket>& money_out = flows.money_out;
-    const gnc_numeric money_in_total = flows.money_in_total;
-    const gnc_numeric money_out_total = flows.money_out_total;
 
     /* The "Selected Accounts" list the Scheme page prints above the table:
      * every selected account at or above the display depth, with the
@@ -4463,41 +4574,32 @@ cash_flow (Account* root, const CashFlowOptions& options)
     /* The three sections, in the Scheme report's order.  Its account rows
      * carry no cell class and its headings are plain cells; the label and
      * amount cells here use the classes the rest of the native tables use,
-     * which is what lets one extractor read both documents. */
-    auto add_section = [&] (const std::string& heading,
-                            const std::vector<CashFlowBucket>& buckets,
-                            const std::string& total_label,
-                            gnc_numeric total)
+     * which is what lets one extractor read both documents.  The rows
+     * themselves are cash_flow_rows(), the same list the cash-flow spec
+     * table renders, so the statement and the spec cannot disagree. */
+    for (const CashFlowRow& row : cash_flow_rows (flows, options))
     {
-        report.table.rows.push_back (
-            {Cell {heading, ""}, Cell {"", ""}});
-        for (const CashFlowBucket& bucket : buckets)
+        switch (row.kind)
         {
-            const std::string label =
-                options.show_full_names ? account_full_name (bucket.account)
-                                        : account_name (bucket.account);
+        case CashFlowRow::Kind::Section:
+            report.table.rows.push_back (
+                {Cell {row.label, ""}, Cell {"", ""}});
+            break;
+        case CashFlowRow::Kind::Account:
             report.table.rows.push_back ({
-                Cell {label, "text-cell"},
-                Cell {format_amount (bucket.total, report_cur), "number-cell"},
+                Cell {row.label, "text-cell"},
+                Cell {format_amount (row.amount, report_cur), "number-cell"},
             });
+            break;
+        case CashFlowRow::Kind::Total:
+            report.table.rows.push_back ({
+                Cell {row.label, "text-cell"},
+                Cell {format_amount (row.amount, report_cur),
+                      "total-number-cell"},
+            });
+            break;
         }
-        report.table.rows.push_back ({
-            Cell {total_label, "text-cell"},
-            Cell {format_amount (total, report_cur), "total-number-cell"},
-        });
-    };
-
-    add_section ("Money into selected accounts comes from", money_in,
-                 "Money In", money_in_total);
-    add_section ("Money out of selected accounts goes to", money_out,
-                 "Money Out", money_out_total);
-    report.table.rows.push_back ({
-        Cell {"Difference", "text-cell"},
-        Cell {format_amount (numeric_add (money_in_total,
-                                          gnc_numeric_neg (money_out_total)),
-                             report_cur),
-              "total-number-cell"},
-    });
+    }
 
     return report;
 }
@@ -8974,10 +9076,10 @@ ifrs_cost_basis (Account* root, const IfrsOptions& options)
         const char* note = nullptr;
         if (gnc_numeric_negative_p (new_units) &&
             gnc_numeric_positive_p (cumulative_units))
-            note = "ERROR: long→short";
+            note = "ERROR: long???short";
         else if (gnc_numeric_negative_p (cumulative_units) &&
                  gnc_numeric_positive_p (new_units))
-            note = "ERROR: short→long";
+            note = "ERROR: short???long";
         else
         {
             identified = identify_transaction (info, cumulative_units);
@@ -10113,6 +10215,133 @@ budget_spec_table (Account* root, const TableSpec& spec)
         table.rows.push_back (std::move (row));
     }
 
+    return table;
+}
+
+Table
+tax_codes_spec_table (Account* root, const TaxScheduleOptions& options)
+{
+    Table table;
+    if (root == nullptr)
+        return table;
+
+    /* The report's own figures: the same collection, the same period, the
+     * same tax-related account scope and the same tax-code table the schedule
+     * groups, summed per code. */
+    const std::vector<TaxCodeTotal> totals = tax_code_totals (root, options);
+    if (totals.empty ())
+        return table;
+
+    table.currency = report_currency (root, options.currency);
+    table.column_defs.push_back (
+        {"form", "Form/Schedule", CellType::Text, CellAlign::Left});
+    table.column_defs.push_back (
+        {"line", "Line", CellType::Text, CellAlign::Left});
+    table.column_defs.push_back (
+        {"code", "TXF Code", CellType::Text, CellAlign::Left});
+    table.column_defs.push_back (
+        {"amount", "Amount", CellType::Amount, CellAlign::Right});
+
+    for (const TaxCodeTotal& total : totals)
+    {
+        Row row;
+        row.type = RowType::Split;
+        row.label = total.form;
+
+        TypedCell form;
+        form.text = total.form;
+        row.cells.push_back (form);
+
+        TypedCell line;
+        line.text = total.line;
+        if (total.line.empty ())
+            line.blank = true;
+        row.cells.push_back (line);
+
+        TypedCell code;
+        code.text = total.code;
+        row.cells.push_back (code);
+
+        TypedCell amount;
+        amount.type = CellType::Amount;
+        amount.amount = total.total;
+        row.cells.push_back (amount);
+
+        table.rows.push_back (std::move (row));
+    }
+    return table;
+}
+
+Table
+cash_flow_spec_table (Account* root, const CashFlowOptions& options)
+{
+    Table table;
+    if (root == nullptr)
+        return table;
+
+    gnc_commodity* report_cur = report_currency (root, options.currency);
+    std::vector<Account*> accounts =
+        cash_flow_selection (root, options.accounts);
+    if (accounts.empty ())
+    {
+        /* The Scheme statement's "No accounts selected" warning page, which
+         * the caller prints. */
+        table.warning = "No accounts selected";
+        return table;
+    }
+
+    QofBook* book = gnc_account_get_book (root);
+    GNCPriceDB* db = book != nullptr ? gnc_pricedb_get_db (book) : nullptr;
+    const CashFlowFlows flows =
+        cash_flow_flows (accounts, options.start, options.end,
+                         options.include_trading, report_cur, db);
+
+    table.currency = report_cur;
+    /* The statement's table has no heading row: its two sections name what
+     * each side is, and every row carries one figure.  The columns are the
+     * three figures of the report's classification, so a reader of the table
+     * knows which of them a row holds. */
+    table.column_defs.push_back (
+        {"account", "", CellType::Text, CellAlign::Left});
+    table.column_defs.push_back (
+        {"money-in", "", CellType::Amount, CellAlign::Right});
+    table.column_defs.push_back (
+        {"money-out", "", CellType::Amount, CellAlign::Right});
+    table.column_defs.push_back (
+        {"net", "", CellType::Amount, CellAlign::Right});
+
+    for (const CashFlowRow& source : cash_flow_rows (flows, options))
+    {
+        Row row;
+        row.type = source.kind == CashFlowRow::Kind::Section
+                       ? RowType::Section
+                       : (source.kind == CashFlowRow::Kind::Total
+                              ? RowType::Total
+                              : RowType::Account);
+        row.label = source.label;
+
+        TypedCell label;
+        label.text = source.label;
+        row.cells.push_back (label);
+
+        /* One figure per row, the side the row is about: an account row its
+         * own side, the Money In and Money Out rows their totals, and the
+         * Difference row the net.  A cell with no figure prints nothing, as
+         * the statement's own empty cell does. */
+        for (const CashFlowRow::Side column :
+             {CashFlowRow::Side::In, CashFlowRow::Side::Out,
+              CashFlowRow::Side::Net})
+        {
+            TypedCell cell;
+            cell.type = CellType::Amount;
+            if (source.side == column)
+                cell.amount = source.amount;
+            else
+                cell.blank = true;
+            row.cells.push_back (cell);
+        }
+        table.rows.push_back (std::move (row));
+    }
     return table;
 }
 

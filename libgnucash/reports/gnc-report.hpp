@@ -450,6 +450,14 @@ enum class SpecSource
      *  The columns come in Budget/Actual pairs whose number is the budget's,
      *  not a date range's; see budget_spec_table(). */
     Budgets,
+    /** The US Tax Schedule's codes: one row per tax code (its form, its line
+     *  and the code's own description) with the amount the schedule totals
+     *  for that code; see tax_codes_spec_table(). */
+    TaxCodes,
+    /** The Cash Flow statement's rows: its two sections, one row per account
+     *  that contributed money in or out, and its Money In, Money Out and
+     *  Difference totals; see cash_flow_spec_table(). */
+    CashFlow,
 };
 
 /** How a split listing orders and sections its rows.  Each value reproduces
@@ -1728,12 +1736,81 @@ TaxScheduleReport tax_schedule (Account* root,
 bool tax_txf (Account* root, const TaxScheduleOptions& options,
               std::string& out);
 
+/** One tax code of the schedule: the form it prints on, the line it is
+ *  reported on and the code's own description, with the amount the schedule
+ *  totals for that code over the period.
+ *
+ *  The figures are the schedule's, not a second calculation of them: the same
+ *  collection tax_schedule() groups into form/line/code blocks, with the same
+ *  period, the same tax-related account scope, the same tax-code table and the
+ *  same sign reversal, summed per code.  `form` is the report's own form
+ *  heading ("F1040", "Sched A", "W-2", and the "(n)" copy suffix the report
+ *  adds), `line` the line number it prints (empty for a code with no line) and
+ *  `code` its description with the TXF code's digits in parentheses, exactly
+ *  as the report heads the block. */
+struct TaxCodeTotal
+{
+    std::string form;
+    std::string line;
+    std::string code;
+    gnc_numeric total = gnc_numeric_zero ();
+};
+
+/** The schedule's codes, in the report's own order (form, then line, then
+ *  code).  A code with no account activity in the period is still listed, with
+ *  a zero total, because the schedule prints its total too. */
+std::vector<TaxCodeTotal> tax_code_totals (Account* root,
+                                           const TaxScheduleOptions& options);
+
+/** Build the table a tax-codes spec asks for: the Tax Schedule report's codes.
+ *
+ *  The rows are the report's own code totals -- one row per tax code with the
+ *  form the code prints on, its line, its description and the amount the
+ *  schedule totals for it -- so the spec cannot disagree with the report: both
+ *  read tax_code_totals().  The columns are the report's fields and are not a
+ *  choice: "form", "line", "code" and "amount".  The period is the report's
+ *  From/To, `accounts` its account selection (empty is every tax-related
+ *  account below the root) and `currency` its commodity.
+ *
+ *  The report also prints one row per tax-related account with that account's
+ *  total, and its form and line headings; this table is the code axis those
+ *  rows make up, not a second copy of them.  A book with no tax-related account
+ *  (or no tax-code setup) has no rows, and the caller prints the report's own
+ *  empty page. */
+Table tax_codes_spec_table (Account* root, const TaxScheduleOptions& options);
+
+/** Build the table a cash-flow spec asks for: the Cash Flow statement's rows.
+ *
+ *  The rows are the statement's own, in its order: the "Money into selected
+ *  accounts comes from" section with one row per contributing account, the
+ *  Money In total, the "Money out of selected accounts goes to" section with
+ *  its accounts, Money Out, and the Difference.  The figures are the
+ *  statement's arithmetic -- cash_flow_flows(), which is also what the Cash
+ *  Flow Barchart plots -- so the spec cannot disagree with either.
+ *
+ *  The columns tell the three figures of that classification apart: "account",
+ *  "money-in", "money-out" and "net".  A row carries only the figure it is
+ *  about (an account row its own side, the Money In row its total, the
+ *  Difference row the net), which is exactly the one amount per row the
+ *  statement prints.
+ *
+ *  The statement's "Selected Accounts" list above the table is page furniture,
+ *  not a cell, and a table has no preamble; the rows are the statement's.
+ *  An empty selection after the report's default is the statement's "No
+ *  accounts selected" page, which the caller prints. */
+Table cash_flow_spec_table (Account* root, const CashFlowOptions& options);
+
 /** Render the Tax Schedule report's TXF export from a route request (the
  *  same option surface render_report() uses).  False when `name` is not the
  *  tax report. */
 struct ReportRequest;
 bool render_tax_export (const std::string& name, Account* root,
                         const ReportRequest& request, std::string& out);
+
+/** The sentence the Tax Schedule report prints instead of a table when the
+ *  book has no tax-related account whose TXF code it can use.  The tax-codes
+ *  spec's empty page is the report's, so it reads the same sentence. */
+const char* tax_schedule_empty_message ();
 
 /** Render an aging report as a standalone HTML document, including its
  *  explanation-instead-of-a-table case. */

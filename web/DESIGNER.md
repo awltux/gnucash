@@ -71,6 +71,55 @@ a preset that resolves to them (`this-year` or `last-year`), or
 transactions, so a built-in period report needs no dates that fit only one
 book.
 
+## Sources
+
+`source` says where a spec's rows come from. The default (`accounts`) is the
+account/period table the fields above describe; the other sources are the
+native reports whose own table a spec can be, so a spec can express a report
+the account vocabulary cannot. Each source has a fixed column list — served by
+`/api/spec/options` and enforced by the validator — because the columns are the
+report's fields, not a choice.
+
+| source | rows | columns | options |
+|---|---|---|---|
+| `accounts` | one per account or period, from `columns`, `grouping` and the date range | `account-name`, `debit`, `credit`, `balance`, `subtotal` | all of the fields above |
+| `splits` | one per split of the scoped accounts; `split_grouping` orders and sections them (Transaction Report, General Ledger, General Journal) | `date`, `num`, `description`, `memo`, `transfer`, `account`, `reconcile`, `debit`, `credit`, `amount`, `running-balance` | `split_grouping`, dates, `accounts` |
+| `balance-sheet` | the Balance Sheet's own: Assets, Liabilities, Equity, one row per account with the report's signs and its Retained Earnings line | `account-name`, `balance` | `end`, `currency` |
+| `invoices` | the aging reports' owner rows (the six buckets and the row total), or one row per document the buckets are made of | the owner set or the document set | `end`, `invoice_owner`, `invoice_grouping`, `bucket_basis` |
+| `lots` | the Lot Viewer's: one row per transaction, one column per lot it touches | `date`, `description`, `type`, `lots` (the book's lot columns), `other-account` | `start`, `end`, `accounts` (one), `description_filter` |
+| `budgets` | the Budget Report's: the account tree and one Bgt/Act pair per budget period | `account`, `budget`, `actual` (the repeating pair) | `accounts` |
+| `tax-codes` | the US Tax Schedule's: one row per tax code with the amount the schedule totals for it | `form`, `line`, `code`, `amount` | `start`, `end`, `accounts`, `currency` |
+| `cash-flow` | the Cash Flow statement's: its two sections, one row per contributing account, Money In, Money Out and Difference | `account`, `money-in`, `money-out`, `net` | `start`, `end`, `accounts`, `currency` |
+| `document` | none: a document is not a table | — | `document`, `invoice`, `document_options` |
+
+The tax-codes rows are the schedule's own code totals: `gnc-tax.cpp` collects
+the tax-related accounts' entries once and both the report and
+`tax_codes_spec_table()` group them by the same (form, line, code) key, so the
+spec cannot disagree with the schedule about a code's amount. It does not
+carry the report's per-account rows or its form/line headings, which is why the
+designer calls it approximate.
+
+The cash-flow rows are the statement's own layout, factored into one
+`cash_flow_rows()` list that both `cash_flow()` (which formats the cells) and
+`cash_flow_spec_table()` (which builds typed ones) project, over the same
+`cash_flow_flows()` classification the Cash Flow Barchart plots. A row carries
+one figure, in the column for its side, which is the one amount the statement
+prints; the "Selected Accounts" list above the table is page furniture, not a
+cell. An empty date is the report's default period, not "no bound".
+
+A **document spec** is not a table spec: it holds `document` (one of Printable
+Invoice, Easy Invoice, Fancy Invoice, Receipt, Tax Invoice or Australian Tax
+Invoice), `invoice` (the document to print, by id or GUID; empty is the
+report's "no invoice selected" page) and `document_options` (that report's own
+print options by the names its descriptors publish, e.g. `title`, `css`,
+`show_date`, `minimum_entries`). It renders through the document renderer —
+`main.cpp` turns the fields into the route's query parameters and calls the
+same `build_report_request()`/`render_report()` the `/report/<document>` route
+uses — so the same invoice and options print the same bytes. A name the report
+does not publish, a value of the wrong type and an unknown invoice are 400s;
+`columns`, `grouping`, dates, `currency`, `accounts`, `account_types` and
+`chart` are refused by name.
+
 ## Tags and the list filters
 
 Tags are part of the spec document, not the UI's `localStorage` saved views:
@@ -140,28 +189,37 @@ the banner above the form says which case is on screen:
   the designer shows the implementation file and function, read-only, from
   `GET /api/report/<name>/designer`. That route also says whether a spec can
   stand in for the report:
-  - `equivalence: "exact"` — the starting point renders the report's own
-    cells. **Trial Balance** is the only one: a flat account list with Debit
-    and Credit columns over the same as-of date is exactly the C++ report's
-    table. The banner reads "This report is implemented in C++; this is an
-    equivalent starting point, not its definition", and the test posts the
-    populated fields and compares the preview with `/report/Trial Balance`
-    cell for cell.
+  - `equivalence: "exact"` — the spec renders the report's own cells. That is
+    **Trial Balance** (a flat account list with Debit and Credit columns over
+    the same as-of date), and the reports a *source* serves: the **Balance
+    Sheet** (balance-sheet source), the **Receivable** and **Payable Aging**
+    (invoices source), the **Lot Viewer** (lots source), the **Budget Report**
+    (budgets source), the **Cash Flow** statement (cash-flow source) and all
+    six **documents** (document source: the spec holds the document's name,
+    invoice and print options and renders through the document renderer, so
+    the same invoice and options print the same bytes). The banner reads "This
+    report is implemented in C++; this is an equivalent starting point, not its
+    definition", and the gate harnesses post the populated fields and compare
+    the preview with the report's own document.
   - `equivalence: "approximate"` — a useful starting point whose differences
     are named. **Income Statement** and **Profit & Loss** list the same Income
     and Expense accounts over the report's default period, but as a flat
     Debit/Credit list; the note says the C++ report prints one sign-reversed
     Balance column, groups the rows under Revenues and Expenses, adds parent
-    subtotals and a Net income line.
+    subtotals and a Net income line. The **Tax Schedule Report/TXF Export**
+    (tax-codes source) lists the same tax codes over the report's period with
+    the same per-code totals, but the report also prints one row per account
+    with that account's total, which the spec's code table does not.
   - `equivalence: "none"` — no designer fields are populated and the form is
     hidden, so nothing can be mistaken for a definition. The note names the
     family's reason: listing reports (transactions, ledger, journal,
-    reconciliation), aging buckets, lots/prices/portfolios, budget objects,
-    invoices and owner documents, tax codes and cash-flow categories all have
-    rows or columns the spec vocabulary (account or period rows, and
-    debit/credit/balance columns) cannot express. **Balance Sheet** is in this
-    group too: its sections, sign reversals and retained-earnings row are not a
-    flat account list.
+    reconciliation), portfolios and gains analysis, budget statements, owner
+    documents, the GST statement, the Cash Flow Barchart (its axis is a
+    date-interval series, not the statement's account rows) and the two
+    multicolumn statements (no period column axis) all have rows or columns the
+    spec vocabulary cannot express. **Balance Sheet (Multicolumn)**,
+    **Income Statement (Multicolumn)** and the **Equity Statement** are in this
+    group too: their column axis or roll-forward rows are not a table spec.
 
 Switching reports always clears the previous report's fields first; a report
 with no equivalent cannot leave stale values behind. **New report** clears the

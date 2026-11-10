@@ -422,7 +422,13 @@ spec_options_json ()
             "{\"name\":\"lots\",\"label\":\"Lots (the Lot Viewer's transaction "
             "table)\"},"
             "{\"name\":\"budgets\",\"label\":\"Budgets (the Budget Report's "
-            "budget-vs-actual table)\"}],"
+            "budget-vs-actual table)\"},"
+            "{\"name\":\"tax-codes\",\"label\":\"Tax codes (the US Tax "
+            "Schedule's code totals)\"},"
+            "{\"name\":\"cash-flow\",\"label\":\"Cash flow (the Cash Flow "
+            "statement's rows)\"},"
+            "{\"name\":\"document\",\"label\":\"Document (an invoice, bill, "
+            "voucher or receipt, not a table)\"}],"
             "\"balance_sheet\":{\"columns\":[";
     first = true;
     for (const std::string& column : web::balance_sheet_columns ())
@@ -560,6 +566,102 @@ spec_options_json ()
             "source: the two budget statements and the budget balance sheet "
             "print whole-budget statement rows, and Budget Flow prints one "
             "type-sectioned period, each needing its own source.\"},"
+            "\"tax-codes\":{\"columns\":[";
+    first = true;
+    for (const std::string& column : web::tax_codes_columns ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "\"";
+        body += json_escape (column.c_str ());
+        body += "\"";
+    }
+    body += "],\"options\":[\"start\",\"end\",\"accounts\",\"currency\"],"
+            "\"note\":\"A tax-codes spec is the US Tax Schedule report's code "
+            "axis: one row per tax code, with the form the code prints on, its "
+            "line, its description and the amount the schedule totals for that "
+            "code, from the book's tax-related accounts and the report's own "
+            "TXF code table.  The figures are the schedule's: its From/To "
+            "dates ('start' and 'end'), its account selection ('accounts', "
+            "empty for every tax-related account below the root) and its "
+            "commodity ('currency').  The report also prints one row per "
+            "account with that account's own total and its form and line "
+            "headings, so the spec's cells are the report's code totals rather "
+            "than its whole page.  A book with no tax setup renders the "
+            "report's own 'No Tax Related accounts were found...' page.  The "
+            "TXF export, the suppress-zero switch and the alternate-period "
+            "presets are the report's own outputs and options, so a request "
+            "that sets a grouping, a period unit or mode, a chart, an account "
+            "type or a date preset is refused by name rather than "
+            "ignored.\"},"
+            "\"cash-flow\":{\"columns\":[";
+    first = true;
+    for (const std::string& column : web::cash_flow_columns ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "\"";
+        body += json_escape (column.c_str ());
+        body += "\"";
+    }
+    body += "],\"options\":[\"start\",\"end\",\"accounts\",\"currency\"],"
+            "\"note\":\"A cash-flow spec is the Cash Flow statement's own "
+            "table: the 'Money into selected accounts comes from' and 'Money "
+            "out of selected accounts goes to' sections, one row per "
+            "contributing account with the amount that came in or went out, "
+            "the Money In and Money Out totals and the Difference, all from "
+            "the same classification (cash_flow_flows()) the statement and the "
+            "Cash Flow Barchart plot.  A row carries one figure, in the column "
+            "for its side: 'money-in', 'money-out' or 'net'.  'start' and "
+            "'end' are the report's two dates, 'accounts' its account "
+            "selection (empty for its default: every bank, cash, asset, stock "
+            "and mutual fund account) and 'currency' the commodity it converts "
+            "into.  The 'Selected Accounts' list above the table is page "
+            "furniture, not a cell, so a table spec does not carry it, and the "
+            "display switches are the report's own: a request that sets a "
+            "grouping, a period unit or mode, a chart, an account type or a "
+            "date preset is refused by name rather than ignored.  The barchart "
+            "is not this source: its axis is a date-interval series, not the "
+            "statement's account rows.\"},"
+            "\"document\":{\"documents\":[";
+    first = true;
+    for (const std::string& report : web::document_reports ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "{\"name\":\"";
+        body += json_escape (report.c_str ());
+        body += "\",\"label\":\"";
+        body += json_escape (report.c_str ());
+        body += "\",\"options\":[";
+        bool first_option = true;
+        for (const auto& option : gnc::report::report_options (report))
+        {
+            if (!first_option)
+                body += ",";
+            first_option = false;
+            body += option_json (option);
+        }
+        body += "]}";
+    }
+    body += "],\"options\":[\"invoice\",\"document_options\"],"
+            "\"note\":\"A document spec is not a table: it holds a document "
+            "report's name ('document'), the document to print ('invoice', by "
+            "id or GUID) and that report's own print options "
+            "('document_options', by the names the report publishes), and it "
+            "renders through the document renderer -- the same code the "
+            "/report/<document> route runs, so the same invoice and the same "
+            "options print the same bytes.  With no invoice the spec prints "
+            "the report's 'no invoice selected' page and with no options its "
+            "default document.  A document spec has no columns, grouping, "
+            "date range, currency, account scope or chart: a request that sets "
+            "one is refused by name rather than ignored.  The six documents "
+            "are the four Scheme layouts and the two tax invoices; the owner "
+            "reports (Customer, Vendor, Employee, Job and the Customer "
+            "Summary) print a document too, and are not this source.\"},"
             "\"split_columns\":[";
     first = true;
     for (const gnc::report::SplitColumn column :
@@ -1514,6 +1616,80 @@ build_report_request (const std::string& report, const std::string& query,
     return true;
 }
 
+/* Percent-encode a query parameter's name or value.  The document spec's
+ * options become the document route's own query parameters, so a value with a
+ * space, an ampersand or a newline in it (the print options' CSS text) has to
+ * survive the round trip. */
+std::string
+url_encode (const std::string& text)
+{
+    static const char* digits = "0123456789ABCDEF";
+    std::string out;
+    for (const unsigned char character : text)
+    {
+        const bool unreserved =
+            (character >= 'A' && character <= 'Z') ||
+            (character >= 'a' && character <= 'z') ||
+            (character >= '0' && character <= '9') || character == '-' ||
+            character == '_' || character == '.' || character == '~';
+        if (unreserved)
+        {
+            out += static_cast<char> (character);
+            continue;
+        }
+        out += '%';
+        out += digits[character >> 4];
+        out += digits[character & 0x0f];
+    }
+    return out;
+}
+
+/* A document spec is not a table: it holds a document report's name, the
+ * invoice to print and that report's own print options.  Rendering it is the
+ * /report/<document> route's own work -- the same option validation and the
+ * same renderer -- so the two cannot drift apart: the spec's fields become the
+ * route's query parameters and build_report_request() applies them. */
+bool
+render_document_spec (const web::ReportSpec& spec, std::string& html,
+                      std::string& error)
+{
+    std::string query;
+    auto add = [&query] (const std::string& name, const std::string& value)
+    {
+        if (!query.empty ())
+            query += "&";
+        query += url_encode (name) + "=" + url_encode (value);
+    };
+    if (!spec.invoice.empty ())
+        add ("invoice", spec.invoice);
+    for (const auto& option : spec.document_options)
+        add (option.first, option.second);
+
+    gnc::report::ReportRequest request;
+    if (!build_report_request (spec.document, query, request, error))
+        return false;
+    if (!gnc::report::render_report (spec.document, g_server.root, request,
+                                     html))
+    {
+        if (error.empty ())
+            error = "the document '" + spec.document +
+                    "' could not be rendered";
+        return false;
+    }
+    return true;
+}
+
+/* The one entry the preview and saved-report routes call: a document spec goes
+ * to the document renderer, every other spec to the table renderer. */
+bool
+render_spec_page (const web::ReportSpec& spec, std::string& html,
+                  std::string& error)
+{
+    if (spec.source == "document")
+        return render_document_spec (spec, html, error);
+    return web::render_spec_html (spec, g_server.root, html, error);
+}
+
 /* The first path segment is the token. Anything else is a 404, which is also
  * what an attacker without the token sees. */
 bool
@@ -1761,7 +1937,7 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
             else
             {
                 std::string html;
-                if (!web::render_spec_html (spec, g_server.root, html, error))
+                if (!render_spec_page (spec, html, error))
                     send_response (connection, "400 Bad Request", "text/plain",
                                    error + "\n");
                 else
@@ -1955,7 +2131,7 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         else
         {
             std::string html;
-            if (!web::render_spec_html (spec, g_server.root, html, error))
+            if (!render_spec_page (spec, html, error))
                 send_response (connection, "500 Internal Server Error",
                                "text/plain", error + "\n");
             else
