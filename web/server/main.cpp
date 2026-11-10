@@ -412,7 +412,32 @@ spec_options_json ()
         body += json_escape (gnc::report::column_heading (column));
         body += "\"}";
     }
-    body += "],\"groupings\":["
+    body += "],\"sources\":["
+            "{\"name\":\"accounts\",\"label\":\"Accounts and periods\"},"
+            "{\"name\":\"splits\",\"label\":\"Transactions' splits\"}],"
+            "\"split_columns\":[";
+    first = true;
+    for (const gnc::report::SplitColumn column :
+         gnc::report::split_column_vocabulary ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "{\"name\":\"";
+        body += json_escape (gnc::report::split_column_name (column));
+        body += "\",\"label\":\"";
+        body += json_escape (gnc::report::split_column_heading (column));
+        body += "\"}";
+    }
+    body += "],\"split_groupings\":["
+            "{\"name\":\"none\",\"label\":\"Flat split list\"},"
+            "{\"name\":\"account\",\"label\":\"By account (Transaction "
+            "Report)\"},"
+            "{\"name\":\"account-code\",\"label\":\"By account code (General "
+            "Ledger)\"},"
+            "{\"name\":\"transaction\",\"label\":\"By transaction (General "
+            "Journal)\"}],"
+            "\"groupings\":["
             "{\"name\":\"none\",\"label\":\"Flat account list\"},"
             "{\"name\":\"account-tree\",\"label\":\"By account tree\"},"
             "{\"name\":\"period\",\"label\":\"By period\"}],"

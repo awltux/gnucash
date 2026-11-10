@@ -653,6 +653,73 @@ column_from_name (const std::string& name, Column& column)
     return false;
 }
 
+/* --------------------------------------------------------- split vocabulary */
+
+const char*
+split_column_name (SplitColumn column)
+{
+    switch (column)
+    {
+    case SplitColumn::Date:           return "date";
+    case SplitColumn::Num:            return "num";
+    case SplitColumn::Description:    return "description";
+    case SplitColumn::Memo:           return "memo";
+    case SplitColumn::Transfer:       return "transfer";
+    case SplitColumn::Account:        return "account";
+    case SplitColumn::Reconcile:      return "reconcile";
+    case SplitColumn::Debit:          return "debit";
+    case SplitColumn::Credit:         return "credit";
+    case SplitColumn::Amount:         return "amount";
+    case SplitColumn::RunningBalance: return "running-balance";
+    }
+    return "";
+}
+
+const char*
+split_column_heading (SplitColumn column)
+{
+    switch (column)
+    {
+    case SplitColumn::Date:           return "Date";
+    case SplitColumn::Num:            return "Num";
+    case SplitColumn::Description:    return "Description";
+    case SplitColumn::Memo:           return "Memo";
+    case SplitColumn::Transfer:       return "Transfer";
+    case SplitColumn::Account:        return "Account";
+    case SplitColumn::Reconcile:      return "R";
+    case SplitColumn::Debit:          return "Debit";
+    case SplitColumn::Credit:         return "Credit";
+    case SplitColumn::Amount:         return "Amount";
+    case SplitColumn::RunningBalance: return "Running Balance";
+    }
+    return "";
+}
+
+std::vector<SplitColumn>
+split_column_vocabulary ()
+{
+    return {SplitColumn::Date,      SplitColumn::Num,
+            SplitColumn::Description, SplitColumn::Memo,
+            SplitColumn::Transfer,  SplitColumn::Account,
+            SplitColumn::Reconcile, SplitColumn::Debit,
+            SplitColumn::Credit,    SplitColumn::Amount,
+            SplitColumn::RunningBalance};
+}
+
+bool
+split_column_from_name (const std::string& name, SplitColumn& column)
+{
+    for (const SplitColumn candidate : split_column_vocabulary ())
+    {
+        if (name == split_column_name (candidate))
+        {
+            column = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<std::string>
 account_type_vocabulary ()
 {
@@ -1032,6 +1099,21 @@ render_table_spec (const TableSpec& requested, Account* root, std::string& html,
 {
     if (root == nullptr)
         return false;
+
+    if (requested.source == SpecSource::Splits)
+    {
+        if (requested.split_columns.empty ())
+        {
+            if (error != nullptr)
+                *error = "a split listing needs at least one column";
+            return false;
+        }
+        html = render_html (split_table (root, requested),
+                            requested.title.empty () ? "Custom Report"
+                                                     : requested.title);
+        return true;
+    }
+
     if (requested.columns.empty ())
         return false;
 
@@ -1202,6 +1284,24 @@ account_full_name (const Account* account)
     const char* name = gnc_account_get_full_name (
         const_cast<Account*> (account));
     return name != nullptr ? name : "";
+}
+
+/* The account's code, or an empty string when it has none. */
+std::string
+account_code (const Account* account)
+{
+    const char* code = xaccAccountGetCode (const_cast<Account*> (account));
+    return code != nullptr ? std::string (code) : std::string ();
+}
+
+/* The name the General Ledger heads a group with: the code and the account
+ * name, or just the name for an account with no code. */
+std::string
+account_code_name (const Account* account)
+{
+    const std::string code = account_code (account);
+    const std::string name = account_name (account);
+    return code.empty () ? name : code + " " + name;
 }
 
 /* The Scheme report shows one split per line, grouped by account name, with
@@ -1411,18 +1511,6 @@ general_ledger (Account* root, const std::vector<Account*>& accounts,
     std::vector<SplitRow> splits;
     collect_splits (query, accounts, splits);
 
-    auto account_code = [] (const Account* account)
-    {
-        const char* code = xaccAccountGetCode (const_cast<Account*> (account));
-        return code != nullptr ? std::string (code) : std::string ();
-    };
-    auto namestring = [&account_code] (const Account* account)
-    {
-        const std::string code = account_code (account);
-        const std::string name = account_name (account);
-        return code.empty () ? name : code + " " + name;
-    };
-
     struct LedgerEntry
     {
         SplitRow row;
@@ -1492,7 +1580,7 @@ general_ledger (Account* root, const std::vector<Account*>& accounts,
             if (in_group)
                 add_subtotal ("Total For " + current_name, subtotal);
             current_code = entry.code;
-            current_name = namestring (account);
+            current_name = account_code_name (account);
             in_group = true;
             subtotal = gnc_numeric_zero ();
 
@@ -1514,7 +1602,7 @@ general_ledger (Account* root, const std::vector<Account*>& accounts,
             table.rows.push_back (std::move (heading));
         }
 
-        current_name = namestring (account);
+        current_name = account_code_name (account);
         const gnc_numeric amount = xaccSplitGetAmount (entry.row.split);
 
         std::vector<Cell> row;
@@ -1993,7 +2081,464 @@ transaction_breakdown (Account* root, const BreakdownOptions& options)
     return report;
 }
 
-/* ------------------------------------------------------- reconciliation */
+/* ----------------------------------------------------------- split listing */
+
+namespace
+{
+
+/* The cells of one row of a split listing, in the spec's own column order.  A
+ * cell the row does not set stays an empty text cell, which the renderer
+ * prints as a space: the listings' own blank cells are not zeros. */
+struct RowCells
+{
+    explicit RowCells (const std::vector<SplitColumn>& columns)
+        : columns (columns), cells (columns.size ())
+    {
+    }
+
+    bool has (SplitColumn column) const
+    {
+        return std::find (columns.begin (), columns.end (), column) !=
+               columns.end ();
+    }
+
+    void text (SplitColumn column, const std::string& value)
+    {
+        if (!has (column))
+            return;
+        TypedCell& cell = cell_for (column);
+        cell.type = CellType::Text;
+        cell.text = value;
+    }
+
+    void amount (SplitColumn column, gnc_numeric value)
+    {
+        if (!has (column))
+            return;
+        TypedCell& cell = cell_for (column);
+        cell.type = CellType::Amount;
+        cell.amount = value;
+    }
+
+    const std::vector<SplitColumn>& columns;
+    std::vector<TypedCell> cells;
+
+private:
+    TypedCell& cell_for (SplitColumn column)
+    {
+        const auto found = std::find (columns.begin (), columns.end (), column);
+        return cells[static_cast<size_t> (found - columns.begin ())];
+    }
+};
+
+/* Where a heading or a total's label sits: under Description when the listing
+ * has that column, otherwise in the row's first column.  The native listings
+ * put the label in the row's first cell and use the table's markup to span it;
+ * a typed row has one cell per column, so the label takes the column a reader
+ * would look in. */
+SplitColumn
+split_label_column (const std::vector<SplitColumn>& columns)
+{
+    const auto description =
+        std::find (columns.begin (), columns.end (), SplitColumn::Description);
+    if (description != columns.end ())
+        return SplitColumn::Description;
+    return columns.empty () ? SplitColumn::Description : columns.front ();
+}
+
+ColumnDef
+split_column_def (SplitColumn column)
+{
+    ColumnDef def;
+    def.name = split_column_name (column);
+    def.heading = split_column_heading (column);
+    switch (column)
+    {
+    case SplitColumn::Date:
+        def.type = CellType::Date;
+        break;
+    case SplitColumn::Debit:
+    case SplitColumn::Credit:
+    case SplitColumn::Amount:
+    case SplitColumn::RunningBalance:
+        def.type = CellType::Amount;
+        def.align = CellAlign::Right;
+        break;
+    default:
+        def.type = CellType::Text;
+        break;
+    }
+    return def;
+}
+
+/* A split's amount in the Debit/Credit pair, the way both listings print it:
+ * a negative amount is the Credit column's magnitude, anything else the Debit
+ * column's amount.  A listing with neither column gets the signed amount in
+ * whichever single amount column it does have. */
+void
+set_split_amount (RowCells& cells, gnc_numeric amount)
+{
+    if (cells.has (SplitColumn::Debit) && cells.has (SplitColumn::Credit))
+    {
+        if (gnc_numeric_negative_p (amount))
+            cells.amount (SplitColumn::Credit, gnc_numeric_neg (amount));
+        else
+            cells.amount (SplitColumn::Debit, amount);
+    }
+    else if (cells.has (SplitColumn::Amount))
+        cells.amount (SplitColumn::Amount, amount);
+    else if (cells.has (SplitColumn::Debit))
+        cells.amount (SplitColumn::Debit, amount);
+    else
+        cells.amount (SplitColumn::Credit, amount);
+}
+
+/* A "Total For"/grand total amount: a positive total in the Debit column and a
+ * negative one as its magnitude in the Credit column, as the native totals
+ * rows print them (a zero total therefore prints in the Credit column). */
+void
+set_total_amount (RowCells& cells, gnc_numeric amount)
+{
+    if (cells.has (SplitColumn::Debit) && cells.has (SplitColumn::Credit))
+    {
+        if (gnc_numeric_positive_p (amount))
+            cells.amount (SplitColumn::Debit, amount);
+        else
+            cells.amount (SplitColumn::Credit, gnc_numeric_neg (amount));
+    }
+    else if (cells.has (SplitColumn::Amount))
+        cells.amount (SplitColumn::Amount, amount);
+    else if (cells.has (SplitColumn::Debit))
+        cells.amount (SplitColumn::Debit, amount);
+    else
+        cells.amount (SplitColumn::Credit, amount);
+}
+
+/* The split's memo.  The Transaction Report falls back to the transaction's
+ * notes when the split has no memo of its own; the General Journal's register
+ * line shows the split's memo only. */
+std::string
+split_memo (Split* split, bool notes_fallback)
+{
+    std::string memo = text_or_empty (xaccSplitGetMemo (split));
+    if (memo.empty () && notes_fallback)
+        memo = text_or_empty (xaccTransGetNotes (xaccSplitGetParent (split)));
+    return memo;
+}
+
+/* The register's reconcile flag: the character the engine stores. */
+std::string
+split_reconcile (Split* split)
+{
+    const char status = xaccSplitGetReconcile (split);
+    return status == '\0' ? std::string () : std::string (1, status);
+}
+
+} // namespace
+
+Table
+split_table (Account* root, const TableSpec& spec)
+{
+    Table table;
+    table.currency = report_currency (root, spec.currency);
+    for (const SplitColumn column : spec.split_columns)
+        table.column_defs.push_back (split_column_def (column));
+    if (root == nullptr || spec.split_columns.empty ())
+        return table;
+
+    const std::vector<SplitColumn>& columns = spec.split_columns;
+    const SplitColumn label_column = split_label_column (columns);
+
+    auto add_cells = [&table] (RowCells& cells, RowType type)
+    {
+        Row row;
+        row.type = type;
+        row.cells = std::move (cells.cells);
+        table.rows.push_back (std::move (row));
+    };
+
+    auto add_total = [&] (const std::string& label, gnc_numeric amount)
+    {
+        RowCells cells (columns);
+        cells.text (label_column, label);
+        set_total_amount (cells, amount);
+        add_cells (cells, RowType::Total);
+    };
+
+    auto fill_split_cells = [&] (RowCells& cells, Split* split,
+                                bool notes_fallback)
+    {
+        Transaction* trans = xaccSplitGetParent (split);
+        Account* account = xaccSplitGetAccount (split);
+        const gnc_numeric amount = xaccSplitGetAmount (split);
+
+        cells.text (SplitColumn::Date, split_date (split));
+        cells.text (SplitColumn::Num, transaction_num (trans));
+        cells.text (SplitColumn::Description,
+                    text_or_empty (xaccTransGetDescription (trans)));
+        cells.text (SplitColumn::Memo, split_memo (split, notes_fallback));
+        cells.text (SplitColumn::Transfer, transfer_name (split));
+        cells.text (SplitColumn::Account, account_full_name (account));
+        cells.text (SplitColumn::Reconcile, split_reconcile (split));
+        set_split_amount (cells, amount);
+        cells.amount (SplitColumn::Amount, amount);
+
+        if (cells.has (SplitColumn::RunningBalance))
+        {
+            gnc_numeric running = xaccSplitGetBalance (split);
+            if (shows_reversed (account))
+                running = gnc_numeric_neg (running);
+            cells.amount (SplitColumn::RunningBalance, running);
+        }
+    };
+
+    if (spec.split_grouping == SplitGrouping::Transaction)
+    {
+        /* The register's journal: every non-void transaction of the book, its
+         * heading line, one line per split, then the debit/credit totals.  The
+         * Description column is the register's shared one: the transaction's
+         * description on the heading, the split's memo on the line. */
+        gnc_numeric grand_debit = gnc_numeric_zero ();
+        gnc_numeric grand_credit = gnc_numeric_zero ();
+        for (Transaction* trans : all_transactions (root))
+        {
+            std::vector<Split*> splits;
+            for (GList* node = xaccTransGetSplitList (trans); node != nullptr;
+                 node = node->next)
+                splits.push_back (static_cast<Split*> (node->data));
+            if (splits.empty ())
+                continue;
+
+            Split* leader = nullptr;
+            for (Split* split : splits)
+                if (leader == nullptr || xaccSplitOrder (split, leader) < 0)
+                    leader = split;
+
+            RowCells heading (columns);
+            heading.text (SplitColumn::Date, split_date (splits.front ()));
+            heading.text (SplitColumn::Num, transaction_num (trans));
+            heading.text (SplitColumn::Description,
+                          text_or_empty (xaccTransGetDescription (trans)));
+            if (leader != nullptr)
+            {
+                gnc_numeric balance = xaccSplitGetBalance (leader);
+                if (shows_reversed (xaccSplitGetAccount (leader)))
+                    balance = gnc_numeric_neg (balance);
+                heading.amount (SplitColumn::RunningBalance, balance);
+            }
+            add_cells (heading, RowType::Section);
+
+            for (Split* split : splits)
+            {
+                RowCells cells (columns);
+                /* The heading already prints the transaction's date, number
+                 * and description; a register line prints its own memo, the
+                 * split's action and its account. */
+                cells.text (SplitColumn::Num,
+                            text_or_empty (xaccSplitGetAction (split)));
+                cells.text (SplitColumn::Description,
+                            split_memo (split, false));
+                cells.text (SplitColumn::Account,
+                            account_full_name (xaccSplitGetAccount (split)));
+                cells.text (SplitColumn::Transfer, transfer_name (split));
+                cells.text (SplitColumn::Reconcile, split_reconcile (split));
+                set_split_amount (cells, xaccSplitGetAmount (split));
+                cells.amount (SplitColumn::Amount, xaccSplitGetAmount (split));
+                add_cells (cells, RowType::Split);
+            }
+
+            for (Split* split : splits)
+            {
+                const gnc_numeric amount = xaccSplitGetAmount (split);
+                if (gnc_numeric_positive_p (amount))
+                    grand_debit = numeric_add (grand_debit, amount);
+                else if (gnc_numeric_negative_p (amount))
+                    grand_credit = numeric_add (grand_credit,
+                                                gnc_numeric_neg (amount));
+            }
+        }
+        if (!table.rows.empty ())
+        {
+            RowCells debits (columns);
+            debits.text (label_column, "Total Debits");
+            debits.amount (SplitColumn::Debit, grand_debit);
+            if (!debits.has (SplitColumn::Debit))
+                debits.amount (SplitColumn::Amount, grand_debit);
+            add_cells (debits, RowType::Total);
+
+            RowCells credits (columns);
+            credits.text (label_column, "Total Credits");
+            credits.amount (SplitColumn::Credit, grand_credit);
+            if (!credits.has (SplitColumn::Credit))
+                credits.amount (SplitColumn::Amount, grand_credit);
+            add_cells (credits, RowType::Total);
+        }
+        return table;
+    }
+
+    /* The other groupings list the splits of the selected accounts in the
+     * period, with the closing entries left out as the Transaction Report and
+     * the General Ledger leave them out. */
+    Query query;
+    query.scope = root;
+    query.start = spec.start;
+    query.end = spec.end;
+    query.currency = table.currency;
+    query.skip_voided = true;
+    query.skip_closing = true;
+
+    std::vector<Account*> accounts;
+    collect_scope_accounts (
+        root, spec_scope (spec.accounts, spec.account_types), accounts);
+    std::vector<SplitRow> splits;
+    collect_splits (query, accounts, splits);
+
+    struct SplitLine
+    {
+        Split* split;
+        std::string full_name;
+        std::string name;
+        std::string code;
+    };
+    std::vector<SplitLine> lines;
+    lines.reserve (splits.size ());
+    for (const SplitRow& row : splits)
+    {
+        Account* account = xaccSplitGetAccount (row.split);
+        lines.push_back ({row.split, row.account_full_name, row.account_name,
+                          account_code (account)});
+    }
+
+    switch (spec.split_grouping)
+    {
+    case SplitGrouping::Account:
+        /* The Transaction Report's order: account full name, then register
+         * order within the account. */
+        std::stable_sort (lines.begin (), lines.end (),
+                          [] (const SplitLine& left, const SplitLine& right)
+                          {
+                              const int by_name = std::strcmp (
+                                  left.full_name.c_str (),
+                                  right.full_name.c_str ());
+                              if (by_name != 0)
+                                  return by_name < 0;
+                              return xaccSplitOrder (left.split,
+                                                     right.split) < 0;
+                          });
+        break;
+    case SplitGrouping::AccountCode:
+        /* The General Ledger's order: account code, then register order.
+         * Accounts that share a code share a section. */
+        std::stable_sort (lines.begin (), lines.end (),
+                          [] (const SplitLine& left, const SplitLine& right)
+                          {
+                              const int by_code = std::strcmp (
+                                  left.code.c_str (), right.code.c_str ());
+                              if (by_code != 0)
+                                  return by_code < 0;
+                              return xaccSplitOrder (left.split,
+                                                     right.split) < 0;
+                          });
+        break;
+    default:
+        std::stable_sort (lines.begin (), lines.end (),
+                          [] (const SplitLine& left, const SplitLine& right)
+                          {
+                              return xaccSplitOrder (left.split,
+                                                     right.split) < 0;
+                          });
+        break;
+    }
+
+    if (spec.split_grouping == SplitGrouping::Account)
+    {
+        gnc_numeric subtotal = gnc_numeric_zero ();
+        gnc_numeric grand_total = gnc_numeric_zero ();
+        std::string current_full_name;
+        std::string current_name;
+        bool in_group = false;
+
+        for (const SplitLine& line : lines)
+        {
+            if (!in_group || line.full_name != current_full_name)
+            {
+                if (in_group)
+                    add_total ("Total For " + current_name, subtotal);
+                current_full_name = line.full_name;
+                current_name = line.name;
+                in_group = true;
+                subtotal = gnc_numeric_zero ();
+
+                RowCells heading (columns);
+                heading.text (label_column, current_name);
+                add_cells (heading, RowType::Section);
+            }
+
+            RowCells cells (columns);
+            fill_split_cells (cells, line.split, true);
+            add_cells (cells, RowType::Split);
+
+            const gnc_numeric amount = xaccSplitGetAmount (line.split);
+            subtotal = numeric_add (subtotal, amount);
+            grand_total = numeric_add (grand_total, amount);
+        }
+
+        if (in_group)
+            add_total ("Total For " + current_name, subtotal);
+        if (!lines.empty ())
+            add_total ("Grand Total", grand_total);
+        return table;
+    }
+
+    /* AccountCode: the General Ledger's "Balance b/f" heading and subtotal per
+     * code.  A section's heading is the first account's name and balance; its
+     * subtotal is named after the last account in the section, which is what
+     * the native report does when a code covers more than one account. */
+    const time64 begin = spec.start.value_or (0);
+    gnc_numeric subtotal = gnc_numeric_zero ();
+    std::string current_code;
+    std::string current_name;
+    bool in_group = false;
+
+    for (const SplitLine& line : lines)
+    {
+        Account* account = xaccSplitGetAccount (line.split);
+        if (!in_group || line.code != current_code)
+        {
+            if (in_group)
+                add_total ("Total For " + current_name, subtotal);
+            current_code = line.code;
+            current_name = account_code_name (account);
+            in_group = true;
+            subtotal = gnc_numeric_zero ();
+
+            gnc_numeric brought_forward =
+                xaccAccountGetBalanceAsOfDate (account, begin);
+            if (shows_reversed (account))
+                brought_forward = gnc_numeric_neg (brought_forward);
+
+            RowCells heading (columns);
+            heading.text (label_column, current_name + ": Balance b/f");
+            heading.amount (SplitColumn::Debit, brought_forward);
+            if (!heading.has (SplitColumn::Debit))
+                heading.amount (SplitColumn::Amount, brought_forward);
+            add_cells (heading, RowType::Section);
+        }
+
+        /* The native report updates the section's name on every line, so the
+         * subtotal carries the last account's name. */
+        current_name = account_code_name (account);
+
+        RowCells cells (columns);
+        fill_split_cells (cells, line.split, true);
+        add_cells (cells, RowType::Split);
+        subtotal = numeric_add (subtotal, xaccSplitGetAmount (line.split));
+    }
+
+    if (in_group)
+        add_total ("Total For " + current_name, subtotal);
+    return table;
+}
 
 namespace
 {

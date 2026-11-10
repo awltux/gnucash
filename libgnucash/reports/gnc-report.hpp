@@ -81,6 +81,51 @@ std::vector<Column> column_vocabulary ();
  *  the vocabulary; the caller reports it as a bad spec. */
 bool column_from_name (const std::string& name, Column& column);
 
+/* --------------------------------------------------------- split vocabulary */
+
+/** A column of a listing, i.e. of a report whose rows are individual splits
+ *  rather than account balances.  The account columns above summarise one
+ *  account per row; a listing prints the register's fields instead, and these
+ *  are the names a spec may ask for. */
+enum class SplitColumn
+{
+    Date,
+    /** The transaction number, as the register's Num column shows it. */
+    Num,
+    Description,
+    /** The split's memo.  The listings differ on whether an empty memo falls
+     *  back to the transaction's notes; see SplitGrouping. */
+    Memo,
+    /** The other split's account name, or "Split Transaction" for a
+     *  transaction with more than two splits. */
+    Transfer,
+    /** The split's own account, as the account's full name. */
+    Account,
+    /** The reconcile flag the register shows: n, c, y or f. */
+    Reconcile,
+    Debit,
+    Credit,
+    /** The split's signed amount, for a listing that prints one column rather
+     *  than the Debit/Credit pair. */
+    Amount,
+    /** The account's running balance after this split, sign-reversed the way
+     *  the register shows a credit-normal account. */
+    RunningBalance,
+};
+
+/** Stable name used by the report spec: "date", "running-balance", ... */
+const char* split_column_name (SplitColumn column);
+
+/** Human heading used by the HTML renderer: "Date", "Running Balance", ... */
+const char* split_column_heading (SplitColumn column);
+
+/** Every column a split spec may ask for, in display order. */
+std::vector<SplitColumn> split_column_vocabulary ();
+
+/** Resolve a split column name.  False for a name outside the vocabulary;
+ *  the caller reports it as a bad spec. */
+bool split_column_from_name (const std::string& name, SplitColumn& column);
+
 /* -------------------------------------------------------------- typed cells */
 
 /** What a cell holds.  The account reports above need one kind of cell, an
@@ -145,6 +190,9 @@ enum class RowType
     Total,
     /** A section heading ("Assets"): a label with no amount at all. */
     Section,
+    /** One split of a listing: a row of typed cells, not an account balance.
+     *  Only the split listings emit it; the account reports never do. */
+    Split,
 };
 
 struct Row
@@ -270,19 +318,58 @@ enum class PeriodUnit
     Month,
 };
 
+/** Where a spec's rows come from: the account table the designer has always
+ *  built (columns from `Column`), or a listing of the book's individual
+ *  splits (columns from `SplitColumn`). */
+enum class SpecSource
+{
+    /** One row per account or period: the account reports' own axis. */
+    Accounts,
+    /** One row per split, as the entry listings print them. */
+    Splits,
+};
+
+/** How a split listing orders and sections its rows.  Each value reproduces
+ *  the section layout of the native listing it is named for, including that
+ *  listing's empty-state and memo rules; see split_table(). */
+enum class SplitGrouping
+{
+    /** One flat run of splits in register order, with no headings or totals. */
+    None,
+    /** Grouped by account full name, with the account's name as a heading and
+     *  a "Total For" line after it, then a grand total: the Transaction
+     *  Report's layout. */
+    Account,
+    /** Grouped by account code, with a "<account>: Balance b/f" heading
+     *  carrying the balance brought forward and a "Total For" line after it:
+     *  the General Ledger's layout. */
+    AccountCode,
+    /** One heading per transaction with its splits underneath and the Total
+     *  Debits / Total Credits pair: the General Journal's register layout. */
+    Transaction,
+};
+
 /** A report built from the vocabulary rather than from a C++ report: the
  *  designer saves this shape as JSON, and the same renderer serves a preview
  *  and a saved report. */
 struct TableSpec
 {
     std::string title;
+    SpecSource source = SpecSource::Accounts;
     std::vector<Column> columns;
+    /** The split columns, when `source` is Splits.  Unused otherwise. */
+    std::vector<SplitColumn> split_columns;
+    /** How the split listing is ordered and sectioned, when `source` is
+     *  Splits.  Unused otherwise. */
+    SplitGrouping split_grouping = SplitGrouping::None;
     GroupingMode grouping = GroupingMode::None;
     PeriodUnit period_unit = PeriodUnit::Year;
     std::optional<time64> start;
     std::optional<time64> end;
     gnc_commodity* currency = nullptr;
-    /** The accounts in scope.  Empty means every account in the book. */
+    /** The accounts in scope.  Empty means every account in the book.  For a
+     *  split listing this is the report's account selection: the account and
+     *  its subtree, as the report route expands a GUID. */
     std::vector<Account*> accounts;
     /** Further restrict the scope to these account types.  Empty means every
      *  type.  This is what makes a built-in spec portable between books: a
@@ -298,6 +385,30 @@ struct TableSpec
      *  Debit/Credit/Balance.  Empty means derive from `columns`. */
     std::vector<Column> chart_columns;
 };
+
+/** Build the table a split spec asks for.  The rows are the splits of the
+ *  scoped accounts in the period, with one typed cell per SplitColumn; the
+ *  ordering, headings and totals reproduce the native listing named by
+ *  `spec.split_grouping`:
+ *
+ *  * Account: the Transaction Report.  Sorted by account full name then
+ *    register order, a short account name as each group's heading, "Total For
+ *    <name>" after it, "Grand Total" at the end, and the memo falling back to
+ *    the transaction's notes.
+ *  * AccountCode: the General Ledger.  Sorted by account code then register
+ *    order, "<code name>: Balance b/f" heading with the balance brought
+ *    forward as of the start date, and "Total For <last account>" after it.
+ *  * Transaction: the General Journal.  Every non-void transaction of the
+ *    book in register order, a date/description heading per transaction, then
+ *    one row per split with its memo and account, then the Total Debits and
+ *    Total Credits pair.  The layout has one Description column (the register
+ *    prints the transaction description on the heading and the split memo on
+ *    the line), so `memo` is not used by this grouping.
+ *
+ *  A source that skips closing entries reproduces the Transaction Report and
+ *  the General Ledger; the transaction layout lists them, as the General
+ *  Journal does.  The table's currency defaults to the report currency. */
+Table split_table (Account* root, const TableSpec& spec);
 
 /** The account type names a spec may scope by, in display order: the engine's
  *  persistent names (xaccAccountTypeEnumAsString), without the hidden root. */

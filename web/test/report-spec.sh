@@ -628,6 +628,101 @@ reject "unknown account type" "unknown account type 'BOGUS'" \
 reject "root account type" "unknown account type 'ROOT'" \
        "{$BASE,\"account_types\":[\"ROOT\"]}"
 
+echo "== a spec can list splits, and says which source it means"
+
+# /api/spec/options advertises the source list and the split vocabulary, so
+# the designer form (and a hand-written spec) can be built from the native
+# layer's own names.
+fetch "/api/spec/options" > /dev/null
+expect_body "the options advertise the source list" '"name":"splits"'
+expect_body "the options advertise the split columns" '"name":"running-balance"'
+expect_body "the options advertise the split groupings" '"name":"account-code"'
+
+cat > "$TMP/split.json" <<'JSON'
+{"name":"Split listing","source":"splits","split_grouping":"account",
+ "columns":["date","num","description","memo","transfer","debit","credit"]}
+JSON
+code=$(post_spec "$TMP/split.json")
+if [ "$code" = "200" ]; then
+    ok "a split spec previews"
+    cp "$TMP/body" "$TMP/split-preview.html"
+    if grep -q "column-heading-right" "$TMP/split-preview.html" &&
+        grep -q "<th>Date</th>" "$TMP/split-preview.html"; then
+        ok "the split table prints its typed columns"
+    else
+        bad "the split table does not print its columns: $(head -c 300 "$TMP/split-preview.html")"
+    fi
+else
+    bad "a split spec preview answered $code: $(head -c 300 "$TMP/body")"
+fi
+
+# A missing source is the account report it has always been.
+cat > "$TMP/no-source.json" <<'JSON'
+{"name":"No source","columns":["account-name","balance"],"date_preset":"all"}
+JSON
+code=$(post_spec "$TMP/no-source.json")
+if [ "$code" = "200" ]; then
+    ok "a spec without 'source' is an account report"
+else
+    bad "a spec without 'source' answered $code: $(head -c 300 "$TMP/body")"
+fi
+
+# A column from the other source is named, and so is the vocabulary that would
+# have been accepted.
+reject "an account column in a split spec" "unknown split column 'balance'" \
+       '{"name":"rejected","source":"splits","columns":["balance"]}'
+reject "a split column in an account spec" "unknown column 'running-balance'" \
+       '{"name":"rejected","columns":["running-balance"]}'
+reject "an unknown source" "unknown source 'periods'" \
+       '{"name":"rejected","source":"periods","columns":["debit"]}'
+reject "split_grouping on an account spec" "'split_grouping' is for a spec" \
+       '{"name":"rejected","columns":["balance"],"split_grouping":"account"}'
+reject "an unknown split_grouping" "unknown split_grouping 'month'" \
+       '{"name":"rejected","source":"splits","columns":["debit"],"split_grouping":"month"}'
+reject "the account grouping on a split spec" "a split listing has no 'grouping'" \
+       '{"name":"rejected","source":"splits","columns":["debit"],"grouping":"period"}'
+reject "a chart on a split listing" "a split listing has no chart" \
+       '{"name":"rejected","source":"splits","columns":["debit"],"chart":"bar"}'
+reject "dates on the transaction layout" "covers the whole book" \
+       '{"name":"rejected","source":"splits","split_grouping":"transaction","columns":["debit"],"start":"2018-01-01"}'
+reject "an account scope on the transaction layout" "covers the whole book" \
+       '{"name":"rejected","source":"splits","split_grouping":"transaction","columns":["debit"],"accounts":["547d8ff75f4347e3b3607c40b40a3fef"]}'
+
+# The source survives the store, and a saved split spec renders exactly what
+# its preview rendered: the designer-parity invariant covers the new source.
+code=$(curl -sS -o "$TMP/body" -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' --data-binary @"$TMP/split.json" \
+    "${URL%/}/api/specs")
+if [ "$code" = "201" ]; then
+    ok "201 saving a split spec"
+    cp "$TMP/body" "$TMP/split-saved.json"
+    if grep -q '"source":"splits"' "$TMP/body" &&
+        grep -q '"split_grouping":"account"' "$TMP/body"; then
+        ok "the save response keeps the source and the split grouping"
+    else
+        bad "the save response does not keep the source: $(head -c 300 "$TMP/body")"
+    fi
+    SPLIT_ID=$(python3 -c \
+        'import json,sys; print(json.load(open(sys.argv[1]))["id"])' \
+        "$TMP/split-saved.json")
+    fetch "/report/spec/$SPLIT_ID" > /dev/null
+    cp "$TMP/body" "$TMP/split-report.html"
+    if cmp -s "$TMP/split-preview.html" "$TMP/split-report.html"; then
+        ok "a split spec renders identically through preview and the spec route"
+    else
+        bad "a saved split spec renders differently from its preview"
+    fi
+    # The store is re-read on every request: this GET is the reload.
+    expect_status 200 "the split spec after a store reload" "/api/specs/$SPLIT_ID"
+    expect_body "the split spec after a store reload" '"source":"splits"'
+    code=$(curl -sS -o "$TMP/body" -w '%{http_code}' -X DELETE \
+        "${URL%/}/api/specs/$SPLIT_ID")
+    [ "$code" = "200" ] && ok "the split spec can be deleted again" ||
+        bad "deleting the split spec answered $code"
+else
+    bad "saving a split spec answered $code: $(head -c 300 "$TMP/body")"
+fi
+
 echo "== invalid tags are named 400s"
 reject "uppercase tag" "invalid tag 'Net Worth'" \
        "{$BASE,\"tags\":[\"ok\",\"Net Worth\"]}"

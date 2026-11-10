@@ -50,7 +50,15 @@ struct ReportSpec
      *  Stored with the spec, so they are shared by every browser on the
      *  book, unlike the localStorage saved views. */
     std::vector<std::string> tags;
+    /** "accounts" (the default, and what a spec without the field means) or
+     *  "splits".  A split spec's `columns` are split columns, its rows are the
+     *  book's individual splits, and `split_grouping` decides their order and
+     *  sections. */
+    std::string source = "accounts";
     std::vector<std::string> columns;
+    /** "none" (the default), "account", "account-code" or "transaction"; only
+     *  meaningful for `source` "splits". */
+    std::string split_grouping = "none";
     std::string grouping = "none";
     std::string period_unit = "year";
     /** "activity" (the default) or "cumulative"; cumulative turns a period

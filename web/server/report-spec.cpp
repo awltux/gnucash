@@ -152,10 +152,10 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "a report spec must be a JSON object");
 
     static const std::set<std::string> allowed = {
-        "id", "name", "title", "description", "tags", "columns", "grouping",
-        "period_unit", "period_mode", "start", "end", "date_preset",
-        "currency", "accounts", "account_types", "chart", "chart_series",
-        "builtin"};
+        "id", "name", "title", "description", "tags", "source", "columns",
+        "split_grouping", "grouping", "period_unit", "period_mode", "start",
+        "end", "date_preset", "currency", "accounts", "account_types", "chart",
+        "chart_series", "builtin"};
     for (const auto& entry : value.object)
     {
         if (allowed.count (entry.first) == 0)
@@ -216,10 +216,23 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
             return fail (error, "'tags' has more than 12 entries");
     }
 
+    /* Where the rows come from.  A spec without the field is the account
+     * report it has always been, which is what lets the six built-ins and
+     * every store written before this stage load unchanged. */
+    spec.source = "accounts";
+    if (!optional_string (value, "source", spec.source, present, error))
+        return false;
+    const bool split_source = spec.source == "splits";
+    if (!split_source && spec.source != "accounts")
+        return fail (error, "unknown source '" + spec.source +
+                             "' (expected accounts or splits)");
+
     const json::Value* columns = value.find ("columns");
     if (columns == nullptr || !columns->is_array () || columns->array.empty ())
         return fail (error, "'columns' must be a non-empty array of column names");
-    if (columns->array.size () > 8)
+    if (split_source && columns->array.size () > 11)
+        return fail (error, "'columns' has more than 11 entries");
+    if (!split_source && columns->array.size () > 8)
         return fail (error, "'columns' has more than 8 entries");
     spec.columns.clear ();
     std::set<std::string> seen_columns;
@@ -227,11 +240,24 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     {
         if (!entry.is_string ())
             return fail (error, "'columns' entries must be strings");
-        gnc::report::Column column;
-        if (!gnc::report::column_from_name (entry.string, column))
-            return fail (error, "unknown column '" + entry.string +
-                                 "' (expected account-name, debit, credit, "
-                                 "balance or subtotal)");
+        if (split_source)
+        {
+            gnc::report::SplitColumn column;
+            if (!gnc::report::split_column_from_name (entry.string, column))
+                return fail (error, "unknown split column '" + entry.string +
+                                     "' (expected date, num, description, "
+                                     "memo, transfer, account, reconcile, "
+                                     "debit, credit, amount or "
+                                     "running-balance)");
+        }
+        else
+        {
+            gnc::report::Column column;
+            if (!gnc::report::column_from_name (entry.string, column))
+                return fail (error, "unknown column '" + entry.string +
+                                     "' (expected account-name, debit, credit, "
+                                     "balance or subtotal)");
+        }
         if (!seen_columns.insert (entry.string).second)
             return fail (error, "column '" + entry.string +
                                  "' appears more than once");
@@ -245,6 +271,25 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         spec.grouping != "period")
         return fail (error, "unknown grouping '" + spec.grouping +
                              "' (expected none, account-tree or period)");
+    if (split_source && spec.grouping != "none")
+        return fail (error, "a split listing has no 'grouping'; its sections "
+                             "come from 'split_grouping' (none, account, "
+                             "account-code or transaction)");
+
+    spec.split_grouping = "none";
+    if (!optional_string (value, "split_grouping", spec.split_grouping, present,
+                          error))
+        return false;
+    if (!split_source && spec.split_grouping != "none")
+        return fail (error, "'split_grouping' is for a spec with source "
+                             "'splits'");
+    if (split_source && spec.split_grouping != "none" &&
+        spec.split_grouping != "account" &&
+        spec.split_grouping != "account-code" &&
+        spec.split_grouping != "transaction")
+        return fail (error, "unknown split_grouping '" + spec.split_grouping +
+                             "' (expected none, account, account-code or "
+                             "transaction)");
 
     spec.period_unit = "year";
     if (!optional_string (value, "period_unit", spec.period_unit, present,
@@ -253,6 +298,9 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (spec.period_unit != "year" && spec.period_unit != "month")
         return fail (error, "unknown period_unit '" + spec.period_unit +
                              "' (expected year or month)");
+    if (split_source && spec.period_unit != "year")
+        return fail (error, "a split listing has no 'period_unit': its rows "
+                             "are splits, not periods");
 
     spec.period_mode = "activity";
     if (!optional_string (value, "period_mode", spec.period_mode, present,
@@ -261,6 +309,9 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (spec.period_mode != "activity" && spec.period_mode != "cumulative")
         return fail (error, "unknown period_mode '" + spec.period_mode +
                              "' (expected activity or cumulative)");
+    if (split_source && spec.period_mode != "activity")
+        return fail (error, "a split listing has no 'period_mode': its rows "
+                             "are splits, not period balances");
     if (spec.period_mode == "cumulative" && spec.grouping != "period")
         return fail (error, "period_mode 'cumulative' needs grouping "
                              "'period'");
@@ -378,14 +429,45 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         }
     }
 
+    if (split_source && spec.split_grouping == "transaction")
+    {
+        /* The General Journal's layout is the whole book's journal: the
+         * native report has no account, type or date option, so a spec for it
+         * has no scope either. */
+        if (!spec.query.accounts.empty ())
+            return fail (error, "a transaction-grouped split listing covers "
+                                 "the whole book, as the General Journal does, "
+                                 "so it has no 'accounts'");
+        if (!spec.account_types.empty ())
+            return fail (error, "a transaction-grouped split listing covers "
+                                 "the whole book, as the General Journal does, "
+                                 "so it has no 'account_types'");
+        if (!spec.query.start.empty () || !spec.query.end.empty () ||
+            !spec.query.date_preset.empty ())
+            return fail (error, "a transaction-grouped split listing covers "
+                                 "the whole book, as the General Journal does, "
+                                 "so it has no date range");
+    }
+
     spec.chart.clear ();
     if (!optional_string (value, "chart", spec.chart, present, error))
         return false;
     if (!spec.chart.empty () && spec.chart != "bar" && spec.chart != "line")
         return fail (error, "unknown chart '" + spec.chart +
                              "' (expected bar or line)");
+    if (split_source && !spec.chart.empty ())
+        return fail (error, "a split listing has no chart: a chart plots "
+                             "account or period amounts");
 
     spec.chart_series.clear ();
+    if (split_source)
+    {
+        const json::Value* series = value.find ("chart_series");
+        if (series != nullptr && !series->is_null () && series->is_array () &&
+            !series->array.empty ())
+            return fail (error, "a split listing has no chart_series: a chart "
+                                 "plots account or period amounts");
+    }
     const json::Value* series = value.find ("chart_series");
     if (series != nullptr && !series->is_null ())
     {
@@ -652,6 +734,7 @@ spec_to_json (const ReportSpec& spec, bool builtin)
         out << json::quote (spec.tags[index]);
     }
     out << "],";
+    out << json_field ("source", spec.source) << ",";
     out << "\"columns\":[";
     for (size_t index = 0; index < spec.columns.size (); ++index)
     {
@@ -660,6 +743,8 @@ spec_to_json (const ReportSpec& spec, bool builtin)
         out << json::quote (spec.columns[index]);
     }
     out << "],";
+    if (spec.source == "splits")
+        out << json_field ("split_grouping", spec.split_grouping) << ",";
     out << json_field ("grouping", spec.grouping) << ",";
     out << json_field ("period_unit", spec.period_unit) << ",";
     out << json_field ("period_mode", spec.period_mode) << ",";
@@ -984,14 +1069,31 @@ std::string
 no_spec_note (const std::string& name)
 {
     if (one_of (name, {"Transaction Report", "General Ledger",
-                       "General Journal", "Transaction Breakdown Report",
-                       "Reconciliation Report"}))
+                       "General Journal"}))
     {
         return "It lists transactions and splits with columns that belong to "
                "that listing (date, number, description, transfer, running "
-               "balance).  A spec's rows are accounts or periods and its "
-               "columns are debit/credit/balance, so it cannot describe the "
-               "listing.";
+               "balance).  A split spec (source 'splits') can reproduce its "
+               "cells, but the designer has no portable starting point: the "
+               "Transaction Report and the General Ledger take an account "
+               "selection, and a selection is a list of this book's account "
+               "GUIDs, not a description that fits every book.";
+    }
+    if (name == "Transaction Breakdown Report")
+    {
+        return "It lists transactions and splits, but its columns are not a "
+               "fixed vocabulary: it has one column per account the period's "
+               "transactions touch, headed by a multi-row account-tree header, "
+               "with a per-account total row.  A spec's columns are a fixed "
+               "list, so it cannot describe the dynamic account columns.";
+    }
+    if (name == "Reconciliation Report")
+    {
+        return "It lists transactions and splits, sorted into reconciled "
+               "status sections, with the reconciled-date inclusion rule and "
+               "the calculated Funds In/Funds Out columns.  A split spec has "
+               "no status section and no calculated column, so it cannot "
+               "describe the report.";
     }
     if (one_of (name, {"Receivable Aging", "Payable Aging"}))
     {
@@ -1251,15 +1353,39 @@ render_spec_html (const ReportSpec& spec, Account* root, std::string& html,
 
     gnc::report::TableSpec table;
     table.title = spec.title.empty () ? spec.name : spec.title;
-    for (const std::string& name : spec.columns)
+    if (spec.source == "splits")
     {
-        gnc::report::Column column;
-        if (!gnc::report::column_from_name (name, column))
-            return fail (error, "unknown column '" + name + "'");
-        table.columns.push_back (column);
+        table.source = gnc::report::SpecSource::Splits;
+        for (const std::string& name : spec.columns)
+        {
+            gnc::report::SplitColumn column;
+            if (!gnc::report::split_column_from_name (name, column))
+                return fail (error, "unknown split column '" + name + "'");
+            table.split_columns.push_back (column);
+        }
+        if (table.split_columns.empty ())
+            return fail (error, "the spec has no columns");
+        if (spec.split_grouping == "account")
+            table.split_grouping = gnc::report::SplitGrouping::Account;
+        else if (spec.split_grouping == "account-code")
+            table.split_grouping = gnc::report::SplitGrouping::AccountCode;
+        else if (spec.split_grouping == "transaction")
+            table.split_grouping = gnc::report::SplitGrouping::Transaction;
+        else
+            table.split_grouping = gnc::report::SplitGrouping::None;
     }
-    if (table.columns.empty ())
-        return fail (error, "the spec has no columns");
+    else
+    {
+        for (const std::string& name : spec.columns)
+        {
+            gnc::report::Column column;
+            if (!gnc::report::column_from_name (name, column))
+                return fail (error, "unknown column '" + name + "'");
+            table.columns.push_back (column);
+        }
+        if (table.columns.empty ())
+            return fail (error, "the spec has no columns");
+    }
 
     if (!spec.query.date_preset.empty ())
     {
