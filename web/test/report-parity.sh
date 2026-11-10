@@ -17,14 +17,19 @@
 # "Budget Flow", "Printable Invoice", "Easy Invoice", "Fancy Invoice",
 # "Receipt", "Tax Invoice", "Australian Tax Invoice", "Tax Schedule
 # Report/TXF Export", "Customer Report", "Vendor Report", "Employee Report",
-# "Job Report", "Customer Summary", "Net Worth Barchart" and "Net Worth
-# Linechart" are supported.
+# "Job Report", "Customer Summary", "Cash Flow", "Cash Flow Barchart",
+# "Net Worth Barchart" and "Net Worth Linechart" are supported.
 # The two net-worth names are built-in designer specs, not native reports:
 # the harness renders a preview of the built-in with the dates the oracle is
 # asked for, and the `chart` extractor compares the embedded chart data
 # (chart type, label count, and every series' values in order) rather than a
-# table.  The Scheme chart's date labels and series labels differ from the
-# native ones by design, so they are not part of the comparison.
+# table.  The Cash Flow Barchart is a native report but uses the same
+# `chart` extractor: it is a chart with an optional table, so the plotted data
+# is what it claims.  The Scheme chart's date labels and series labels differ
+# from the native ones by design, so they are not part of the comparison.
+# Its "Step Size" option is a Scheme multichoice: the [options] mapping below
+# translates the route's "quarter" (etc.) into the option's choice name
+# ("QuarterDelta"), because the option's value is the symbol's printed name.
 # Each report has its own extractor (see extractor_for below), because the
 # reports do not agree on what a row is: the Trial Balance is (account, debit,
 # credit), the balance sheet and P&L are (label, amount) with section headings
@@ -261,6 +266,7 @@ extractor_for() {
         "Job Report") echo owner-report ;;
         "Customer Summary") echo customer-summary ;;
         "Cash Flow") echo cash-flow ;;
+        "Cash Flow Barchart") echo chart ;;
         "Income and GST Statement") echo gst ;;
         "Net Worth Barchart"|"Net Worth Linechart") echo chart ;;
         *) return 1 ;;
@@ -307,6 +313,7 @@ report_guid() {
         "Job Report") echo "5518ac227e474f47a34439f2d4d049de" ;;
         "Customer Summary") echo "4166a20981985fd2b07ff8cb3b7d384e" ;;
         "Cash Flow") echo "f8748b813fab4220ba26e743aedf38da" ;;
+        "Cash Flow Barchart") echo "5426e4d987f6444387fe70880e5b28a0" ;;
         "Income and GST Statement") echo "5bf27f249a0d11e7abc4cec278b6b50a" ;;
         "Net Worth Barchart") echo "cbba1696c8c24744848062c7f1cf4a72" ;;
         "Net Worth Linechart") echo "d8b63264186b11e19038001558291366" ;;
@@ -431,7 +438,7 @@ scheme_account_single() {
 
 
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, General Journal, Transaction Breakdown Report, Reconciliation Report, Receivable Aging, Payable Aging, Investment Lots, Investment Portfolio, Advanced Portfolio, Lot Viewer, IFRS weighted-average cost basis report, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Easy Invoice, Fancy Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export, Customer Report, Vendor Report, Employee Report, Job Report, Customer Summary, Net Worth Barchart, Net Worth Linechart)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, General Journal, Transaction Breakdown Report, Reconciliation Report, Receivable Aging, Payable Aging, Investment Lots, Investment Portfolio, Advanced Portfolio, Lot Viewer, IFRS weighted-average cost basis report, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Easy Invoice, Fancy Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export, Customer Report, Vendor Report, Employee Report, Job Report, Customer Summary, Cash Flow, Cash Flow Barchart, Net Worth Barchart, Net Worth Linechart)"
 
 case "$REPORT" in
     "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
@@ -832,6 +839,32 @@ PY
                             EXTRA_SCHEME="$EXTRA_SCHEME
       (gnc-set-option (gnc:optiondb options) \"Accounts\" \"Account Display Depth\" $value)"
                             continue ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
+                "Cash Flow Barchart")
+                    case "$key" in
+                        step-size)
+                            case "$value" in
+                                day)        delta="DayDelta" ;;
+                                week)       delta="WeekDelta" ;;
+                                two-weeks)  delta="TwoWeekDelta" ;;
+                                month)      delta="MonthDelta" ;;
+                                quarter)    delta="QuarterDelta" ;;
+                                half-year)  delta="HalfYearDelta" ;;
+                                year)       delta="YearDelta" ;;
+                                *) fail "no Scheme step size '$value'" ;;
+                            esac
+                            # The Step Size option is a multichoice whose
+                            # value is the choice name.
+                            EXTRA_SCHEME="$EXTRA_SCHEME
+      (gnc-set-option (gnc:optiondb options) \"General\" \"Step Size\" \"$delta\")"
+                            continue ;;
+                        show-in)         page="Display"; name="Show Money In" ;;
+                        show-out)        page="Display"; name="Show Money Out" ;;
+                        show-net)        page="Display"; name="Show Net Flow" ;;
+                        show-table)      page="Display"; name="Show Table" ;;
+                        include-trading)
+                            page="Accounts"; name="Include Trading Accounts in report" ;;
                         *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
                     esac ;;
                 "Income and GST Statement")

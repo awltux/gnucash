@@ -3424,26 +3424,13 @@ cash_flow_convert (gnc_numeric amount, gnc_commodity* from,
         db, amount, from, report_cur, when);
 }
 
-} // namespace
-
-CashFlowReport
-cash_flow (Account* root, const CashFlowOptions& options)
+/* The report's default account selection and sort order.  The route has
+ * already expanded each GUID to its subtree, so the Scheme report's "Always
+ * show sub-accounts" switch has nothing to add and is not published. */
+std::vector<Account*>
+cash_flow_selection (Account* root, const std::vector<Account*>& supplied)
 {
-    CashFlowReport report;
-
-    gnc_commodity* report_cur = report_currency (root, options.currency);
-    const std::string interval =
-        options.start.has_value () && options.end.has_value ()
-            ? print_date (*options.start) + " to " + print_date (*options.end)
-            : std::string ();
-    report.title = "Cash Flow";
-    if (!interval.empty ())
-        report.title += " " + interval;
-
-    /* The selection.  The route has already expanded each GUID to its
-     * subtree, so the Scheme report's "Always show sub-accounts" switch has
-     * nothing to add and is not published as an option. */
-    std::vector<Account*> accounts = options.accounts;
+    std::vector<Account*> accounts = supplied;
     if (accounts.empty ())
     {
         std::vector<Account*> all;
@@ -3458,17 +3445,27 @@ cash_flow (Account* root, const CashFlowOptions& options)
     {
         return cash_flow_name_compare (left, right) < 0;
     });
+    return accounts;
+}
 
-    /* The Scheme report renders its "No accounts selected" warning for an
-     * empty selection instead of an empty table; that is the caller's. */
-    if (accounts.empty ())
-    {
-        report.no_accounts = true;
-        return report;
-    }
+/* One period's cash-flow classification: the buckets per counterpart
+ * account and the two totals, exactly what cash-flow-calc.scm's
+ * cash-flow-calc-money-in-out() returns before the report formats it. */
+struct CashFlowFlows
+{
+    std::vector<CashFlowBucket> money_in;
+    std::vector<CashFlowBucket> money_out;
+    gnc_numeric money_in_total = gnc_numeric_zero ();
+    gnc_numeric money_out_total = gnc_numeric_zero ();
+};
 
-    QofBook* book = gnc_account_get_book (root);
-    GNCPriceDB* db = book != nullptr ? gnc_pricedb_get_db (book) : nullptr;
+CashFlowFlows
+cash_flow_flows (const std::vector<Account*>& accounts,
+                 std::optional<time64> start, std::optional<time64> end,
+                 bool include_trading, gnc_commodity* report_cur,
+                 GNCPriceDB* db)
+{
+    CashFlowFlows flows;
 
     /* The splits the Scheme report's query selects: the selected accounts'
      * own splits, in the period, without the voided ones.  Each of them makes
@@ -3476,17 +3473,13 @@ cash_flow (Account* root, const CashFlowOptions& options)
     std::vector<Split*> triggers;
     for (Account* account : accounts)
         gnc_account_foreach_split_between_dates (
-            account, options.start, options.end, false,
+            account, start, end, false,
             [&triggers] (Split* split)
             {
                 if (!xaccTransGetVoidStatus (xaccSplitGetParent (split)))
                     triggers.push_back (split);
             });
 
-    std::vector<CashFlowBucket> money_in;
-    std::vector<CashFlowBucket> money_out;
-    gnc_numeric money_in_total = gnc_numeric_zero ();
-    gnc_numeric money_out_total = gnc_numeric_zero ();
     std::set<const Split*> seen;
 
     for (Split* trigger : triggers)
@@ -3510,7 +3503,7 @@ cash_flow (Account* root, const CashFlowOptions& options)
             if (std::find (accounts.begin (), accounts.end (), split_account) !=
                 accounts.end ())
                 continue;
-            if (options.include_trading &&
+            if (include_trading &&
                 xaccAccountGetType (split_account) == ACCT_TYPE_TRADING)
                 continue;
             if (seen.count (split) > 0)
@@ -3532,29 +3525,71 @@ cash_flow (Account* root, const CashFlowOptions& options)
             seen.insert (split);
             if (inflow)
             {
-                cash_flow_add (money_in, split_account, amount);
-                money_in_total = numeric_add (money_in_total, amount);
+                cash_flow_add (flows.money_in, split_account, amount);
+                flows.money_in_total = numeric_add (flows.money_in_total,
+                                                    amount);
             }
             else
             {
-                cash_flow_add (money_out, split_account, amount);
-                money_out_total = numeric_add (money_out_total, amount);
+                cash_flow_add (flows.money_out, split_account, amount);
+                flows.money_out_total = numeric_add (flows.money_out_total,
+                                                     amount);
             }
         }
     }
 
-    std::sort (money_in.begin (), money_in.end (),
+    std::sort (flows.money_in.begin (), flows.money_in.end (),
                [] (const CashFlowBucket& left, const CashFlowBucket& right)
                {
                    return cash_flow_name_compare (left.account,
                                                   right.account) < 0;
                });
-    std::sort (money_out.begin (), money_out.end (),
+    std::sort (flows.money_out.begin (), flows.money_out.end (),
                [] (const CashFlowBucket& left, const CashFlowBucket& right)
                {
                    return cash_flow_name_compare (left.account,
                                                   right.account) < 0;
                });
+    return flows;
+}
+
+} // namespace
+
+CashFlowReport
+cash_flow (Account* root, const CashFlowOptions& options)
+{
+    CashFlowReport report;
+
+    gnc_commodity* report_cur = report_currency (root, options.currency);
+    const std::string interval =
+        options.start.has_value () && options.end.has_value ()
+            ? print_date (*options.start) + " to " + print_date (*options.end)
+            : std::string ();
+    report.title = "Cash Flow";
+    if (!interval.empty ())
+        report.title += " " + interval;
+
+    std::vector<Account*> accounts =
+        cash_flow_selection (root, options.accounts);
+
+    /* The Scheme report renders its "No accounts selected" warning for an
+     * empty selection instead of an empty table; that is the caller's. */
+    if (accounts.empty ())
+    {
+        report.no_accounts = true;
+        return report;
+    }
+
+    QofBook* book = gnc_account_get_book (root);
+    GNCPriceDB* db = book != nullptr ? gnc_pricedb_get_db (book) : nullptr;
+
+    const CashFlowFlows flows =
+        cash_flow_flows (accounts, options.start, options.end,
+                         options.include_trading, report_cur, db);
+    const std::vector<CashFlowBucket>& money_in = flows.money_in;
+    const std::vector<CashFlowBucket>& money_out = flows.money_out;
+    const gnc_numeric money_in_total = flows.money_in_total;
+    const gnc_numeric money_out_total = flows.money_out_total;
 
     /* The "Selected Accounts" list the Scheme page prints above the table:
      * every selected account at or above the display depth, with the
@@ -3626,6 +3661,263 @@ cash_flow (Account* root, const CashFlowOptions& options)
               "total-number-cell"},
     });
 
+    return report;
+}
+
+/* -------------------------------------------------- cash flow barchart */
+
+const char*
+interval_step_name (IntervalStep step)
+{
+    switch (step)
+    {
+    case IntervalStep::Day:      return "day";
+    case IntervalStep::Week:     return "week";
+    case IntervalStep::TwoWeeks: return "two-weeks";
+    case IntervalStep::Month:    return "month";
+    case IntervalStep::Quarter:  return "quarter";
+    case IntervalStep::HalfYear: return "half-year";
+    case IntervalStep::Year:     return "year";
+    }
+    return "";
+}
+
+bool
+interval_step_from_name (const std::string& name, IntervalStep& step)
+{
+    for (const IntervalStep candidate :
+         {IntervalStep::Day, IntervalStep::Week, IntervalStep::TwoWeeks,
+          IntervalStep::Month, IntervalStep::Quarter, IntervalStep::HalfYear,
+          IntervalStep::Year})
+    {
+        if (name == interval_step_name (candidate))
+        {
+            step = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+namespace
+{
+
+/* gnc:make-date-interval-list(): from `start` to `end`, in steps, each
+ * interval ending one second before the next boundary except the last, which
+ * is clamped to `end`.  The month steps count from the start date, so a
+ * month-end start keeps every boundary a month end; every boundary keeps the
+ * start's wall-clock time.  An interval list needs start < end; the Scheme
+ * function returns an empty list otherwise. */
+std::vector<std::pair<time64, time64>>
+make_date_intervals (time64 start, time64 end, IntervalStep step)
+{
+    std::vector<std::pair<time64, time64>> intervals;
+    if (end < start)
+        std::swap (start, end);
+    if (start >= end)
+        return intervals;
+
+    const GDate start_date = time64_to_gdate (start);
+    struct tm clock;
+    gnc_localtime_r (&start, &clock);
+    auto at = [&clock] (const GDate& date)
+    {
+        struct tm target = clock;
+        target.tm_year = g_date_get_year (&date) - 1900;
+        target.tm_mon = g_date_get_month (&date) - 1;
+        target.tm_mday = g_date_get_day (&date);
+        target.tm_isdst = -1;
+        return gnc_mktime (&target);
+    };
+
+    int months = 0;
+    int days = 0;
+    switch (step)
+    {
+    case IntervalStep::Day:      days = 1;   break;
+    case IntervalStep::Week:     days = 7;   break;
+    case IntervalStep::TwoWeeks: days = 14;  break;
+    case IntervalStep::Month:    months = 1; break;
+    case IntervalStep::Quarter:  months = 3; break;
+    case IntervalStep::HalfYear: months = 6; break;
+    case IntervalStep::Year:     months = 12; break;
+    }
+
+    for (int index = 0; ; ++index)
+    {
+        time64 from = 0;
+        time64 next = 0;
+        if (months > 0)
+        {
+            from = at (add_months (start_date, months * index));
+            next = at (add_months (start_date, months * (index + 1)));
+        }
+        else
+        {
+            GDate date = start_date;
+            g_date_add_days (&date, days * index);
+            from = at (date);
+            GDate next_date = start_date;
+            g_date_add_days (&next_date, days * (index + 1));
+            next = at (next_date);
+        }
+
+        if (from >= end)
+            break;
+        intervals.push_back ({from, next < end ? next - 1 : end});
+        if (next >= end)
+            break;
+    }
+    return intervals;
+}
+
+} // namespace
+
+CashFlowBarchartReport
+cash_flow_barchart (Account* root, const CashFlowBarchartOptions& options)
+{
+    CashFlowBarchartReport report;
+    gnc_commodity* report_cur = report_currency (root, options.currency);
+
+    std::vector<Account*> accounts =
+        cash_flow_selection (root, options.accounts);
+    if (accounts.empty ())
+    {
+        report.no_accounts = true;
+        return report;
+    }
+
+    /* The Scheme date-interval option is asked for start/end of day. */
+    const time64 start =
+        gnc_time64_get_day_start (options.start.value_or (default_start_date ()));
+    const time64 end =
+        gnc_time64_get_day_end (options.end.value_or (default_end_date ()));
+
+    report.title = "Cash Flow Barchart";
+    if (start < end)
+        report.title += " " + print_interval (start, end);
+
+    QofBook* book = gnc_account_get_book (root);
+    GNCPriceDB* db = book != nullptr ? gnc_pricedb_get_db (book) : nullptr;
+
+    struct Period
+    {
+        time64 start = 0;
+        gnc_numeric in = gnc_numeric_zero ();
+        gnc_numeric out = gnc_numeric_zero ();
+        gnc_numeric net = gnc_numeric_zero ();
+    };
+    std::vector<Period> periods;
+    bool any_nonzero = false;
+    for (const auto& interval : make_date_intervals (start, end, options.step))
+    {
+        const CashFlowFlows flows =
+            cash_flow_flows (accounts, interval.first, interval.second,
+                             options.include_trading, report_cur, db);
+        Period period;
+        period.start = interval.first;
+        period.in = flows.money_in_total;
+        period.out = flows.money_out_total;
+        period.net = numeric_add (period.in, gnc_numeric_neg (period.out));
+        if (!gnc_numeric_zero_p (period.in) ||
+            !gnc_numeric_zero_p (period.out) ||
+            !gnc_numeric_zero_p (period.net))
+            any_nonzero = true;
+        periods.push_back (std::move (period));
+    }
+
+    /* gnc:html-make-empty-data-warning(): the report draws no chart and no
+     * table when every series is zero, which is the Scheme "no data" page. */
+    if (!any_nonzero)
+    {
+        report.no_data = true;
+        return report;
+    }
+
+    const std::vector<time64> boundaries = [&]
+    {
+        std::vector<time64> dates;
+        for (const Period& period : periods)
+            dates.push_back (period.start);
+        return dates;
+    } ();
+
+    Chart chart;
+    chart.type = ChartType::Bar;
+    chart.title = report.title;
+    for (const time64 when : boundaries)
+        chart.labels.push_back (print_date (when));
+    if (options.show_in)
+    {
+        ChartSeries series;
+        series.label = "Money In";
+        for (const Period& period : periods)
+            series.values.push_back (period.in);
+        chart.series.push_back (std::move (series));
+    }
+    if (options.show_out)
+    {
+        ChartSeries series;
+        series.label = "Money Out";
+        for (const Period& period : periods)
+            series.values.push_back (period.out);
+        chart.series.push_back (std::move (series));
+    }
+    if (options.show_net)
+    {
+        ChartSeries series;
+        series.label = "Net Flow";
+        for (const Period& period : periods)
+            series.values.push_back (period.net);
+        chart.series.push_back (std::move (series));
+    }
+
+    report.table.currency = report_cur;
+    if (options.show_table)
+    {
+        /* The "Overview:" table the Scheme report prints when "Show Table"
+         * is on: the date each interval starts, then the same series the
+         * chart plots, then a Total row over every interval. */
+        report.table.row_heading = "Date";
+        if (options.show_in)
+            report.table.column_headings.push_back ("Money In");
+        if (options.show_out)
+            report.table.column_headings.push_back ("Money Out");
+        if (options.show_net)
+            report.table.column_headings.push_back ("Net Flow");
+
+        gnc_numeric total_in = gnc_numeric_zero ();
+        gnc_numeric total_out = gnc_numeric_zero ();
+        gnc_numeric total_net = gnc_numeric_zero ();
+        for (const Period& period : periods)
+        {
+            Row row;
+            row.type = RowType::Account;
+            row.label = print_date (period.start);
+            if (options.show_in)
+                row.values.push_back (period.in);
+            if (options.show_out)
+                row.values.push_back (period.out);
+            if (options.show_net)
+                row.values.push_back (period.net);
+            report.table.rows.push_back (std::move (row));
+            total_in = numeric_add (total_in, period.in);
+            total_out = numeric_add (total_out, period.out);
+            total_net = numeric_add (total_net, period.net);
+        }
+
+        Row total;
+        total.type = RowType::Total;
+        total.label = "Total";
+        if (options.show_in)
+            total.values.push_back (total_in);
+        if (options.show_out)
+            total.values.push_back (total_out);
+        if (options.show_net)
+            total.values.push_back (total_net);
+        report.table.rows.push_back (std::move (total));
+    }
+    report.table.chart = std::move (chart);
     return report;
 }
 
@@ -8717,6 +9009,7 @@ native_report_names ()
             "Australian Tax Invoice", "Tax Schedule Report/TXF Export",
             "Customer Report", "Vendor Report", "Employee Report",
             "Job Report", "Customer Summary", "Cash Flow",
+            "Cash Flow Barchart",
             "Income and GST Statement"};
 }
 
@@ -9707,6 +10000,67 @@ report_options (const std::string& name)
         options.push_back (depth);
         return options;
     }
+    else if (name == "Cash Flow Barchart")
+    {
+        /* cashflow-barchart.scm's option page: the General page's date
+         * interval, step size, report currency and price source, the
+         * Accounts page's selection and trading-account switch, and the
+         * Display page's three series switches and the table switch.  The
+         * price source is not published for the same reason the Cash Flow
+         * report does not: the native conversion is the Scheme option's
+         * default (pricedb-nearest), so there is nothing left to choose. */
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the period the chart covers; the first bar's "
+            "interval starts here.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the period the chart covers; the last bar's "
+            "interval ends here.",
+            default_end_date ()));
+        options.push_back (currency_option ());
+        options.push_back (accounts_option ());
+
+        OptionDescriptor step;
+        step.name = "step-size";
+        step.type = OptionType::Choice;
+        step.label = "Step Size";
+        step.description =
+            "The amount of time between data points, i.e. one bar per step.";
+        step.default_value = interval_step_name (IntervalStep::Month);
+        for (const IntervalStep candidate :
+             {IntervalStep::Day, IntervalStep::Week, IntervalStep::TwoWeeks,
+              IntervalStep::Month, IntervalStep::Quarter,
+              IntervalStep::HalfYear, IntervalStep::Year})
+            step.choices.push_back (interval_step_name (candidate));
+        options.push_back (step);
+
+        struct Switch
+        {
+            const char* name;
+            const char* label;
+            const char* description;
+            bool default_value;
+        };
+        static const Switch switches[] = {
+            {"show-in", "Show Money In", "Plot the money-in series.", true},
+            {"show-out", "Show Money Out", "Plot the money-out series.", true},
+            {"show-net", "Show Net Flow", "Plot the net-flow series.", true},
+            {"show-table", "Show Table",
+             "Print the interval table below the chart.", false},
+            {"include-trading", "Include Trading Accounts in report",
+             "Count the counterpart splits that sit in a trading account.",
+             false},
+        };
+        for (const Switch& item : switches)
+        {
+            options.push_back (switch_option (item.name, item.label,
+                                              item.description,
+                                              item.default_value));
+        }
+        return options;
+    }
     else if (name == "Income and GST Statement")
     {
         /* income-gst-statement.scm's option page.  Its dates default to the
@@ -10683,6 +11037,38 @@ render_report (const std::string& name, Account* root,
             html = render_no_accounts ("Cash Flow", false);
         else
             html = render_cell_table (report.table, report.title);
+        return true;
+    }
+    if (name == "Cash Flow Barchart")
+    {
+        CashFlowBarchartOptions options;
+        options.start = start;
+        options.end = end;
+        options.accounts = request.accounts;
+        options.currency = request.currency;
+        options.step = IntervalStep::Month;
+        const std::string step_name =
+            request.choice_option ("step-size", "month");
+        IntervalStep step = IntervalStep::Month;
+        if (interval_step_from_name (step_name, step))
+            options.step = step;
+        options.show_in = request.boolean_option ("show-in", true);
+        options.show_out = request.boolean_option ("show-out", true);
+        options.show_net = request.boolean_option ("show-net", true);
+        options.show_table = request.boolean_option ("show-table", false);
+        options.include_trading =
+            request.boolean_option ("include-trading", false);
+
+        CashFlowBarchartReport report = cash_flow_barchart (root, options);
+        if (report.no_accounts)
+            html = render_no_accounts ("Cash Flow Barchart", false);
+        else if (report.no_data)
+            html = render_warning (
+                "Cash Flow Barchart", "",
+                "The selected accounts contain no data/transactions (or only "
+                "zeroes) for the selected time period");
+        else
+            html = render_html (report.table, report.title);
         return true;
     }
     if (name == "Income and GST Statement")

@@ -1113,6 +1113,74 @@ struct CashFlowReport
 
 CashFlowReport cash_flow (Account* root, const CashFlowOptions& options);
 
+/* -------------------------------------------------- cash flow barchart */
+
+/** The "Step Size" the date-interval reports offer: one day, week, two
+ *  weeks, month, quarter, half year or year.  A month step counts from the
+ *  start date and keeps a month-end start on month ends, which is what the
+ *  Scheme engine's incdate-months() does. */
+enum class IntervalStep
+{
+    Day,
+    Week,
+    TwoWeeks,
+    Month,
+    Quarter,
+    HalfYear,
+    Year,
+};
+
+/** The route's name for a step: "day", "week", "two-weeks", "month",
+ *  "quarter", "half-year", "year". */
+const char* interval_step_name (IntervalStep step);
+
+/** Resolve a step name.  False for a name outside the vocabulary. */
+bool interval_step_from_name (const std::string& name, IntervalStep& step);
+
+/** The Cash Flow Barchart's options, as cashflow-barchart.scm's page defines
+ *  them.  The account selection, report currency and trading-account switch
+ *  are the Cash Flow report's; the period is the General page's date interval
+ *  and step size; the display page holds the three series switches and the
+ *  table switch. */
+struct CashFlowBarchartOptions
+{
+    std::optional<time64> start;
+    std::optional<time64> end;
+    /** Empty means the report's default selection: every bank, cash, asset,
+     *  stock and mutual fund account below the root. */
+    std::vector<Account*> accounts;
+    gnc_commodity* currency = nullptr;
+    /** "Step Size", default one month. */
+    IntervalStep step = IntervalStep::Month;
+    bool show_in = true;
+    bool show_out = true;
+    bool show_net = true;
+    bool show_table = false;
+    bool include_trading = false;
+};
+
+struct CashFlowBarchartReport
+{
+    /** The period rows (only when "Show Table" is on) and the bar chart. */
+    Table table;
+    std::string title;
+    /** No account in the selection: the Scheme "No accounts selected" page. */
+    bool no_accounts = false;
+    /** Every plotted series is zero over the whole period: the Scheme
+     *  "no data" warning, with neither chart nor table. */
+    bool no_data = false;
+};
+
+/** The Cash Flow Barchart ("Cash Flow Barchart",
+ *  cashflow-barchart.scm): the same money-in/money-out classification as the
+ *  Cash Flow report, run once per date interval, and plotted as a bar chart
+ *  of Money In, Money Out and Net Flow.  The series are only the ones the
+ *  display switches ask for; the totals and the chart are computed from every
+ *  interval, exactly as the Scheme renderer computes all three lists before
+ *  it decides which to plot. */
+CashFlowBarchartReport cash_flow_barchart (
+    Account* root, const CashFlowBarchartOptions& options);
+
 /* ------------------------------------------------------- GST statement */
 
 /** The Income and GST Statement's options.  The Scheme report is a

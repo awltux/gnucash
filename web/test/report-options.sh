@@ -1024,6 +1024,90 @@ rm -f "$CF_PAGE"
 expect_status 200 "include-trading on the Cash Flow report" \
     "/report/Cash%20Flow?start=2018-01-01&end=2018-12-31&include-trading=true"
 
+# The Cash Flow Barchart is the Cash Flow classification run once per date
+# interval and plotted.  Its descriptor publishes the date interval, the step
+# size, the account selection and the three series switches; the price source
+# is not published for the same reason the Cash Flow report does not publish
+# it (the native conversion is the Scheme default).
+expect_status 200 "Cash Flow Barchart options" \
+    "/api/report/Cash%20Flow%20Barchart/options"
+expect_body "Cash Flow Barchart options" '"report":"Cash Flow Barchart"'
+expect_body "Cash Flow Barchart options" '"name":"start"'
+expect_body "Cash Flow Barchart options" '"name":"end"'
+expect_body "Cash Flow Barchart options" '"name":"currency"'
+expect_body "Cash Flow Barchart options" '"name":"accounts"'
+expect_body "Cash Flow Barchart options" '"name":"step-size"'
+expect_body "Cash Flow Barchart options" \
+    '"choices":["day","week","two-weeks","month","quarter","half-year","year"]'
+expect_body "Cash Flow Barchart options" '"default":"month"'
+expect_body "Cash Flow Barchart options" '"name":"show-in"'
+expect_body "Cash Flow Barchart options" '"name":"show-out"'
+expect_body "Cash Flow Barchart options" '"name":"show-net"'
+expect_body "Cash Flow Barchart options" '"name":"show-table"'
+expect_body "Cash Flow Barchart options" '"name":"include-trading"'
+expect_not_body "Cash Flow Barchart has no period preset" '"name":"period"'
+expect_status 400 "unknown step size on the Cash Flow Barchart" \
+    "/report/Cash%20Flow%20Barchart?step-size=fortnight"
+expect_body "unknown step size on the Cash Flow Barchart" \
+    "invalid step-size 'fortnight'"
+expect_status 400 "period on the Cash Flow Barchart" \
+    "/report/Cash%20Flow%20Barchart?period=all"
+expect_body "period on the Cash Flow Barchart" \
+    "does not accept a 'period' option"
+
+# chart_labels <file>: the number of labels in the report-chart-data block.
+chart_labels() {
+    python3 - "$1" <<'PY'
+import json
+import re
+import sys
+
+raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+match = re.search(
+    r"<script type='application/json' id='report-chart-data'>(.*?)</script>",
+    raw, re.S)
+print(len(json.loads(match.group(1))["labels"]) if match else 0)
+PY
+}
+
+# Its date interval defaults to the accounting period, so this book's 2018
+# activity is outside the default page: that page is the report's "no data"
+# warning, with neither chart nor table.  With the 2018 period there is one
+# bar per month, and the step-size, series and table switches change the page.
+fetch "/report/Cash%20Flow%20Barchart" > /dev/null
+expect_body "Cash Flow Barchart default page" \
+    "The selected accounts contain no data/transactions"
+CB_QUERY="start=2018-01-01&end=2018-12-31"
+fetch "/report/Cash%20Flow%20Barchart?$CB_QUERY" > /dev/null
+expect_body "Cash Flow Barchart 2018" "report-chart-data"
+expect_body "Cash Flow Barchart 2018" '"label":"Money In"'
+expect_body "Cash Flow Barchart 2018" '"label":"Money Out"'
+expect_body "Cash Flow Barchart 2018" '"label":"Net Flow"'
+[ "$(chart_labels "$BODY")" = "12" ] \
+    && ok "Cash Flow Barchart 2018 has one bar per month" \
+    || bad "Cash Flow Barchart 2018 has $(chart_labels "$BODY") labels, expected 12"
+CB_PAGE="$TMP/cb-page.html"
+cp "$BODY" "$CB_PAGE"
+fetch "/report/Cash%20Flow%20Barchart?$CB_QUERY&step-size=quarter" > /dev/null
+[ "$(chart_labels "$BODY")" = "4" ] \
+    && ok "Cash Flow Barchart step-size=quarter gives one bar per quarter" \
+    || bad "Cash Flow Barchart step-size=quarter has $(chart_labels "$BODY") labels, expected 4"
+fetch "/report/Cash%20Flow%20Barchart?$CB_QUERY&show-in=false" > /dev/null
+if cmp -s "$CB_PAGE" "$BODY"; then
+    bad "Cash Flow Barchart show-in=false does not change the page"
+elif grep -q '"label":"Money In"' "$BODY"; then
+    bad "Cash Flow Barchart show-in=false still plots the money-in series"
+else
+    ok "Cash Flow Barchart show-in=false drops the money-in series"
+fi
+fetch "/report/Cash%20Flow%20Barchart?$CB_QUERY&show-table=true" > /dev/null
+expect_body "Cash Flow Barchart show-table=true" "<th class='total-label-cell'>Date</th>"
+expect_body "Cash Flow Barchart show-table=true" "<th class='total-label-cell'>Money In</th>"
+# Accepted, and a no-op only because this book has no trading account.
+expect_status 200 "include-trading on the Cash Flow Barchart" \
+    "/report/Cash%20Flow%20Barchart?$CB_QUERY&include-trading=true"
+rm -f "$CB_PAGE"
+
 # The Income and GST Statement is a trep-engine listing with calculated
 # columns: one row per transaction and one column per heading.  Its period
 # defaults to the previous calendar quarter, not the accounting period.
@@ -1185,6 +1269,13 @@ PY
             # 2018 activity is outside every generic probe's comparison.  The
             # report's own section above checks the switches on 2018, and
             # report-parity.sh compares the page with the Scheme report.
+            ok "$report's period defaults away from this book's activity; its switches are checked above"
+            continue ;;
+        "Cash Flow Barchart")
+            # Same case as the Cash Flow report: the default period is the
+            # accounting period, not this book's 2018 activity, so every
+            # generic probe would compare the "no data" page.  Its own section
+            # above checks the interval, step size, series and table switches.
             ok "$report's period defaults away from this book's activity; its switches are checked above"
             continue ;;
         "Income and GST Statement")
