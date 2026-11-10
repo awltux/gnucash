@@ -8712,7 +8712,8 @@ native_report_names ()
             "IFRS weighted-average cost basis report",
             "Budget Report", "Budget Income Statement",
             "Budget Profit & Loss", "Budget Balance Sheet", "Budget Flow",
-            "Printable Invoice", "Receipt", "Tax Invoice",
+            "Printable Invoice", "Easy Invoice", "Fancy Invoice", "Receipt",
+            "Tax Invoice",
             "Australian Tax Invoice", "Tax Schedule Report/TXF Export",
             "Customer Report", "Vendor Report", "Employee Report",
             "Job Report", "Customer Summary", "Cash Flow",
@@ -9104,16 +9105,17 @@ report_options (const std::string& name)
         return options;
     }
 
-    if (name == "Printable Invoice")
+    InvoiceLayout invoice_layout;
+    if (invoice_layout_from_name (name, invoice_layout))
     {
-        /* The "Printable Invoice" layout, the base of the three Scheme
-         * invoice variants.  The Scheme option pages this maps are the
-         * invoice selector ("Invoice Number"), the custom title, the nine
-         * display columns and the print switches.  The layout-row, CSS,
-         * picture, payable-to/company-contact, extra-notes, minimum-entries,
-         * detailed-tax-summary, references and job-details options are not
-         * reproduced: the native document has one fixed layout, and the
-         * model has no reference or job fields to print. */
+        /* The three Scheme invoice documents: one renderer, one option
+         * generator, two variant defaults.  "Printable Invoice", "Easy
+         * Invoice" and "Fancy Invoice" publish the same option surface --
+         * invoice.scm's General, Layout, Display Columns and Display pages --
+         * and differ only in the default CSS text and the third row's right
+         * slot (the print date, which the Fancy Invoice leaves empty).  The
+         * descriptors carry those two variant defaults, so the API shows what
+         * each report actually prints. */
         OptionDescriptor invoice;
         invoice.name = "invoice";
         invoice.type = OptionType::Invoice;
@@ -9132,6 +9134,76 @@ report_options (const std::string& name)
             "A custom string to replace Invoice, Bill or Expense Voucher.";
         title.default_value = "";
         options.push_back (title);
+
+        OptionDescriptor css;
+        css.name = "css";
+        css.type = OptionType::Text;
+        css.label = "CSS";
+        css.description =
+            "The stylesheet printed with the document.  The default is this "
+            "layout's own: the shared invoice rules, plus the rules the Easy "
+            "and Fancy variants add.";
+        css.default_value = invoice_default_css (invoice_layout);
+        options.push_back (css);
+
+        OptionDescriptor picture;
+        picture.name = "picture";
+        picture.type = OptionType::Text;
+        picture.label = "Picture Location";
+        picture.description =
+            "The image printed in a header slot set to \"picture\".  A "
+            "relative path is taken as a file on the server, and the document "
+            "prints it as a file URL.  Empty prints no image, which is the "
+            "Scheme default.";
+        picture.default_value = "";
+        options.push_back (picture);
+
+        for (int row = 1; row <= 3; ++row)
+        {
+            for (const bool right : {false, true})
+            {
+                const std::string slot_name =
+                    std::string ("row") + std::to_string (row) +
+                    (right ? "_right" : "_left");
+                OptionDescriptor row_option;
+                row_option.name = slot_name;
+                row_option.type = OptionType::Choice;
+                row_option.label = "Row " + std::to_string (row) +
+                                   (right ? " Right" : " Left");
+                row_option.description =
+                    "What the " + std::to_string (row) + " row's " +
+                    (right ? "right" : "left") +
+                    " slot prints: none, the client or company table, the "
+                    "invoice details, the print date, or the picture.  The "
+                    "default is the layout's own.";
+                for (const InvoiceSlot choice :
+                     {InvoiceSlot::Empty, InvoiceSlot::Client,
+                      InvoiceSlot::Company, InvoiceSlot::Details,
+                      InvoiceSlot::Today, InvoiceSlot::Picture})
+                    row_option.choices.push_back (invoice_slot_name (choice));
+                InvoiceSlot fallback = InvoiceSlot::Empty;
+                invoice_default_slot (invoice_layout, row, right, fallback);
+                /* The default a caller sees: the layout's own slot.  The
+                 * renderer accepts "default" as well and resolves it the same
+                 * way; it is not advertised, so the choices stay the six the
+                 * Scheme option offers. */
+                row_option.default_value =
+                    invoice_slot_name (fallback);
+                options.push_back (row_option);
+            }
+        }
+
+        OptionDescriptor minimum;
+        minimum.name = "minimum_entries";
+        minimum.type = OptionType::Number;
+        minimum.label = "Minimum # of entries";
+        minimum.description =
+            "The minimum number of invoice entries to display.  The entry "
+            "table is padded with blank rows up to this many.";
+        minimum.default_value = "1";
+        minimum.minimum = 0;
+        minimum.maximum = 23;
+        options.push_back (minimum);
 
         struct ColumnOption
         {
@@ -9183,6 +9255,25 @@ report_options (const std::string& name)
              "Display the payments applied to this invoice?  A document with "
              "no payments has nothing to show, so the option has no effect "
              "there.", true},
+            {"show_references", "References",
+             "Display the invoice references?  A document whose entries "
+             "belong to no order has no reference to print, so the option has "
+             "no effect there.", true},
+            {"show_detailed_tax", "Use Detailed Tax Summary",
+             "Display all tax categories separately (one per line) instead of "
+             "one single tax line?", false},
+            {"show_job_details", "Job Details",
+             "Display the job name and number for this invoice?  A document "
+             "with no job has nothing to show, so the option has no effect "
+             "there.", false},
+            {"show_payable_to", "Payable to",
+             "Display the Payable to: information.  A book with no company "
+             "name has nothing to print, so the option has no effect there.",
+             false},
+            {"show_company_contact", "Company contact",
+             "Display the Company contact information.  A book with no "
+             "company contact person has nothing to print, so the option has "
+             "no effect there.", false},
         };
         for (const ColumnOption& display : displays)
         {
@@ -9192,6 +9283,40 @@ report_options (const std::string& name)
             option.label = display.label;
             option.description = display.description;
             option.default_value = display.default_value ? "true" : "false";
+            options.push_back (option);
+        }
+
+        struct TextOption
+        {
+            const char* name;
+            const char* label;
+            const char* description;
+            const char* default_value;
+        };
+        static const TextOption texts[] = {
+            {"payable_to_string", "Payable to string",
+             "The phrase for specifying to whom payments should be made.  A "
+             "book with no company name prints no Payable to row, so the "
+             "phrase has no effect there.",
+             "Please make all checks payable to"},
+            {"company_contact_string", "Company contact string",
+             "The phrase used to introduce the company contact.  A book with "
+             "no company contact person prints no such row, so the phrase has "
+             "no effect there.",
+             "Please direct all enquiries to"},
+            {"extra_notes", "Extra Notes",
+             "Extra notes to put on the invoice; printed at the foot of every "
+             "layout.",
+             "Thank you for your patronage!"},
+        };
+        for (const TextOption& text : texts)
+        {
+            OptionDescriptor option;
+            option.name = text.name;
+            option.type = OptionType::Text;
+            option.label = text.label;
+            option.description = text.description;
+            option.default_value = text.default_value;
             options.push_back (option);
         }
         return options;
@@ -10295,7 +10420,8 @@ render_report (const std::string& name, Account* root,
         return true;
     }
 
-    if (name == "Printable Invoice")
+    InvoiceLayout invoice_layout;
+    if (invoice_layout_from_name (name, invoice_layout))
     {
         /* The Scheme report prints its warning when the "Invoice Number"
          * option is empty, and there is no invoice to print.  A selected
@@ -10314,7 +10440,30 @@ render_report (const std::string& name, Account* root,
             html = render_invoice_not_selected ();
             return true;
         }
-        html = render_printable_invoice (document, request.invoice_options);
+        /* The layout page's text, choice and number options arrive by
+         * descriptor name; apply them over the request's option set before
+         * rendering.  The variant itself comes from the report name, and each
+         * variant is its own entry point (the three Scheme registrations share
+         * one renderer there too). */
+        InvoicePrintOptions options = request.invoice_options;
+        options.layout = invoice_layout;
+        for (const auto& text : request.texts)
+            set_invoice_print_value (options, text.first, text.second);
+        for (const auto& choice : request.choices)
+            set_invoice_print_value (options, choice.first, choice.second);
+        switch (invoice_layout)
+        {
+        case InvoiceLayout::Easy:
+            html = render_easy_invoice (document, options);
+            break;
+        case InvoiceLayout::Fancy:
+            html = render_fancy_invoice (document, options);
+            break;
+        case InvoiceLayout::Printable:
+        default:
+            html = render_printable_invoice (document, options);
+            break;
+        }
         return true;
     }
 

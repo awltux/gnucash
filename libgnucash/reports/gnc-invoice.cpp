@@ -11,6 +11,7 @@
 #include <config.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -36,6 +37,7 @@ extern "C"
 #include <gncEntry.h>
 #include <gncInvoice.h>
 #include <gncJob.h>
+#include <gncOrder.h>
 #include <gncOwner.h>
 #include <gncTaxTable.h>
 #include <gncVendor.h>
@@ -118,21 +120,29 @@ document_owner (const GncOwner* owner)
     return result;
 }
 
-/* The book's Business options, the source of the Scheme "company table".
- * gnc:company-info reads the same KVP path. */
+/* The book's option frames, the source of the Scheme "company table".
+ * gnc:company-info and gnc:book-get-option-value read the same KVP path;
+ * qof_book_get_option prepends the "options" frame itself. */
 std::string
-business_option (QofBook* book, const char* key)
+book_option (QofBook* book, const char* section, const char* key)
 {
     if (book == nullptr)
         return {};
     GSList tail{const_cast<gpointer> (static_cast<const void*> (key)), nullptr};
-    GSList head{const_cast<gpointer> (static_cast<const void*> ("Business")),
+    GSList head{const_cast<gpointer> (static_cast<const void*> (section)),
                 &tail};
     KvpValue* value = qof_book_get_option (book, &head);
     if (value == nullptr)
         return {};
     const char* text = value->get<const char*> ();
     return text_or_empty (text);
+}
+
+/* The Business page, which is where gnc:company-info reads. */
+std::string
+business_option (QofBook* book, const char* key)
+{
+    return book_option (book, "Business", key);
 }
 
 /* Split a company address option into the address lines the document
@@ -172,6 +182,9 @@ company_owner (QofBook* book)
     company.address.phone = business_option (book, "Company Phone Number");
     company.address.fax = business_option (book, "Company Fax Number");
     company.address.email = business_option (book, "Company Email Address");
+    /* The company table's company-tax-nr row: the book's tax number, which
+     * lives on the Tax page rather than the Business page. */
+    company.tax_number = book_option (book, "Tax", "Tax Number");
     return company;
 }
 
@@ -400,6 +413,187 @@ document_kind_name (DocumentKind kind)
     }
 }
 
+/* ------------------------------------------------- the invoice.layout page */
+
+bool
+invoice_layout_from_name (const std::string& name, InvoiceLayout& layout)
+{
+    if (name == "Printable Invoice")
+        layout = InvoiceLayout::Printable;
+    else if (name == "Easy Invoice")
+        layout = InvoiceLayout::Easy;
+    else if (name == "Fancy Invoice")
+        layout = InvoiceLayout::Fancy;
+    else
+        return false;
+    return true;
+}
+
+bool
+invoice_default_slot (InvoiceLayout layout, int row, bool right,
+                      InvoiceSlot& slot)
+{
+    /* variant-list in invoice.scm: (1a none) (1b invoice) (2a client)
+     * (2b company) (3a none) (3b today), and the Fancy variant alone sets
+     * 3b to none -- it prints no date at all. */
+    switch (row)
+    {
+    case 1:
+        slot = right ? InvoiceSlot::Details : InvoiceSlot::Empty;
+        return true;
+    case 2:
+        slot = right ? InvoiceSlot::Company : InvoiceSlot::Client;
+        return true;
+    case 3:
+        slot = right ? (layout == InvoiceLayout::Fancy ? InvoiceSlot::Empty
+                                                       : InvoiceSlot::Today)
+                     : InvoiceSlot::Empty;
+        return true;
+    default:
+        return false;
+    }
+}
+
+const char*
+invoice_slot_name (InvoiceSlot slot)
+{
+    switch (slot)
+    {
+    case InvoiceSlot::Empty:   return "none";
+    case InvoiceSlot::Client:  return "client";
+    case InvoiceSlot::Company: return "company";
+    case InvoiceSlot::Details: return "invoice";
+    case InvoiceSlot::Today:   return "today";
+    case InvoiceSlot::Picture: return "picture";
+    case InvoiceSlot::Default:
+    default:                   return "default";
+    }
+}
+
+bool
+invoice_slot_from_name (const std::string& name, InvoiceSlot& slot)
+{
+    if (name == "none" || name.empty ()) slot = InvoiceSlot::Empty;
+    else if (name == "client")           slot = InvoiceSlot::Client;
+    else if (name == "company")          slot = InvoiceSlot::Company;
+    else if (name == "invoice")          slot = InvoiceSlot::Details;
+    else if (name == "today")            slot = InvoiceSlot::Today;
+    else if (name == "picture")          slot = InvoiceSlot::Picture;
+    else if (name == "default")          slot = InvoiceSlot::Default;
+    else
+        return false;
+    return true;
+}
+
+std::string
+invoice_default_css (InvoiceLayout layout)
+{
+    /* invoice.scm's base-css, then the rules each variant appends to it.
+     * The result is the Scheme option's default value, so a document rendered
+     * with no CSS parameter carries exactly the Scheme stylesheet. */
+    const std::string base =
+        "/* advanced users only */\n"
+        ".div-align-right { float: right; }\n"
+        ".div-align-right .maybe-align-right { text-align: right }\n"
+        ".entries-table * { border-width: 1px; border-style:solid; "
+        "border-collapse: collapse}\n"
+        ".entries-table > table { width: 100% }\n"
+        ".company-table > table * { padding: 0px; }\n"
+        ".client-table > table * { padding: 0px; }\n"
+        ".invoice-details-table > table * { padding: 0px; text-indent: "
+        "0.2em; }\n"
+        "@media print { .main-table > table { width: 100%; }}\n";
+
+    switch (layout)
+    {
+    case InvoiceLayout::Easy:
+        return base +
+               "\n"
+               ".invoice-in-progress { color:red }\n"
+               ".invoice-title { font-weight: bold; text-decoration: "
+               "underline }\n"
+               ".main-table > table { margin: auto }\n"
+               ".invoice-details-table > table { display: block; }\n"
+               ".invoice-notes { margin-top: 20px }\n"
+               ".entries-table > table { min-width: 600px }";
+    case InvoiceLayout::Fancy:
+        return base +
+               "\n.company-name {font-size: x-large; }\n"
+               ".client-name {font-size: x-large; }";
+    case InvoiceLayout::Printable:
+    default:
+        return base;
+    }
+}
+
+bool
+set_invoice_print_option (InvoicePrintOptions& options,
+                          const std::string& name, bool value)
+{
+    if (name == "show_date")         options.show_date = value;
+    else if (name == "show_description") options.show_description = value;
+    else if (name == "show_action")  options.show_action = value;
+    else if (name == "show_quantity") options.show_quantity = value;
+    else if (name == "show_price")   options.show_price = value;
+    else if (name == "show_discount") options.show_discount = value;
+    else if (name == "show_taxable") options.show_taxable = value;
+    else if (name == "show_tax_amount") options.show_tax_amount = value;
+    else if (name == "show_total")   options.show_total = value;
+    else if (name == "show_due_date") options.show_due_date = value;
+    else if (name == "show_subtotal") options.show_subtotal = value;
+    else if (name == "show_billing_id") options.show_billing_id = value;
+    else if (name == "show_owner_id") options.show_owner_id = value;
+    else if (name == "show_notes")   options.show_notes = value;
+    else if (name == "show_terms")   options.show_terms = value;
+    else if (name == "show_payments") options.show_payments = value;
+    else if (name == "show_references") options.show_references = value;
+    else if (name == "show_detailed_tax") options.show_detailed_tax = value;
+    else if (name == "show_job_details") options.show_job_details = value;
+    else if (name == "show_payable_to") options.show_payable_to = value;
+    else if (name == "show_company_contact")
+        options.show_company_contact = value;
+    else
+        return false;
+    return true;
+}
+
+bool
+set_invoice_print_value (InvoicePrintOptions& options,
+                         const std::string& name, const std::string& value)
+{
+    if (name == "css")                    options.css = value;
+    else if (name == "picture")           options.picture = value;
+    else if (name == "extra_notes")       options.extra_notes = value;
+    else if (name == "payable_to_string") options.payable_to_string = value;
+    else if (name == "company_contact_string")
+        options.company_contact_string = value;
+    else if (name == "minimum_entries")
+    {
+        char* end = nullptr;
+        const long count = std::strtol (value.c_str (), &end, 10);
+        if (end == value.c_str () || *end != '\0' || count < 0 || count > 23)
+            return false;
+        options.minimum_entries = static_cast<int> (count);
+    }
+    else
+    {
+        InvoiceSlot* slot = nullptr;
+        if (name == "row1_left")        slot = &options.row1_left;
+        else if (name == "row1_right")  slot = &options.row1_right;
+        else if (name == "row2_left")   slot = &options.row2_left;
+        else if (name == "row2_right")  slot = &options.row2_right;
+        else if (name == "row3_left")   slot = &options.row3_left;
+        else if (name == "row3_right")  slot = &options.row3_right;
+        if (slot == nullptr)
+            return false;
+        InvoiceSlot parsed;
+        if (!invoice_slot_from_name (value, parsed))
+            return false;
+        *slot = parsed;
+    }
+    return true;
+}
+
 bool
 invoice_document (GncInvoice* invoice, InvoiceDocument& document)
 {
@@ -443,6 +637,28 @@ invoice_document (GncInvoice* invoice, InvoiceDocument& document)
          node = node->next)
         document.entries.push_back (document_line (
             static_cast<GncEntry*> (node->data), customer_doc, credit_note));
+
+    /* invoice.scm's get-orders: fold over the entries, prepending each new
+     * order, then print the non-empty references in that order.  The fold's
+     * reversal is part of the document, so it is reproduced here rather than
+     * sorted away. */
+    std::vector<GncOrder*> orders;
+    for (GList* node = gncInvoiceGetEntries (invoice); node != nullptr;
+         node = node->next)
+    {
+        GncOrder* order =
+            gncEntryGetOrder (static_cast<GncEntry*> (node->data));
+        if (order == nullptr)
+            continue;
+        if (std::find (orders.begin (), orders.end (), order) == orders.end ())
+            orders.insert (orders.begin (), order);
+    }
+    for (const GncOrder* order : orders)
+    {
+        const std::string reference = text_or_empty (gncOrderGetReference (order));
+        if (!reference.empty ())
+            document.references.push_back (reference);
+    }
 
     document.taxes = document_taxes (invoice);
     document.subtotal = gncInvoiceGetTotalSubtotal (invoice);

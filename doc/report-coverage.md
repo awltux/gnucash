@@ -2,38 +2,41 @@
 
 Status: measurement for `doc/report-engine-migration.md`
 Branch: `webui/engine-server`
-Measured at: `0da4be5ca1` (the classification is re-derived; the designer-spec
-section and its counts were corrected when the two net-worth chart names were
-added as built-in specs and the other three spec claims were withdrawn)
+Measured at: the body at `0da4be5ca1`; the addendum at the top and section 14
+carry the current counts (38 native, 4 unported, 0 template)
 Scope: registry enumeration, classification, coverage and cost. No report
-behaviour was changed; the edited files are this one and `web/`.
+behaviour was changed by the measurement itself; the later stages edited
+`libgnucash/reports/`, `web/`, tests and this document.
 
-> **Addendum: the 34-name measurement below is one stage behind.**  The body of
-> this document measures **34 native names**, taken at `0da4be5ca1`.  The
-> following stage (commits through `fe47e67523`) added the three cross-tab
-> statements, and the stage after it closed the last two **logic** names, so
-> the counts to quote are:
+> **Addendum: this is the current measurement.**  The body of this document was
+> first measured at `0da4be5ca1` with **34 native names**; later stages added
+> `Cash Flow`, `Income and GST Statement` and now `Easy Invoice` and
+> `Fancy Invoice`.  The counts to quote are:
 >
-> - **Native: 36 names** (34 + `Cash Flow` + `Income and GST Statement`).
-> - **By name: 36/66 = 54.5% native**; native plus spec (the two net-worth
->   charts) is **38/66 = 57.6%**; native plus spec plus closed (22) is
->   **60/66 = 90.9%** done-or-decided.
-> - **Unported: 6/66 = 9.1%** -- 4 logic (Cash Flow Barchart, Average Balance,
->   Balance Forecast, Future Scheduled Transactions Summary) and 2 template
->   (Easy Invoice, Fancy Invoice).
+> - **Native: 38 names** (34 + `Cash Flow` + `Income and GST Statement` +
+>   `Easy Invoice` + `Fancy Invoice`).
+> - **By name: 38/66 = 57.6% native**; native plus spec (the two net-worth
+>   charts) is **40/66 = 60.6%**; native plus spec plus closed (22) is
+>   **62/66 = 93.9%** done-or-decided.
+> - **Unported: 4/66 = 6.1%** -- all four are logic: Cash Flow Barchart,
+>   Average Balance, Balance Forecast and Future Scheduled Transactions
+>   Summary.  **No template-class name remains**: Easy and Fancy Invoice are
+>   native (section 14), and the only other template name, Balance Sheet
+>   (eguile), is closed.
 > - The per-class tables, the per-report tables and the cost estimates below
->   are the 34-name measurement.  Their deltas are exactly these two names:
->   `Cash Flow` moves from the logic table (section 3.3) to the native list
->   (section 3.1), and `Income and GST Statement` does the same.  Every
->   statement below that names either report as missing (sections 5.1, 5.2 and
->   6.3) is superseded by this addendum.
+>   are the 34-name measurement.  Their deltas are exactly these four names:
+>   `Cash Flow` and `Income and GST Statement` move from the logic table
+>   (section 3.3) to the native list (section 3.1), and `Easy Invoice` and
+>   `Fancy Invoice` move from the template table (section 3.4) to the native
+>   list.  Every statement below that names any of them as missing (sections
+>   3.4, 5.1, 5.2 and 6.3) is superseded by this addendum and by section 14.
 >
-> **How the two names closed.**  Both are ports, not stubs.
+> **How the four names closed.**  Each is a port, not a stub.
 > `Cash Flow` (`standard/cash-flow.scm` plus `cash-flow-calc.scm`) classifies
 > the counterpart splits of the selected accounts into money in and money out
 > and is implemented natively with its Scheme options (dates, report currency,
 > account selection, full names, selected-account list, trading accounts and
-> display depth); the parity harness's new `cash-flow` extractor compares the
+> display depth); the parity harness's `cash-flow` extractor compares the
 > section headings, every account row and the three totals, verbatim, on
 > `sample1` and on `taxreport.gnucash` in both builds (including the 56-row
 > taxreport period run and every display-switch variant).
@@ -44,9 +47,17 @@ behaviour was changed; the edited files are this one and `web/`.
 > the engine's split order), the Date/Num/Description/Memo-Notes columns and
 > every column definition of all three formats (default, Australia BAS, UK
 > VAT, including the *EUVAT*/*EUGOODS* markers) with the six optional-column
-> switches.  The parity harness's new `gst` extractor compares the headings,
+> switches.  The parity harness's `gst` extractor compares the headings,
 > every transaction row and the Grand Total, verbatim, on both fixtures in both
 > builds, on all three formats and with the optional columns enabled.
+> `Easy Invoice` and `Fancy Invoice` are the other two `standard/invoice.scm`
+> registrations.  They are not different documents from the Printable Invoice:
+> all three are `reg-renderer` over one options-generator, and the variant
+> changes only the default CSS text and the "Row 3 Right" slot (the print date,
+> which the Fancy variant leaves empty).  The native layer now renders the one
+> document three ways from one `InvoiceDocument`, with the variant choosing
+> those two defaults, and publishes the invoice report's full option surface
+> (section 14).
 >
 > One defect was fixed on the way, and it is worth recording because it would
 > have undermined every other figure: the Advanced Portfolio's rate of gain and
@@ -82,11 +93,13 @@ behaviour was changed; the edited files are this one and `web/`.
   `55 + 5 + 4 + 2 = 66`.  A build loads **65** because the locale loader picks
   one of the two `taxtxf` reports.  The count is unchanged from the earlier
   measurement; the plan's "63 report definitions" is still stale.
-- **Native: 34 names.**  The six original core reports, the three entry
-  listings, aging and lots, the five budget layouts, the four native documents,
-  the US tax schedule with TXF export, the four valuation/portfolio reports,
-  the five owner reports (four registrations of one owner-history renderer
-  plus Customer Summary), and the three cross-tab statements (the multicolumn
+- **Native: 38 names.**  The six original core reports, the three entry
+  listings, aging and lots, the five budget layouts, the two cash-flow/GST
+  statements, the **six** native documents (Printable, Easy and Fancy
+  Invoice, Receipt, Tax Invoice and Australian Tax Invoice), the US tax
+  schedule with TXF export, the four valuation/portfolio reports, the five
+  owner reports (four registrations of one owner-history renderer plus
+  Customer Summary), and the three cross-tab statements (the multicolumn
   Balance Sheet and Income Statement and the Equity Statement).
 - **Spec: 2 names** are expressible in the designer as it stands today
   (Net Worth Barchart and Net Worth Linechart, as built-in specs).  The other
@@ -94,14 +107,15 @@ behaviour was changed; the edited files are this one and `web/`.
   Summary, Income/Expense Chart and Income & Expense Linechart — are closed
   with the reasons in section 3.5.  The **6 built-in specs** are extra
   reports, not registry names; they are listed separately below and do not
-  change the 34/66 numerator.
-- **Logic: 6 names**, about four engines.  **Template: 2 names** (the two
-  remaining invoice layouts).  **Closed: 22 names**, deliberately out of scope
-  with the reason recorded.
-- **By name: 34/66 = 51.5% native.**  Native plus spec is
-  **36/66 = 54.5%**.  Native plus spec plus closed is **58/66 = 87.9%**
-  done-or-decided; the genuinely unported remainder is **8/66 = 12.1%**
-  (6 logic + 2 template).
+  change the 38/66 numerator.
+- **Logic: 4 names**, about three engines (scheduled transactions, cash-flow
+  barchart, average balance).  **Template: 0 names** — Easy and Fancy Invoice
+  are native, and Balance Sheet (eguile) is closed.  **Closed: 22 names**,
+  deliberately out of scope with the reason recorded.
+- **By name: 38/66 = 57.6% native.**  Native plus spec is
+  **40/66 = 60.6%**.  Native plus spec plus closed is **62/66 = 93.9%**
+  done-or-decided; the genuinely unported remainder is **4/66 = 6.1%**
+  (4 logic, no template).
 - **Accounting core: 6/6 = 100%** on the six names the earlier document called
   the accounting core (Trial Balance, Balance Sheet, Income Statement,
   Profit & Loss, Transaction Report, General Ledger); 7/7 = 100% if the General
@@ -109,15 +123,16 @@ behaviour was changed; the edited files are this one and `web/`.
   statements are added too.  The definition is stated with each number.
 - **Verdict:** the web tier can be Guile-free for a real user, but not for
   every real user.  A small business can run the reporting side of the
-  bookkeeping loop, including owner statements, natively; a business that needs
-  equity/cash-flow/multicolumn statements, GST, portfolios or the two styled
-  invoice layouts cannot.  The unported gap is **weeks (order 2-4 at the
-  observed pace), not months**; full parity including the deliberately closed
-  chart families and ELSTER would be months, because those are new subsystems.
-- **Basis:** counts are derived from sources at `4826c2e262` plus the owner
-  work.  There is no Guile build in this checkout, so the registry is the
-  static one the loader would build, and there is **no telemetry in the tree**,
-  so every usage claim below is an argument from function, not a measurement.
+  bookkeeping loop, including owner statements and all six invoice/receipt
+  documents, natively; a business that needs equity/cash-flow/multicolumn
+  statements, GST or portfolios cannot.  The unported gap is **days (order
+  1-2 at the observed pace), not weeks**; full parity including the
+  deliberately closed chart families and ELSTER would be months, because those
+  are new subsystems.
+- **Basis:** counts are derived from the sources in this checkout, not from a
+  telemetry sample.  The registry is the static one the loader would build,
+  and there is **no telemetry in the tree**, so every usage claim below is an
+  argument from function, not a measurement.
 
 ## 1. How the registry was counted
 
@@ -159,7 +174,7 @@ each register one name, either as a literal (`(N_ "Trial Balance")`) or through
 a file-local `reportname` variable.  A parser that reads every
 `(gnc:define-report ...)` block, resolves the `'name` expression (literal,
 `N_`/`G_`, or file-local define) and expands those three loops returns
-`66` names, none duplicated, and all 34 native names are members of that set.
+`66` names, none duplicated, and all 38 native names are members of that set.
 The exact output is in section 8.
 
 Two names need care, as before:
@@ -185,26 +200,26 @@ Three different numbers are easy to confuse.  They answer different questions:
 | List | Guile build | Guile-free build | What it is |
 |---|---:|---:|---|
 | Scheme registry | 66 (65 loaded) | 0 | Names registered by `gnucash/report/reports/**` |
-| `GET /api/reports` | 69 | 37 | The report list the server actually offers |
-| Native names | 31 | 31 | Names `render_report()` handles without Guile |
+| `GET /api/reports` | 69 | 44 | The report list the server actually offers |
+| Native names | 38 | 38 | Names `render_report()` handles without Guile |
 
 In a Guile build, `/api/reports` enumerates the Scheme templates that build
 actually loaded (`65`, one locale `taxtxf`) and then appends the six built-in
 designer specs, except that the two net-worth names are already in the loaded
 list and the built-in replaces them (`+4 = 69`).  In a Guile-free build it
-enumerates `native_report_names()` (`34`) and appends the same six
-(`+6 = 40`).  The six
+enumerates `native_report_names()` (`38`) and appends the same six
+(`+6 = 44`).  The six
 built-ins are not Scheme names and are not counted in the 66.  A Guile-free
-build therefore offers **40 report-list entries**, but the by-name coverage of
-the Scheme registry is **34/66**, not 40/66.  The "designer with four built-in
+build therefore offers **44 report-list entries**, but the by-name coverage of
+the Scheme registry is **38/66**, not 44/66.  The "designer with four built-in
 chart specs" was the old `+4`; the two net-worth charts now make it `+6`, and
 none of them is an extra registry name.
 
 The 65-name build is not identical across locales: a US build loads `Tax
 Schedule Report/TXF Export` (native), a German build loads `Tax Report / TXF
 Export` (closed).  Both builds have 65 Scheme names; the intersection of the
-native names with the loaded Scheme names is 34 in the US build and 33 in the
-German one.  The Guile-free list is locale-independent: it is always the 34
+native names with the loaded Scheme names is 38 in the US build and 37 in the
+German one.  The Guile-free list is locale-independent: it is always the 38
 native names, including the US schedule, so a German-locale Guile-free build
 still does not offer the German report.
 
@@ -226,19 +241,23 @@ return {"Trial Balance", "Balance Sheet", "Income Statement",
         "IFRS weighted-average cost basis report",
         "Budget Report", "Budget Income Statement",
         "Budget Profit & Loss", "Budget Balance Sheet", "Budget Flow",
-        "Printable Invoice", "Receipt", "Tax Invoice",
+        "Printable Invoice", "Easy Invoice", "Fancy Invoice", "Receipt",
+        "Tax Invoice",
         "Australian Tax Invoice", "Tax Schedule Report/TXF Export",
         "Customer Report", "Vendor Report", "Employee Report",
-        "Job Report", "Customer Summary"};
+        "Job Report", "Customer Summary", "Cash Flow",
+        "Income and GST Statement"};
 ```
 
-That is 34 names in 21 implementations.  Income Statement and Profit & Loss
-share one renderer; the two multicolumn statements share one; Budget Income
+That is 38 names.  Several share a renderer: Income Statement and Profit &
+Loss share one; the two multicolumn statements share one; Budget Income
 Statement and Budget Profit & Loss share one; Tax Invoice and Australian Tax
 Invoice share one; Receivable and Payable Aging share one; Investment and
-Advanced Portfolio share one; and Customer Report, Vendor Report, Employee
-Report and Job Report share one.  Counting "reports ported" as 34 overstates
-the engine work by thirteen.
+Advanced Portfolio share one; Customer Report, Vendor Report, Employee
+Report and Job Report share one; and Printable, Easy and Fancy Invoice share
+one (invoice.scm registers all three from one renderer).  Counting "reports
+ported" as 38 overstates the engine work, and the three invoice layouts add
+one renderer, not three.
 
 Native is a *rendering* fact, not an option-completeness claim.  The
 statements and listings expose four descriptors each (start, end, currency or
@@ -257,7 +276,7 @@ The practical consequence for "Guile-free" is that a **saved Scheme report
 with a non-default option set cannot always be replayed**.  The name renders;
 the depth, zero/parent, price-source, rules, foreign-currency or trep-column
 options may be refused.  That is a real limitation of the web tier and is not
-hidden by the 34/66 number.
+hidden by the 38/66 number.
 
 ## 3. Classification
 
@@ -279,7 +298,7 @@ The classes are the task's:
   **not** a synonym for unported: a closed name is not on the backlog, while a
   logic or template name is.
 
-### 3.1 Native (19 names in this table, 5 in 3.1a, 4 in 3.1b, 3 entry listings in section 11; 20 implementations)
+### 3.1 Native (this table, plus 3.1a, 3.1b, the entry listings in section 11, the cash-flow/GST statements in section 13 and the two invoice layouts in section 14)
 
 All source paths in this section are relative to `gnucash/report/reports/`.
 
@@ -303,7 +322,9 @@ All source paths in this section are relative to `gnucash/report/reports/`.
 | 12 | Budget Profit & Loss | `standard/budget-income-statement.scm` | Second registration of the budget statement renderer. |
 | 13 | Budget Balance Sheet | `standard/budget-balance-sheet.scm` | `budget_balance_sheet()`: single-column existing/allocated/unallocated balance sheet. |
 | 14 | Budget Flow | `standard/budget-flow.scm` | `budget_flow()`: per-account-type flow for budget period 1 (the Scheme default); the period selector is a documented gap. |
-| 15 | Printable Invoice | `standard/invoice.scm` | `render_printable_invoice()` over `InvoiceDocument`: the base customer/vendor document, nine display columns and seven print switches. |
+| 15 | Printable Invoice | `standard/invoice.scm` | `render_invoice()` over `InvoiceDocument` with the Printable variant: the customer/vendor document, the six header slots, nine display columns, the layout page (CSS, picture) and the print switches. |
+| 46 | Easy Invoice | `standard/invoice.scm` | The same renderer and option surface with the Easy variant's default stylesheet; the document is the Printable Invoice's, by design -- invoice.scm registers all three from one renderer. |
+| 47 | Fancy Invoice | `standard/invoice.scm` | The same renderer with the Fancy variant's default stylesheet and its empty "Row 3 Right" (no print-date row).  The other two documents print that date. |
 | 16 | Receipt | `standard/receipt.scm` | `render_receipt()` over the same model: paid-document layout, four product columns, customer-only, tax rows only when taxed, Total Price only when paid. |
 | 17 | Tax Invoice | `standard/taxinvoice.scm` | `render_tax_invoice()` over the same model: per-line tax rate, tax amount, tax-inclusive Total Price, optional discount/units/date columns. |
 | 18 | Australian Tax Invoice | `standard/taxinvoice.scm` | The same renderer with the Australian headings and default title; `taxinvoice.scm` registers it as a second option set, not a second engine. |
@@ -446,37 +467,40 @@ are the only Scheme chart names whose plotted data the spec can compute
 without another engine; Average Balance, Cash Flow Barchart and Budget Chart
 all need a computation the spec does not have.
 
-### 3.3 Logic (6 names, about four engines)
+### 3.3 Logic (4 names remain; the table records the 6 of the 34-name measurement)
+
+`Cash Flow` (27) and `Income and GST Statement` (35) are native now
+(section 13) and are listed here only because this table is the 34-name
+measurement.  The four that remain:
 
 | # | Report | Source | Cluster | Why it needs custom native code |
 |---:|---|---|---|---|
-| 27 | Cash Flow | `standard/cash-flow.scm` | cash flow | Classifies counterpart splits into "money in"/"money out" (`cash-flow-calc.scm`); not a debit/credit balance table. |
+| 27 | ~~Cash Flow~~ | `standard/cash-flow.scm` | cash flow | **Native since section 13.** |
 | 28 | Cash Flow Barchart | `standard/cashflow-barchart.scm` | cash flow | Reuses the same money-in/out classification; the chart type is supported, the data engine is not. |
-| 35 | Income and GST Statement | `standard/income-gst-statement.scm` | tax/GST | Builds trep columns per tax code from the tax table; multi-pass tax aggregation. |
+| 35 | ~~Income and GST Statement~~ | `standard/income-gst-statement.scm` | tax/GST | **Native since section 13.** |
 | 43 | Average Balance | `example/average-balance.scm` | analytics | Time-series average over a step size, with a chart; not a period sum and not a cumulative balance. |
 | 44 | Balance Forecast | `standard/balance-forecast.scm` | scheduled transactions | Projects balances from scheduled transactions and historical averages, then charts them. |
 | 45 | Future Scheduled Transactions Summary | `standard/account-summary.scm` | scheduled transactions | Instantiates scheduled transactions into the future; no splits exist yet. |
 
 The clusters matter more than the count: the two cash-flow names share the
 money-in/out classification, and the two scheduled-transaction names share an
-engine.  This is not six independent reports.  The general journal,
+engine.  This is not four independent reports.  The general journal,
 transaction breakdown and reconciliation listing, the five portfolio names, the
 five owner reports, the three cross-tab statements (section 13) are no longer in
 this table: they are native now (sections 3.1, 3.1a and 3.1b).
 
-### 3.4 Template (2 names)
+### 3.4 Template (0 names)
 
-| # | Report | Source | Evidence |
-|---:|---|---|---|
-| 46 | Easy Invoice | `standard/invoice.scm` | A hand-built HTML invoice document with its own layout; not eguile, but the remaining work is layout over the now-native `InvoiceDocument`, not accounting logic. |
-| 47 | Fancy Invoice | `standard/invoice.scm` | The styled invoice layout; same model, different presentation. |
+The two names this class held -- Easy Invoice (46) and Fancy Invoice (47) --
+are native since section 14.  invoice.scm registers them from the same
+renderer and options-generator as the Printable Invoice, so they were layout
+work over the common `InvoiceDocument`, not separate documents; the earlier
+note that they were "not duplicates of the Printable Invoice" was wrong about
+the document and right only about the stylesheet.  The class is now empty:
+`Balance Sheet (eguile)` (48) is the only other template-shaped name and it is
+closed because the native Balance Sheet covers it.
 
-The four native documents cover the Printable Invoice, Receipt, Tax Invoice
-and Australian Tax Invoice.  Easy and Fancy are the two layouts that remain
-Scheme-only; they are not duplicates of the Printable Invoice, so they are
-template-class work, not closed.
-
-### 3.5 Closed (19 names)
+### 3.5 Closed (22 names)
 
 "Closed" means a decision is recorded here and the name is **not** on the
 backlog.  It is a different number from "unported".
@@ -516,16 +540,16 @@ port.
 
 | Class | Names | Share of 66 | Notes |
 |---|---:|---:|---|
-| native | 34 | 51.5% | 21 implementations; several names share a renderer. |
+| native | 38 | 57.6% | Several names share a renderer; the three invoice layouts are one. |
 | spec | 2 | 3.0% | The two net-worth charts, shipped as built-in specs. |
-| logic | 6 | 9.1% | About four engines; see section 3.3. |
-| template | 2 | 3.0% | Easy and Fancy Invoice layouts. |
+| logic | 4 | 6.1% | Three engines; see section 3.3. |
+| template | 0 | 0% | Easy and Fancy Invoice are native (section 14); the class is empty. |
 | closed | 22 | 33.3% | 15 chart-model (the two income/expense names plus the 13 earlier), 2 demos, 5 other decisions (including Account Summary). |
 | **total** | **66** | **100%** | 65 loaded per build because of the locale `taxtxf`. |
 
-Native + spec = **36/66 = 54.5%**.  Native + spec + closed = **58/66 =
-87.9%** done-or-decided.  The unported remainder is logic + template =
-**8/66 = 12.1%**.
+Native + spec = **40/66 = 60.6%**.  Native + spec + closed = **62/66 =
+93.9%** done-or-decided.  The unported remainder is logic only =
+**4/66 = 6.1%**.
 
 Separate from the 66: **6 built-in designer specs** (Income vs Expenses by
 Month, Expenses by Account, Income by Account, Net Worth by Month, Net Worth
@@ -539,31 +563,32 @@ are the `+6` in the `/api/reports` counts in section 1.1.
 
 The headline is deliberately simple:
 
-- **34 of 66 source names render natively: 34/66 = 51.5%.**  That is the
+- **38 of 66 source names render natively: 38/66 = 57.6%.**  That is the
   number to use for "how much of the Scheme registry does the native layer
   replace".  Because the locale loader swaps the two tax reports, the per-build
-  number is **34/65 = 52.3% in a US build** and **33/65 = 50.8% in a German
+  number is **38/65 = 58.5% in a US build** and **37/65 = 56.9% in a German
   build**: the German `Tax Report / TXF Export` replaces the US schedule, and
-  the German report is closed.  The 34/66 source count includes both tax names,
+  the German report is closed.  The 38/66 source count includes both tax names,
   only one of which a build loads.
-- **36 of 66 can be produced without new native code: 36/66 = 54.5%.**  Two
+- **40 of 66 can be produced without new native code: 40/66 = 60.6%.**  Two
   more are spec-expressible, and they are the two net-worth charts (Net Worth
   Barchart and Net Worth Linechart), shipped as built-in specs under the Scheme
   names.  The three names the earlier measurement counted as spec-expressible
   (Account Summary, Income/Expense Chart, Income & Expense Linechart) are
   closed with the reasons in section 3.5, not approximated.
 - **22 of 66 are closed: 22/66 = 33.3%.**  If closed decisions count as
-  "covered", 58/66 = 87.9% is done-or-decided.
-- **8 of 66 are unported: 8/66 = 12.1%.**  This is the only number that is a
-  backlog.
+  "covered", 62/66 = 93.9% is done-or-decided.
+- **4 of 66 are unported: 4/66 = 6.1%.**  This is the only number that is a
+  backlog: the cash-flow barchart, average balance and the two
+  scheduled-transaction reports.
 
-A Guile-free build's `/api/reports` has 40 entries (34 native + 6 built-in
-specs).  That is a different numerator from "34/66 Scheme names": the six
+A Guile-free build's `/api/reports` has 44 entries (38 native + 6 built-in
+specs).  That is a different numerator from "38/66 Scheme names": the six
 built-ins are extra reports, not six more Scheme names (two of them do carry
 Scheme names, but they are still not registry entries in the 66).  A Guile
 build's `/api/reports` has 69 entries (65 loaded Scheme names + 4 built-in
 specs; the other two built-ins replace their Scheme names in the list).  Do
-not quote 40, 69 or 66 as if they were the same count.
+not quote 44, 69 or 66 as if they were the same count.
 
 ### 4.2 By report class
 
@@ -575,34 +600,33 @@ not quote 40, 69 or 66 as if they were the same count.
 | Entry listings | 5 | 5 | 0 | 0 | 0 | 0 | **Full** (5/5). |
 | Aging | 2 | 2 | 0 | 0 | 0 | 0 | **Full** (2/2). |
 | Budgets | 6 | 5 | 0 | 0 | 0 | 1 | **Full/decided** (5/6 native; Budget Chart closed). |
-| Documents and eguile pages | 7 | 4 | 0 | 0 | 2 | 1 | **Partial** (4/7 native; 2 template remain; eguile duplicate closed). |
+| Documents and eguile pages | 7 | 6 | 0 | 0 | 0 | 1 | **Full/decided** (6/7 native: the three invoice layouts, Receipt and both tax invoices; the eguile duplicate is closed). |
 | Tax | 2 | 1 | 0 | 0 | 0 | 1 | **Full/decided** (US native, German closed). |
 | Owner reports | 5 | 5 | 0 | 0 | 0 | 0 | **Full** (5/5). |
 | Investments and lots | 5 | 5 | 0 | 0 | 0 | 0 | **Full** (5/5). |
 | Charts | 16 | 0 | 2 | 0 | 0 | 14 | **Spec/decided** (2 spec: the net-worth pair; 14 closed). |
 | Account summary | 1 | 0 | 0 | 0 | 0 | 1 | **Closed** (not expressible; see 3.5). |
-| Cash flow | 2 | 0 | 0 | 2 | 0 | 0 | **None** (0/2). |
-| GST | 1 | 0 | 0 | 1 | 0 | 0 | **None** (0/1). |
+| Cash flow | 2 | 1 | 0 | 1 | 0 | 0 | **Partial** (Cash Flow native; the barchart remains). |
+| GST | 1 | 1 | 0 | 0 | 0 | 0 | **Full** (1/1; section 13). |
 | Average balance | 1 | 0 | 0 | 1 | 0 | 0 | **None** (0/1). |
 | Scheduled transactions | 2 | 0 | 0 | 2 | 0 | 0 | **None** (0/2). |
 | Register | 1 | 0 | 0 | 0 | 0 | 1 | **Decided** (web route). |
 | Multicolumn View container | 1 | 0 | 0 | 0 | 0 | 1 | **Decided** (loss: composite dashboards). |
 | Demos | 2 | 0 | 0 | 0 | 0 | 2 | **Decided** (no accounting content). |
-| **Total** | **66** | **31** | **2** | **9** | **2** | **22** | |
+| **Total** | **66** | **38** | **2** | **4** | **0** | **22** | |
 
 "Full" means every name in the class renders natively.  "Full/decided" means
 the unported name is closed, so there is no backlog in that class.
 "Spec/decided" means the chart class has two spec-expressible names (the
 net-worth pair) and the rest are closed.  "Partial" means a real backlog
-remains.  "None" means every name in the class is unported logic or template.
+remains.  "None" means every name in the class is unported logic.
 
 The pattern is clear: **the core statements, the entry listings, aging,
-budgets, the tax schedule, the owner reports and the investments/portfolio
-cluster are fully covered; the classes that need a cross-tab, a cash-flow
-classification, a GST/tax-code engine or a scheduled-transaction engine are
-not.**  Charts are mostly closed rather than
-ported, and the two remaining document layouts are the smallest outstanding
-class.
+budgets, the tax schedule, the owner reports, the six documents and the
+investments/portfolio cluster are fully covered; the classes that still need a
+cash-flow barchart, an average-balance series or a scheduled-transaction engine
+are not.**  Charts are mostly closed rather than ported, and after section 14
+there is no document class left outstanding at all.
 
 ### 4.3 The accounting core
 
@@ -683,27 +707,28 @@ What that user **cannot** do natively:
   price scatterplot and the sample graphs;
 - Average Balance, Balance Forecast and the Future Scheduled Transactions
   Summary;
-- Easy Invoice and Fancy Invoice layouts;
+- the Cash Flow Barchart;
 - the German tax report/ELSTER export.
 
-(Cash Flow and the Income and GST Statement were on this list at the 34-name
-measurement; both are native now -- see the addendum at the top.)
+(Cash Flow, the Income and GST Statement, Easy Invoice and Fancy Invoice were
+on this list at the 34-name measurement; all four are native now -- see the
+addendum at the top and section 14.)
 
 For a personal user who mostly reads balances and income/expenses, the missing
 items are analytics and portfolio reports, not the bookkeeping loop.  That is a
-defensible Guile-free tier.  It is not full parity: the report list is 40
+defensible Guile-free tier.  It is not full parity: the report list is 44
 entries instead of 69, and a saved Scheme report with non-default options may
 not replay.
 
 ### 5.2 A business user
 
 A business user is a different answer.  A **US small business** that uses the
-native Printable Invoice (and, where applicable, the Receipt or Tax Invoice),
-prints owner statements and files the US tax schedule with TXF can be
-Guile-free **for reporting and document printing** today: those documents and
-Tax Schedule Report/TXF Export are native, and the statements, listings, aging,
-budgets, lots and owner reports are native.  The Australian Tax Invoice is
-native as well, for books in that locale.
+native Printable, Easy or Fancy Invoice (and, where applicable, the Receipt or
+Tax Invoice), prints owner statements and files the US tax schedule with TXF
+can be Guile-free **for reporting and document printing** today: those
+documents and Tax Schedule Report/TXF Export are native, and the statements,
+listings, aging, budgets, lots and owner reports are native.  The Australian
+Tax Invoice is native as well, for books in that locale.
 
 A business that needs any of the following **cannot**:
 
@@ -713,25 +738,24 @@ A business that needs any of the following **cannot**:
   Breakdown Report are native.
 - **Tax:** Tax Report / TXF Export (German ELSTER).  The US schedule and the
   Income and GST Statement (all three of its formats) are native.
-- **Documents:** Easy Invoice, Fancy Invoice.  The four native documents cover
-  the standard printable invoice, receipt and tax invoice, not those two
-  layouts.
+- **Documents:** none.  All six invoice/receipt documents are native; the three
+  invoice.scm layouts are one renderer with three default stylesheets.
 - **Container:** Multicolumn View.  Composite dashboards are a recorded loss.
 
 For that business the web tier is not Guile-free for the reports it needs: the
-missing names are the two extra document layouts and German tax.
+only missing name is German tax.
 
 ### 5.3 How far is the gap?
 
-The unported logic/template gap is **days to a week**.  The last seven report
-stages added 28 names (from the six core reports to 34) in about ten hours of
-commit-to-commit time (section 6); the 8 remaining names are a smaller count,
-and several of them share engines (two cash-flow names, two
-scheduled-transaction names).  At the observed pace, with a 2-3x allowance for
-the harder engines (scheduled transactions), the unported work is **order 1-2
-weeks**, not the "months in total" of the earlier document.
+The unported logic gap is **days**.  The last report stages added 30 names
+(from the six core reports to 36, and Easy/Fancy to 38) in about eleven hours
+of commit-to-commit time (section 6); the 4 remaining names are a smaller
+count, and two of them share an engine (the scheduled-transaction pair).  At
+the observed pace, with a 2-3x allowance for the harder engines (scheduled
+transactions), the unported work is **order 2-4 days**, not the "months in
+total" of the earlier document.
 
-**Full parity is months**, but not because of the 8 unported report names.
+**Full parity is months**, but not because of the 4 unported report names.
 It is months because the 22 closed names include new subsystems: pie, scatter,
 stacked multi-series and per-account period-index charts for 15 names
 (including Budget Chart); an ELSTER XML writer and German tax table for one; an
@@ -790,7 +814,7 @@ earlier document priced **report layouts** as if they were **new engines**.  A
 layout over an existing model is hours; a new model (IFRS cost basis,
 scheduled transactions, ELSTER) is days.
 
-### 6.3 What the unported 8 names should cost
+### 6.3 What the unported names should cost
 
 This is an extrapolation from the observed lines-per-name and minutes-per-name,
 not a measurement of the remaining work.  The ranges widen where there is no
@@ -800,18 +824,18 @@ close precedent.
 |---|---:|---|---:|---:|
 | Cross-tab statements (BS Multicolumn, IS Multicolumn, Equity) | 3 | budgets + documents | done: see section 13 | - |
 | Entry listings (General Journal, Transaction Breakdown, Reconciliation) | 3 | listings + aging | done: see section 12 | - |
-| Cash flow (Cash Flow, Cash Flow Barchart) | 2 | cash flow | 1,200-1,800 | 1-2 h |
-| GST (Income and GST Statement) | 1 | tax | 1,000-1,400 | 1-2 h |
+| Cash flow barchart | 1 | cash flow | 500-800 | 1 h |
+| GST (Income and GST Statement) | 1 | tax | done: see section 13 | - |
 | Average Balance | 1 | table/chart | 400-600 | 1 h |
 | Scheduled transactions (Future SX Summary, Balance Forecast) | 2 | SX | 1,600-2,400 | 2-3 h |
-| Easy/Fancy Invoice layouts | 2 | documents | 1,000-1,400 | 1-2 h |
-| **Total** | **8** | | **5,200-7,600** | **7-11 h** |
+| Easy/Fancy Invoice layouts | 2 | documents | done: see section 14 | - |
+| **Total** | **4** | | **2,500-3,800** | **4-5 h** |
 
 At the observed 650-1,350 hand-written source lines per commit-hour, the
-5.2k-7.6k lines are 4-12 h; the per-cluster sums above are narrower (7-11 h).
-Doubling the wider range for the engines with no close precedent gives 8-22 h,
-which is about a working week at 4-6 focused hours a day.  With the unknowns in
-the harder engines, the honest range is **1-2 weeks**, not months.  The 22
+2.5k-3.8k lines are 2-6 h; the per-cluster sums above are narrower (4-5 h).
+Doubling the wider range for the engines with no close precedent gives 4-12 h,
+which is one to two working days at 4-6 focused hours a day.  With the unknowns
+in the harder engines, the honest range is **2-4 days**, not weeks.  The 22
 closed names are not in this table; reopening them is the months-scale work
 described in 5.3.
 
@@ -820,8 +844,9 @@ described in 5.3.
 - It is not a schedule.  Commit wall clock is not effort; a commit can sit
   behind a review, a build or an unrelated fix.
 - It is not option parity.  The native reports deliberately expose a subset;
-  matching the Scheme option pages for the 34 native names is additional work
-  not counted here.
+  matching the Scheme option pages for the 38 native names is additional work
+  not counted here (the invoice layouts are the exception: section 14 publishes
+  the whole invoice.scm surface).
 - It is not a usage forecast.  No telemetry exists; the order of work should be
   set by which reports a real user needs, not by the line count.
 
@@ -855,8 +880,8 @@ described in 5.3.
   "we have charts" claim is true for net worth and income/expense lines, not
   for the chart class.
 - **"Closed" is 33% of the registry.**  That is a large number to leave out of
-  a coverage claim.  If closed decisions count, 83% is done-or-decided; if they
-  do not, 17% is backlog and 47% is native.  The same registry supports three
+  a coverage claim.  If closed decisions count, 94% is done-or-decided; if they
+  do not, 6% is backlog and 58% is native.  The same registry supports three
   very different headlines, and the document must say which one it is using.
 - **The previous document contradicted itself.**  Its top summary still said
   9/66 and "the majority is not covered", while its last update claimed 19/66
@@ -868,9 +893,9 @@ described in 5.3.
   checks the read-only API).  A Guile-free report tier still needs a writer for
   the book, normally the desktop application.  The verdict in section 5 is
   about reports and documents, not about replacing data entry.
-- **`/api/reports` is 69 in a Guile build and 40 in a Guile-free build.**
+- **`/api/reports` is 69 in a Guile build and 44 in a Guile-free build.**
   Neither is 66.  The 66 is the source registry; a build loads 65 of those, and
-  the 6 built-ins are extra; the 34 native names are a subset of the 66.
+  the 6 built-ins are extra; the 38 native names are a subset of the 66.
   Quoting any of these as "the number of reports" without the list is a
   category error.
 
@@ -963,8 +988,8 @@ change is needed; this file is the only edited file.
 
 ## 10. What this document does not claim
 
-- It does not claim that 34/66 is a majority; it is (51.5%).  It does not present
-  58/66 as "coverage" without saying that 22 of those are closed decisions.
+- It does not claim that 38/66 is a majority; it is (57.6%).  It does not present
+  62/66 as "coverage" without saying that 22 of those are closed decisions.
 - It does not claim that native reports are option-complete.  They are not;
   section 2 lists the gap and the 400 behaviour.
 - It does not claim that closed names are easy or impossible.  It records the
@@ -1044,7 +1069,8 @@ Employee Report, Job Report and Customer Summary joined
 ## 12. Update: the entry-listing reports
 
 Measured at `b4aa63f713` plus this cluster, which was 31 of 66; section 13
-carries the current measurement (34) after the cross-tab cluster.  Section 3.1b
+carries the next measurement (34) after the cross-tab cluster, and section 14
+the current one (38) after the invoice layouts.  Section 3.1b
 and section 4.1 count the four valuation names that landed at
 `b4aa63f713`, and this cluster adds General Journal, Transaction Breakdown
 Report and Reconciliation Report: **31 of 66 = 47.0% native** (31 of the 65 a
@@ -1131,7 +1157,8 @@ loads, 33 in a German build; 34/65 = 52.3% and 33/65 = 50.8%).  Native plus
 spec is 36/66 = 54.5%; native plus spec plus the 22 closed decisions is
 58/66 = 87.9%; the unported remainder is 8/66 = 12.1% (6 logic + 2 template).
 A Guile-free build's `/api/reports` has 40 entries (34 native + 6 built-in
-specs).
+specs).  *(These are this stage's numbers; section 14 raises them to 38 native
+and 4 unported.)*
 
 - **The shape of the Scheme reports.**  `balsheet-pnl.scm` is one renderer with
   a report-type switch.  Its columns are a date list: the balance sheet's
@@ -1228,7 +1255,7 @@ specs).
   `Income Statement (Multicolumn)`, which is native now, to `Cash Flow`, and
   then to `Average Balance`, because Cash Flow is native now too.
 - **The matrix.**  56 cases per build: every native name the two fixture books
-  can serve with its default options (28 names -- the four invoice documents
+  can serve with its default options (28 names -- the six invoice documents
   and the four owner reports need their own fixtures and are exercised by the
   harness's document/owner runs), on `sample1` and `taxreport.gnucash`, in
   `ext4-web` and `ext4-noguile`.  **54 pass in both builds.**  The 2 that do not
@@ -1246,4 +1273,135 @@ specs).
   `gnc-owner.cpp`), so `set_dist_list` is unchanged.  Both builds compile with
   `-Werror`; `ldd` on the Guile-free `gnc-webd` has no `libguile`, `libgtk` or
   `libwebkit` dependency (the Guile build links `libguile` by design).
+
+## 14. Update: Easy Invoice and Fancy Invoice, and the invoice option surface
+
+This stage closed the last two template-class names, and the class is now
+**empty**.  **38 of 66 = 57.6% native** (38 of the 65 a US build loads, 37 in
+a German build; 38/65 = 58.5% and 37/65 = 56.9%).  Native plus spec is
+40/66 = 60.6%; native plus spec plus the 22 closed decisions is 62/66 = 93.9%;
+the unported remainder is 4/66 = 6.1%, all logic.  A Guile-free build's
+`/api/reports` has **44** entries (38 native + 6 built-in specs); a Guile build
+still has 69.
+
+- **What invoice.scm actually is.**  `standard/invoice.scm` defines three
+  reports -- Printable, Easy and Fancy Invoice -- from **one** renderer
+  (`reg-renderer`) and **one** options-generator.  Their `variant-list` entries
+  differ in exactly two defaults: the "CSS" text and "Row 3 Right".  All three
+  print the same document: the title row, the six header slots (Row 1/2/3 Left
+  and Right), the entry table with its nine optional columns and the
+  minimum-entry padding, the detailed-or-single tax row, the payment rows, the
+  amount due, the notes, the payable-to and company-contact footers and the
+  extra notes.  Easy sets Row 3 Right to `today` (the print date) and appends
+  its layout rules to the CSS; Fancy keeps `today` off and appends the two
+  `x-large` name rules.  So the answer to "layout only, or extra rows/columns?"
+  is **layout only**: no logo row, no per-line notes, no comment block and no
+  column exists in Easy or Fancy that the Printable Invoice lacks; the
+  "Minimum # of entries" option the Fancy layout introduced is on the shared
+  entry table, so it is published for all three.
+- **One renderer, three entry points.**  `gnc-invoice-print.cpp` now renders
+  the Scheme layout once (`render_invoice()`) and the three registrations are
+  `render_printable_invoice()`, `render_easy_invoice()` and
+  `render_fancy_invoice()`: each sets `InvoicePrintOptions::layout`, which
+  selects the two variant defaults through `invoice_default_css()` and
+  `invoice_default_slot()`.  That is the same structure as the Scheme file, so
+  a variant cannot drift from the others.  No new file: the existing
+  `gnc-invoice-print.cpp` grew the layout page, so `set_dist_list` in
+  `libgnucash/reports/CMakeLists.txt` is unchanged.
+- **What the model gained, and what stayed an option.**  `InvoiceDocument`
+  gained `references` (the orders' references the client table prints as
+  `REF <reference>`, built with the fold and reversal invoice.scm uses) and
+  `DocumentOwner::tax_number` (the company table's company-tax-nr row, the
+  book's Tax / Tax Number option).  Everything else the three layouts print was
+  already in the model or is *report option state* in Scheme too -- the CSS,
+  the picture location, the print date (the current date, not invoice data), the
+  payable-to and contact phrases and the header slots -- so it lives in
+  `InvoicePrintOptions`, not in the engine reader.
+- **The published option surface.**  All three names publish invoice.scm's
+  pages: `invoice`, `title`, `css`, `picture`, the six `row1_left` …
+  `row3_right` choices (`none`, `client`, `company`, `invoice`, `today`,
+  `picture`), `minimum_entries` (0-23), the nine `show_*` column switches, and
+  the display switches `show_due_date`, `show_subtotal`, `show_billing_id`,
+  `show_owner_id`, `show_notes`, `show_terms`, `show_payments`,
+  `show_references`, `show_detailed_tax`, `show_job_details`, `show_payable_to`,
+  `show_company_contact`, plus the three texts `payable_to_string`,
+  `company_contact_string` and `extra_notes`.  The route validates names
+  against those descriptors (400 "unknown option '<name>' for report '<name>'"),
+  a choice against its list (400 "invalid row1_left 'zzz'") and a number
+  against its range, so an unsupported name can never be silently ignored.
+  The CSS default is the variant's own text, so `/api/report/Easy%20Invoice/options`
+  and the Fancy one differ in that descriptor while the rest is identical.
+- **Parity: 12 default cases plus 12 switch cases, both builds, verbatim.**
+  `report-parity.sh` gained the two names (the `invoice` extractor and the two
+  Scheme GUIDs, Easy `67112f318bef4fc496bdc27d106bbda4`, Fancy
+  `3ce293441e894423a2425d7a22dd1ac6`), and each layout was compared on the
+  customer invoice INV-1001 and the vendor bill BILL-2001 in `ext4-web` and
+  `ext4-noguile`.  The extracts agree row for row; INV-1001 (8 rows, all three
+  layouts):
+
+  ```
+  ('ITEM', 'Consulting', Decimal('2.00'), Decimal('150.00'), Decimal('300.00'))
+  ('ITEM', 'Software licence', Decimal('1.00'), Decimal('99.99'), Decimal('99.99'))
+  ('ITEM', 'Support', Decimal('3.00'), Decimal('20.00'), Decimal('54.00'))
+  ('TOTAL', 'Net Price', (Decimal('453.99'),))
+  ('TOTAL', 'Tax', (Decimal('35.40'),))
+  ('TOTAL', 'Total Price', (Decimal('489.39'),))
+  ('PAYMENT', (Decimal('-200.00'),))
+  ('TOTAL', 'Amount Due', (Decimal('289.39'),))
+  ```
+
+  BILL-2001 (6 rows, all three layouts):
+
+  ```
+  ('ITEM', 'Office chairs', Decimal('4.00'), Decimal('120.00'), Decimal('480.00'))
+  ('TOTAL', 'Net Price', (Decimal('480.00'),))
+  ('TOTAL', 'Tax', (Decimal('0.00'),))
+  ('TOTAL', 'Total Price', (Decimal('480.00'),))
+  ('PAYMENT', (Decimal('-100.00'),))
+  ('TOTAL', 'Amount Due', (Decimal('380.00'),))
+  ```
+
+  The extractor compares line items, payments and totals as numbers, so it does
+  not by itself prove the layouts differ; the variant markers do, and they match
+  the Scheme documents: Printable and Easy print one `invoice-print-date` row and
+  Fancy prints none, the Easy page carries `min-width: 600px` and the base one
+  does not, and the Fancy page carries `font-size: x-large` and the Easy one
+  does not.  Checked on both engines' HTML for all three documents, on
+  INV-1001.  Twelve further cases pin the display switches through
+  `report-parity.sh`'s new invoice-option mapping: `show_total=false` (which
+  also exercises the Scheme `display-subtotal` rule that hides the sign when the
+  Total column is off) and `show_tax_amount=true&show_notes=true`, for each
+  layout on INV-1001, in both builds -- all 12 match.  The mapping is the
+  harness's, not the report's: it only translates the switch names onto
+  invoice.scm's option pages; the layout-page choices, the CSS and the picture
+  are exercised by `report-options.sh` instead, because their Scheme values need
+  a symbol/path conversion the harness does not need for a switch.
+- **Nothing was left unreproduced.**  There is no template language in the
+  path: the six layout slots, the picture, the print date, the padding rows,
+  the detailed tax summary, the references, the job rows and the three footers
+  are all printed by `render_invoice()`.  The one thing that differs from the
+  Scheme page is markup spelling (the Scheme HTML says `<br />` and wraps
+  tables in `<tbody>`, the native page uses its own chrome stylesheet), which is
+  not content and is not compared.
+- **Tests and build hygiene.**  `report-options.sh` grew from 836 to **910
+  checks** (74 new): the two new descriptor sets, their 400s (start/accounts/period/
+  unknown name/bad boolean/bad layout slot/empty and unknown invoice), the two
+  variant-defining checks (Easy's rule and print date, Fancy's rule and its
+  missing print date), a custom-CSS replacement and a picture slot, and generic
+  probes for the new choice, text and number options (the six layout slots,
+  `css`, `picture`, `extra_notes`, `minimum_entries`), with the descriptor-
+  documented no-ops (`show_terms`, `show_payments`, `show_references`,
+  `show_job_details`, `show_payable_to`, `show_company_contact` and the two
+  phrase texts) accepted only because their descriptors say they have no effect
+  on that book.  The smoke test checks the two names in the report list, the
+  Easy stylesheet and print date and the Fancy stylesheet and absent print date.
+  `report-parity.sh`, `report-options.sh`, `report-spec.sh` and
+  `run-smoke-test.sh` pass in both builds; the default parity matrix is 54 of 56
+  per build, the same two documented `taxreport` multi-currency multicolumn
+  cases as before this stage.  Both builds compile with `-Werror`.  `ldd` on
+  `ext4-noguile`'s `gnc-webd` has no `libguile`, `libgtk` or `libwebkit`; the
+  `ext4-web` binary links `libguile` because it is the Scheme-enabled build, and
+  neither links GTK or WebKit.  No new files were added, so the distribution
+  lists are unchanged.
+
 

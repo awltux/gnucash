@@ -14,10 +14,11 @@
 # "Transaction Breakdown Report", "Reconciliation Report", "Receivable Aging",
 # "Payable Aging", "Investment Lots", "Budget Report",
 # "Budget Income Statement", "Budget Profit & Loss", "Budget Balance Sheet",
-# "Budget Flow", "Printable Invoice", "Receipt", "Tax Invoice",
-# "Australian Tax Invoice", "Tax Schedule Report/TXF Export", "Customer
-# Report", "Vendor Report", "Employee Report", "Job Report", "Customer
-# Summary", "Net Worth Barchart" and "Net Worth Linechart" are supported.
+# "Budget Flow", "Printable Invoice", "Easy Invoice", "Fancy Invoice",
+# "Receipt", "Tax Invoice", "Australian Tax Invoice", "Tax Schedule
+# Report/TXF Export", "Customer Report", "Vendor Report", "Employee Report",
+# "Job Report", "Customer Summary", "Net Worth Barchart" and "Net Worth
+# Linechart" are supported.
 # The two net-worth names are built-in designer specs, not native reports:
 # the harness renders a preview of the built-in with the dates the oracle is
 # asked for, and the `chart` extractor compares the embedded chart data
@@ -78,7 +79,7 @@
 # (add --two-receivable to the generator to put one customer's invoices in a
 # second A/Receivable account, which exercises the per-account headings).
 #
-# The invoice report prints one document, selected by its "Invoice Number"
+# The invoice reports print one document, selected by their "Invoice Number"
 # option.  No fixture book in the tree has a customer invoice, so generate
 # one and pass its id as [invoice]:
 #
@@ -86,16 +87,27 @@
 #   web/test/report-parity.sh <guile-build> <native-build> <source-dir> \
 #       /tmp/invoice-book.gnucash "Printable Invoice" "" "" "" INV-1001
 #
-# The harness resolves the id to the invoice GUID the Scheme saved report
-# needs; the native route takes the id itself.  Its dates are the posted and
-# due dates on the invoice, not report options, so start/end are refused.
+# "Easy Invoice" and "Fancy Invoice" take the same [invoice] and use the same
+# extractor: invoice.scm registers all three from one renderer, so they differ
+# in the default stylesheet and the print-date row, not in the rows the
+# extractor reads.  The harness resolves the id to the invoice GUID the Scheme
+# saved report needs; the native route takes the id itself.  Its dates are the
+# posted and due dates on the invoice, not report options, so start/end are
+# refused.
 #
 # [options] is an optional "name=value&..." string for the document report's
 # display switches (show_date, show_tax_rate, show_units, show_contact,
 # show_address, show_invoice_number, show_company_name,
 # invoice_number_next_to_title, show_job_name, show_job_number,
-# show_net_price, border_collapse) and its title.  The harness sets the same
-# Scheme options through the saved report, so a flipped switch is compared
+# show_net_price, border_collapse) and its title.  The three invoice layouts
+# (Printable, Easy and Fancy) map the invoice.scm switches instead: the nine
+# display columns and show_due_date, show_subtotal, show_billing_id,
+# show_owner_id, show_notes, show_terms, show_payments, show_references,
+# show_detailed_tax, show_job_details, show_payable_to and
+# show_company_contact, plus title.  The layout page's choices, the CSS and
+# the picture are not mapped: they need a symbol/path conversion, and
+# report-options.sh covers their effect.  The harness sets the same Scheme
+# options through the saved report, so a flipped switch is compared
 # with the oracle rather than only checked for changing the page.
 #
 # The owner reports (Customer Report, Vendor Report, Employee Report, Job
@@ -241,7 +253,7 @@ extractor_for() {
         "Budget Report") echo budget-report ;;
         "Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo budget-statement ;;
-        "Printable Invoice") echo invoice ;;
+        "Printable Invoice"|"Easy Invoice"|"Fancy Invoice") echo invoice ;;
         "Receipt") echo receipt ;;
         "Tax Invoice"|"Australian Tax Invoice") echo tax-invoice ;;
         "Tax Schedule Report/TXF Export") echo tax-schedule ;;
@@ -283,6 +295,8 @@ report_guid() {
         "Budget Balance Sheet")    echo "ecc35ea9dbfa4e20ba389fc85d59cb69" ;;
         "Budget Flow")             echo "e6e34fa3b6e748debde3cb3bc76d3e53" ;;
         "Printable Invoice")       echo "5123a759ceb9483abf2182d01c140e8d" ;;
+        "Easy Invoice")            echo "67112f318bef4fc496bdc27d106bbda4" ;;
+        "Fancy Invoice")           echo "3ce293441e894423a2425d7a22dd1ac6" ;;
         "Receipt")                 echo "7eb3df21073d4c33920a0257da15fba5" ;;
         "Tax Invoice")             echo "0769e242be474010b4acf264a5512e6e" ;;
         "Australian Tax Invoice")  echo "3dbbc2584da64e7a8674355bc3fbfe3d" ;;
@@ -346,8 +360,8 @@ scheme_start_option() {
         "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
         "Budget Balance Sheet"|"Budget Flow") echo "" ;;
         # The invoice documents' dates come from the invoice itself.
-        "Printable Invoice"|"Receipt"|"Tax Invoice"|\
-        "Australian Tax Invoice") echo "" ;;
+        "Printable Invoice"|"Easy Invoice"|"Fancy Invoice"|"Receipt"|\
+        "Tax Invoice"|"Australian Tax Invoice") echo "" ;;
         # The owner reports and the customer summary call their range From/To.
         "Customer Report"|"Vendor Report"|"Employee Report"|"Job Report"|\
         "Customer Summary") echo "From" ;;
@@ -417,7 +431,7 @@ scheme_account_single() {
 
 
 EXTRACTOR=$(extractor_for "$REPORT") \
-    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, General Journal, Transaction Breakdown Report, Reconciliation Report, Receivable Aging, Payable Aging, Investment Lots, Investment Portfolio, Advanced Portfolio, Lot Viewer, IFRS weighted-average cost basis report, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export, Customer Report, Vendor Report, Employee Report, Job Report, Customer Summary, Net Worth Barchart, Net Worth Linechart)"
+    || fail "no extractor for report '$REPORT' (supported: Trial Balance, Balance Sheet, Income Statement, Profit & Loss, Transaction Report, General Ledger, General Journal, Transaction Breakdown Report, Reconciliation Report, Receivable Aging, Payable Aging, Investment Lots, Investment Portfolio, Advanced Portfolio, Lot Viewer, IFRS weighted-average cost basis report, Budget Report, Budget Income Statement, Budget Profit & Loss, Budget Balance Sheet, Budget Flow, Printable Invoice, Easy Invoice, Fancy Invoice, Receipt, Tax Invoice, Australian Tax Invoice, Tax Schedule Report/TXF Export, Customer Report, Vendor Report, Employee Report, Job Report, Customer Summary, Net Worth Barchart, Net Worth Linechart)"
 
 case "$REPORT" in
     "Budget Report"|"Budget Income Statement"|"Budget Profit & Loss"|\
@@ -425,8 +439,8 @@ case "$REPORT" in
         if [ -n "$START" ] || [ -n "$END" ]; then
             fail "the $REPORT period range is a range of budget periods, not dates"
         fi ;;
-    "Printable Invoice"|"Receipt"|"Tax Invoice"|\
-    "Australian Tax Invoice")
+    "Printable Invoice"|"Easy Invoice"|"Fancy Invoice"|"Receipt"|\
+    "Tax Invoice"|"Australian Tax Invoice")
         if [ -n "$START" ] || [ -n "$END" ]; then
             fail "the $REPORT dates come from the invoice, not from report options"
         fi
@@ -711,6 +725,37 @@ PY
                         show_memo)              page="Display"; name="Memo" ;;
                         show_account)           page="Display"; name="Account" ;;
                         show_running_balance)   page="Display"; name="Running Balance" ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
+                "Printable Invoice"|"Easy Invoice"|"Fancy Invoice")
+                    # The three layouts share invoice.scm's option pages, so
+                    # they share this mapping.  The layout page's choices, the
+                    # CSS and the picture are not mapped: report-options.sh
+                    # covers their effect, and a parity run that asked for one
+                    # would need its own value conversion.
+                    case "$key" in
+                        title)              page="General"; name="Custom Title" ;;
+                        show_date)          page="Display Columns"; name="Date" ;;
+                        show_description)   page="Display Columns"; name="Description" ;;
+                        show_action)        page="Display Columns"; name="Action" ;;
+                        show_quantity)      page="Display Columns"; name="Quantity" ;;
+                        show_price)         page="Display Columns"; name="Price" ;;
+                        show_discount)      page="Display Columns"; name="Discount" ;;
+                        show_taxable)       page="Display Columns"; name="Taxable" ;;
+                        show_tax_amount)    page="Display Columns"; name="Tax Amount" ;;
+                        show_total)         page="Display Columns"; name="Total" ;;
+                        show_due_date)      page="Display"; name="Due Date" ;;
+                        show_subtotal)      page="Display"; name="Subtotal" ;;
+                        show_billing_id)    page="Display"; name="Billing ID" ;;
+                        show_owner_id)      page="Display"; name="Invoice owner ID" ;;
+                        show_notes)         page="Display"; name="Invoice Notes" ;;
+                        show_terms)         page="Display"; name="Billing Terms" ;;
+                        show_payments)      page="Display"; name="Payments" ;;
+                        show_references)    page="Display"; name="References" ;;
+                        show_detailed_tax)  page="Display"; name="Use Detailed Tax Summary" ;;
+                        show_job_details)   page="Display"; name="Job Details" ;;
+                        show_payable_to)    page="Display"; name="Payable to" ;;
+                        show_company_contact) page="Display"; name="Company contact" ;;
                         *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
                     esac ;;
                 "Transaction Breakdown Report")

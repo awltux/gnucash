@@ -86,7 +86,8 @@ for native_report in "Balance Sheet" "Income Statement" "Profit & Loss" \
                      "Receivable Aging" "Payable Aging" "Investment Lots" \
                      "Budget Report" "Budget Income Statement" \
                      "Budget Profit & Loss" "Budget Balance Sheet" \
-                     "Budget Flow" "Printable Invoice" "Receipt" \
+                     "Budget Flow" "Printable Invoice" "Easy Invoice" \
+                     "Fancy Invoice" "Receipt" \
                      "Tax Invoice" "Australian Tax Invoice" \
                      "Tax Schedule Report/TXF Export"; do
     echo "$reports" | grep -q "\"$native_report\"" \
@@ -219,6 +220,24 @@ invalid_invoice=$(curl -sS -o /dev/null -w '%{http_code}' \
     "${URL}report/Printable%20Invoice?invoice=NO-SUCH-INVOICE")
 [ "$invalid_invoice" = "400" ] \
     || fail "an unknown invoice answered $invalid_invoice (expected 400)"
+
+# Easy Invoice and Fancy Invoice are the other two invoice.scm registrations:
+# the same document with the Easy stylesheet and, for Fancy, no print-date row.
+easy_invoice=$(curl -fsS "${URL}report/Easy%20Invoice?invoice=yoyo1") \
+    || { cat "$LOG" >&2; fail "GET Easy Invoice?invoice=yoyo1 failed"; }
+echo "$easy_invoice" | grep -q "min-width: 600px" \
+    || fail "the easy invoice does not carry the Easy stylesheet"
+echo "$easy_invoice" | grep -q "invoice-print-date" \
+    || fail "the easy invoice lost the print-date row"
+fancy_invoice=$(curl -fsS "${URL}report/Fancy%20Invoice?invoice=yoyo1") \
+    || { cat "$LOG" >&2; fail "GET Fancy Invoice?invoice=yoyo1 failed"; }
+echo "$fancy_invoice" | grep -q "font-size: x-large" \
+    || fail "the fancy invoice does not carry the Fancy stylesheet"
+echo "$fancy_invoice" | grep -q "entries-table" \
+    || fail "the fancy invoice has no entries table"
+if echo "$fancy_invoice" | grep -q "invoice-print-date"; then
+    fail "the fancy invoice printed a date row; the Scheme variant prints none"
+fi
 
 # The receipt and the two tax invoice variants are native documents too.
 # sample1's single document is a vendor bill: the Tax Invoice prints it, and

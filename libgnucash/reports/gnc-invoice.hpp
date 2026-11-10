@@ -78,6 +78,10 @@ struct DocumentOwner
     std::string contact;
     /** The Scheme company URL, gnc:*company-url*.  Company only. */
     std::string url;
+    /** The book's tax number (the Scheme "Tax" / "Tax Number" option, which
+     *  invoice.scm prints as the company table's company-tax-nr row).  The
+     *  company only; empty when the book does not set one. */
+    std::string tax_number;
 };
 
 /* -------------------------------------------------------------- invoices */
@@ -166,6 +170,11 @@ struct InvoiceDocument
      *  the Tax Invoice's optional Job name and Job number rows. */
     std::string job_name;
     std::string job_number;
+    /** The Scheme client table's "REF <reference>" rows: the references of
+     *  the orders the invoice's entries belong to, unique, in the order
+     *  invoice.scm's fold builds them (the entries reversed, first
+     *  reference wins).  Empty when no entry has an order. */
+    std::vector<std::string> references;
     /** The books's own business identity (the Scheme "company table"):
      *  name, address, phone, fax, email, URL and company id, read from the
      *  book's Business options. */
@@ -293,15 +302,85 @@ std::string render_tax_invoice_not_selected ();
 
 /* ------------------------------------------------------- printable invoice */
 
-/** Which of the Scheme invoice report's display switches the printable
- *  invoice honours.  The defaults are the Scheme report's defaults:
- *  every column except the per-entry tax amount, the due date, subtotal,
- *  billing id, billing terms and payments on; notes and the owner id off. */
+/** Which of the Scheme invoice report's three registrations a document is
+ *  rendered as.  invoice.scm registers "Printable Invoice", "Easy Invoice"
+ *  and "Fancy Invoice" from one renderer and one options-generator; the
+ *  three differ only in two defaults, the "CSS" text and the "Row 3 Right"
+ *  slot (the print date).  Everything else -- the option pages, the layout
+ *  rows, the entry table -- is the same document, so it is one renderer
+ *  here too, with the variant choosing those two defaults. */
+enum class InvoiceLayout
+{
+    Printable,
+    Easy,
+    Fancy,
+};
+
+/** One of the six header slots of the Scheme layout.  The Scheme option value
+ *  is a symbol: none, client, company, invoice, today or picture. */
+enum class InvoiceSlot
+{
+    /** Not set: the layout's own default for that slot. */
+    Default,
+    Empty,
+    Client,
+    Company,
+    Details,
+    Today,
+    Picture,
+};
+
+/** Resolve a report name to its layout.  False for a name that is not one of
+ *  the three invoice documents. */
+bool invoice_layout_from_name (const std::string& name, InvoiceLayout& layout);
+
+/** The Scheme variant's default for one header slot.  `row` is 1..3 and
+ *  `right` says which half of the row; false for a row outside 1..3. */
+bool invoice_default_slot (InvoiceLayout layout, int row, bool right,
+                           InvoiceSlot& slot);
+
+/** The text of one slot as the API writes it: none, client, company, invoice,
+ *  today or picture.  "default" is InvoiceSlot::Default. */
+const char* invoice_slot_name (InvoiceSlot slot);
+
+/** Parse an API slot value.  False for a name that is not a slot. */
+bool invoice_slot_from_name (const std::string& name, InvoiceSlot& slot);
+
+/** The Scheme "CSS" option's default for a layout: the shared base
+ *  stylesheet, plus the rules the Easy and Fancy variants add. */
+std::string invoice_default_css (InvoiceLayout layout);
+
+/** Which of the Scheme invoice report's display switches and layout choices
+ *  the native invoice documents honour.  The defaults are the Scheme
+ *  report's defaults; the layout the document is rendered as supplies the two
+ *  defaults that differ between the three registrations (the CSS text and
+ *  "Row 3 Right"), so a default-constructed option set renders the Printable
+ *  Invoice. */
 struct InvoicePrintOptions
 {
+    /** Which registration the document is rendered as.  The renderer sets it
+     *  from the report name; it is not an option. */
+    InvoiceLayout layout = InvoiceLayout::Printable;
     /** The Scheme "Custom Title"; empty means the document type's own name
      *  ("Invoice", "Bill", ...). */
     std::string custom_title;
+    /** The Scheme "CSS" text.  Empty means the layout's own stylesheet
+     *  (invoice_default_css), which is the Scheme default. */
+    std::string css;
+    /** The Scheme "Picture Location".  Empty means no picture; the value is
+     *  turned into a file URL the way make-file-url does. */
+    std::string picture;
+    /* The six header slots, in the Scheme's "Layout" page order.  A Default
+     * slot takes the layout's own value (invoice_default_slot). */
+    InvoiceSlot row1_left = InvoiceSlot::Default;
+    InvoiceSlot row1_right = InvoiceSlot::Default;
+    InvoiceSlot row2_left = InvoiceSlot::Default;
+    InvoiceSlot row2_right = InvoiceSlot::Default;
+    InvoiceSlot row3_left = InvoiceSlot::Default;
+    InvoiceSlot row3_right = InvoiceSlot::Default;
+    /** The Scheme "Minimum # of entries": the entry table is padded with
+     *  blank rows up to this many. */
+    int minimum_entries = 1;
     bool show_date = true;
     bool show_description = true;
     bool show_action = true;
@@ -318,6 +397,21 @@ struct InvoicePrintOptions
     bool show_notes = false;
     bool show_terms = true;
     bool show_payments = true;
+    /** The Scheme "References": the client table's REF rows. */
+    bool show_references = true;
+    /** The Scheme "Use Detailed Tax Summary": one tax row per tax account
+     *  instead of one "Tax" row. */
+    bool show_detailed_tax = false;
+    /** The Scheme "Job Details": the invoice details' Job number/name rows. */
+    bool show_job_details = false;
+    /** The Scheme "Payable to" switch and its phrase. */
+    bool show_payable_to = false;
+    std::string payable_to_string = "Please make all checks payable to";
+    /** The Scheme "Company contact" switch and its phrase. */
+    bool show_company_contact = false;
+    std::string company_contact_string = "Please direct all enquiries to";
+    /** The Scheme "Extra Notes" text, printed at the foot of every layout. */
+    std::string extra_notes = "Thank you for your patronage!";
 };
 
 /** Apply one of the boolean display options by its descriptor name
@@ -326,13 +420,39 @@ struct InvoicePrintOptions
 bool set_invoice_print_option (InvoicePrintOptions& options,
                                const std::string& name, bool value);
 
-/** Render the customer/vendor invoice document natively.  This is the
- *  "Printable Invoice" layout, the simplest of the three Scheme invoice
- *  layouts: it is the base variant, whose only stylesheet is the shared
- *  base CSS (the Easy and Fancy variants add layout rules and change the
- *  header rows).  The markup mirrors the Scheme document's class names
- *  (client-table, company-table, invoice-details-table, entries-table,
+/** Apply a text, choice or number option by its descriptor name: the CSS, the
+ *  picture location, the six layout slots, the minimum entry count, the two
+ *  phrase texts and the extra notes.  Returns false for a name this document
+ *  does not have; the route has already validated a choice against the
+ *  descriptor and a number against its range. */
+bool set_invoice_print_value (InvoicePrintOptions& options,
+                              const std::string& name,
+                              const std::string& value);
+
+/** Render the invoice document natively: the scheme invoice.scm layout,
+ *  which is the Printable Invoice for the default option set and the Easy or
+ *  Fancy Invoice when `options.layout` says so.  The three variants share
+ *  this renderer, exactly as they share one in Scheme; the variant supplies
+ *  the default stylesheet and the third row's right-hand slot.
+ *
+ *  The markup mirrors the Scheme document's class names (main-table,
+ *  client-table, company-table, invoice-details-table, entries-table,
  *  number-cell, total-number-cell) so one extractor can read both. */
+std::string render_invoice (const InvoiceDocument& document,
+                            const InvoicePrintOptions& options);
+
+/** The Easy Invoice layout: the same document with the Easy variant's default
+ *  stylesheet, for callers that name the variant rather than set it. */
+std::string render_easy_invoice (const InvoiceDocument& document,
+                                 const InvoicePrintOptions& options);
+
+/** The Fancy Invoice layout: the same document with the Fancy variant's
+ *  default stylesheet and no print-date row. */
+std::string render_fancy_invoice (const InvoiceDocument& document,
+                                  const InvoicePrintOptions& options);
+
+/** The Printable Invoice layout.  Kept as the name the first document's
+ *  callers and tests use; it is render_invoice with the Printable variant. */
 std::string render_printable_invoice (const InvoiceDocument& document,
                                       const InvoicePrintOptions& options);
 

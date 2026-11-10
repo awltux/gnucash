@@ -1,12 +1,21 @@
 /********************************************************************\
- * gnc-invoice-print.cpp -- the Printable Invoice document            *
+ * gnc-invoice-print.cpp -- the invoice document layouts             *
  *                                                                  *
  * The first consumer of the shared invoice model.  This file knows  *
- * how the "Printable Invoice" layout is arranged and nothing about  *
- * how the engine stores an invoice; a receipt or a tax invoice      *
- * renderer would be a sibling of this file, not a change to the     *
- * model.  The markup keeps the Scheme document's class names         *
- * (client-table, company-table, invoice-details-table,              *
+ * how the Scheme invoice.scm documents are arranged and nothing     *
+ * about how the engine stores an invoice; the receipt and the tax   *
+ * invoices are siblings of this file, not changes to the model.     *
+ *                                                                  *
+ * invoice.scm registers three documents -- Printable, Easy and      *
+ * Fancy Invoice -- from one renderer and one options-generator.     *
+ * They are the same document: the variant only supplies two         *
+ * defaults, the "CSS" text and the "Row 3 Right" slot, which is the *
+ * print date in the first two and empty in the Fancy Invoice.  This *
+ * file is that one renderer, with InvoiceLayout choosing the two    *
+ * defaults, so a variant cannot drift from the other two.           *
+ *                                                                  *
+ * The markup keeps the Scheme document's class names               *
+ * (main-table, client-table, company-table, invoice-details-table,  *
  * entries-table, number-cell, total-number-cell) so the parity      *
  * extractor reads both engines with one parser.                     *
  *                                                                  *
@@ -53,7 +62,8 @@ html_escape (const std::string& text)
     return out;
 }
 
-/* The Scheme multiline-to-html-text: one line per <br>. */
+/* The Scheme multiline-to-html-text: every line is followed by a <br />,
+ * including the last (gnc:html-markup-br after each split substring). */
 std::string
 multiline_html (const std::string& text)
 {
@@ -61,18 +71,20 @@ multiline_html (const std::string& text)
     for (const char c : text)
     {
         if (c == '\n')
-            out += "<br>";
+            out += "<br />";
         else
             out += html_escape (std::string (1, c));
     }
+    out += "<br />";
     return out;
 }
 
+/* The page chrome the native documents share.  The Scheme report's CSS
+ * option (invoice_default_css) is applied after it, as the Scheme document
+ * applies the option's text over the report engine's stylesheet. */
 const char*
-stylesheet ()
+chrome_css ()
 {
-    /* The invoice's own stylesheet, as the Scheme report's "CSS" option
-     * carries it: the shared base plus the entries-table rules. */
     return
         "html,body{margin:0 8px;color:#222;background:#fff;"
         "font-family:\"Noto Sans\",sans-serif;font-size:10pt}"
@@ -81,10 +93,8 @@ stylesheet ()
         ".main-table{width:100%}"
         ".invoice-title{font-weight:bold;text-decoration:underline;"
         "font-size:14pt;margin:.4em 0}"
-        ".client-name,.company-name{font-weight:bold;font-size:12pt}"
-        ".client-table,.company-table,.invoice-details-table{padding:0}"
-        ".client-table td,.company-table td,.invoice-details-table td{padding:0}"
-        ".div-align-right{text-align:right}"
+        ".client-table td,.company-table td,.invoice-details-table td{"
+        "padding:0}"
         ".entries-table{width:100%;margin-top:1em}"
         ".entries-table table{width:100%;border-collapse:collapse}"
         ".entries-table th,.entries-table td{border:1px solid #999;"
@@ -96,6 +106,34 @@ stylesheet ()
         "{font-weight:bold}"
         ".invoice-notes{margin-top:16px}"
         "@media print{.main-table>table{width:100%}}";
+}
+
+std::string
+stylesheet (const InvoicePrintOptions& options)
+{
+    std::string css = options.css.empty ()
+                          ? invoice_default_css (options.layout)
+                          : options.css;
+    return std::string (chrome_css ()) + css;
+}
+
+/* The Scheme qof-print-date of (current-time): the day the document is
+ * printed, in the book's date format. */
+std::string
+printed_today ()
+{
+    return format_date (gnc_time (nullptr));
+}
+
+/* make-file-url: "file:///" in front of anything that is not already a file
+ * URL. */
+std::string
+file_url (const std::string& path)
+{
+    static const std::string prefix = "file:///";
+    if (path.compare (0, prefix.size (), prefix) == 0)
+        return path;
+    return prefix + path;
 }
 
 bool
@@ -137,75 +175,181 @@ total_row (std::ostringstream& out, const std::string& label,
         << "</td></tr>";
 }
 
-void
-render_owner_table (std::ostringstream& out, const char* css,
-                    const DocumentOwner& owner, bool show_id)
+/* The Scheme display-subtotal: when the Total column is hidden the document
+ * prints the absolute value, so a credit or a customer payment does not read
+ * as a negative total on a page with no Total column to explain it. */
+std::string
+display_amount (gnc_numeric amount, gnc_commodity* currency,
+                const InvoicePrintOptions& options)
 {
-    if (owner.name.empty () && owner.address.empty () &&
-        !(show_id && !owner.id.empty ()))
-        return;
-    out << "<div class='" << css << "'><table>";
-    if (!owner.name.empty ())
-        out << "<tr><td class='" << css << "-name'>"
-            << html_escape (owner.name) << "</td></tr>";
-    const std::string address = owner.address.multiline ();
-    if (!address.empty ())
-        out << "<tr><td class='" << css << "-address'>"
-            << multiline_html (address) << "</td></tr>";
-    if (show_id && !owner.id.empty ())
-        out << "<tr><td class='" << css << "-id'>" << html_escape (owner.id)
-            << "</td></tr>";
-    /* The Scheme company table also prints the company's contact details;
-     * the client table does not, so these rows are company-only. */
-    if (std::string (css) == "company-table")
+    if (!options.show_total && gnc_numeric_negative_p (amount))
+        amount = gnc_numeric_neg (amount);
+    return format_money (amount, currency);
+}
+
+/* ------------------------------------------------------------ header slots */
+
+/* make-client-table: the name and address rows are unconditional, the owner
+ * id and the REF rows are not.  This is the Scheme document's table, so it is
+ * reproduced row for row rather than "when it has something to show". */
+void
+render_client_table (std::ostringstream& out, const InvoiceDocument& document,
+                     const InvoicePrintOptions& options)
+{
+    out << "<div class='client-table'><table>";
+    out << "<tr><td><div class='maybe-align-right client-name'>"
+        << html_escape (document.owner.name) << "</div></td></tr>";
+    const std::string address = document.owner.address.multiline ();
+    out << "<tr><td><div class='maybe-align-right client-address'>"
+        << multiline_html (address) << "</div></td></tr>";
+    if (options.show_owner_id && !document.owner.id.empty ())
+        out << "<tr><td><div class='maybe-align-right client-id'>"
+            << multiline_html (document.owner.id) << "</div></td></tr>";
+    if (options.show_references)
     {
-        const std::pair<const char*, const std::string*> company_rows[] = {
-            {"company-phone", &owner.address.phone},
-            {"company-fax", &owner.address.fax},
-            {"company-email", &owner.address.email},
-        };
-        for (const auto& row : company_rows)
-        {
-            if (row.second->empty ())
-                continue;
-            out << "<tr><td class='" << row.first << "'>"
-                << html_escape (*row.second) << "</td></tr>";
-        }
+        for (const std::string& reference : document.references)
+            out << "<tr><td>REF " << html_escape (reference) << "</td></tr>";
     }
     out << "</table></div>";
 }
 
+/* make-company-table: every row is conditional on its value being non-empty,
+ * unlike the client table.  The tax id is the book's Company ID and the tax
+ * number its Tax / Tax Number option. */
 void
-detail_row (std::ostringstream& out, const std::string& label,
-            const std::string& value)
+render_company_table (std::ostringstream& out,
+                      const InvoiceDocument& document)
 {
-    out << "<tr><td>" << html_escape (label)
-        << ":</td><td><div class='div-align-right'>"
-        << multiline_html (value) << "</div></td></tr>";
+    struct Row
+    {
+        const char* css;
+        std::string value;
+        bool multiline;
+    };
+    const DocumentOwner& company = document.company;
+    const Row rows[] = {
+        {"company-name", company.name, false},
+        {"company-address", company.address.multiline (), true},
+        {"company-phone", company.address.phone, false},
+        {"company-fax", company.address.fax, false},
+        {"company-email", company.address.email, false},
+        {"company-url", company.url, false},
+        {"company-tax-id", company.id, false},
+        {"company-tax-nr", company.tax_number, false},
+    };
+    out << "<div class='company-table'><table>";
+    for (const Row& row : rows)
+    {
+        if (row.value.empty ())
+            continue;
+        out << "<tr><td><div class='maybe-align-right " << row.css << "'>"
+            << (row.multiline ? multiline_html (row.value)
+                              : html_escape (row.value))
+            << "</div></td></tr>";
+    }
+    out << "</table></div>";
 }
 
+/* make-invoice-details-table: date and due date (or the in-progress line),
+ * the reference, the terms and the job rows. */
 void
 render_invoice_details (std::ostringstream& out,
                         const InvoiceDocument& document,
                         const InvoicePrintOptions& options)
 {
+    auto date_row = [&out] (const char* label, time64 when)
+    {
+        out << "<tr><td>" << label << ":</td><td><div class='div-align-right'>"
+            << html_escape (format_date (when)) << "</div></td></tr>";
+    };
+
     out << "<div class='invoice-details-table'><table>";
     if (document.posted)
     {
-        detail_row (out, "Date", format_date (document.date_posted));
+        date_row ("Date", document.date_posted);
         if (options.show_due_date && document.date_due != 0 &&
             document.date_due != G_MAXINT64)
-            detail_row (out, "Due Date", format_date (document.date_due));
+            date_row ("Due Date", document.date_due);
     }
     else
         out << "<tr><td colspan='2'><span class='invoice-in-progress'>"
                "Invoice in progress&hellip;</span></td></tr>";
+
     if (options.show_billing_id && !document.billing_id.empty ())
-        detail_row (out, "Reference", document.billing_id);
+    {
+        out << "<tr><td>Reference:</td><td><div class='div-align-right'>"
+            << multiline_html (document.billing_id) << "</div></td></tr>";
+        /* The Scheme table appends an empty row after the reference. */
+        out << "<tr></tr>";
+    }
     if (options.show_terms && !document.terms.empty ())
-        detail_row (out, "Terms", document.terms);
+        out << "<tr><td>Terms:</td><td><div class='div-align-right'>"
+            << multiline_html (document.terms) << "</div></td></tr>";
+    if (options.show_job_details && !document.job_number.empty ())
+    {
+        out << "<tr><td>Job number:</td><td><div class='div-align-right'>"
+            << html_escape (document.job_number) << "</div></td></tr>";
+        out << "<tr><td>Job name:</td><td><div class='div-align-right'>"
+            << html_escape (document.job_name) << "</div></td></tr>";
+    }
     out << "</table></div>";
 }
+
+void
+render_picture (std::ostringstream& out, const InvoicePrintOptions& options)
+{
+    out << "<div class='picture'><img src='"
+        << html_escape (file_url (options.picture)) << "'/></div>";
+}
+
+/* One slot's content.  The Scheme renderer for each slot is one of the
+ * make-*-table functions above, make-today or make-picture; `none` is no
+ * output at all. */
+void
+render_slot (std::ostringstream& out, InvoiceSlot slot,
+             const InvoiceDocument& document,
+             const InvoicePrintOptions& options)
+{
+    switch (slot)
+    {
+    case InvoiceSlot::Client:
+        render_client_table (out, document, options);
+        break;
+    case InvoiceSlot::Company:
+        render_company_table (out, document);
+        break;
+    case InvoiceSlot::Details:
+        render_invoice_details (out, document, options);
+        break;
+    case InvoiceSlot::Today:
+        out << "<div class='invoice-print-date'>" << printed_today ()
+            << "</div>";
+        break;
+    case InvoiceSlot::Picture:
+        render_picture (out, options);
+        break;
+    case InvoiceSlot::Empty:
+    case InvoiceSlot::Default:
+    default:
+        break;
+    }
+}
+
+/* One row of the Scheme main table: the left slot in a plain cell, the right
+ * slot wrapped in div-align-right. */
+void
+header_row (std::ostringstream& out, InvoiceSlot left, InvoiceSlot right,
+            const InvoiceDocument& document,
+            const InvoicePrintOptions& options)
+{
+    out << "<tr><td>";
+    render_slot (out, left, document, options);
+    out << "</td><td><div class='div-align-right'>";
+    render_slot (out, right, document, options);
+    out << "</div></td></tr>\n";
+}
+
+/* ----------------------------------------------------------- entry table */
 
 void
 render_entries (std::ostringstream& out, const InvoiceDocument& document,
@@ -273,14 +417,42 @@ render_entries (std::ostringstream& out, const InvoiceDocument& document,
         odd = !odd;
     }
 
+    /* The Scheme "Minimum # of entries" (the option the Fancy Invoice's
+     * layout introduced): pad the table with blank rows, alternating the row
+     * style the way the entry rows do. */
+    for (int i = static_cast<int> (document.entries.size ());
+         i < options.minimum_entries; ++i)
+    {
+        out << "<tr class='" << (odd ? "normal-row" : "alternate-row")
+            << "'>";
+        for (int column = 0; column < columns; ++column)
+            out << "<td></td>";
+        out << "</tr>\n";
+        odd = !odd;
+    }
+
     if (options.show_subtotal)
         total_row (out, "Net Price",
-                   format_money (document.subtotal, document.currency),
+                   display_amount (document.subtotal, document.currency,
+                                   options),
                    columns);
-    total_row (out, "Tax", format_money (document.tax_total, document.currency),
-               columns);
+    if (options.show_detailed_tax)
+    {
+        /* One row per tax account, named as the account is, instead of the
+         * single "Tax" row. */
+        for (const DocumentTax& tax : document.taxes)
+            total_row (out, tax.account,
+                       display_amount (tax.amount, document.currency, options),
+                       columns);
+    }
+    else
+        total_row (out, "Tax",
+                   display_amount (document.tax_total, document.currency,
+                                   options),
+                   columns);
     total_row (out, "Total Price",
-               format_money (document.total, document.currency), columns);
+               display_amount (document.total, document.currency, options),
+               columns);
 
     if (options.show_payments)
     {
@@ -303,47 +475,36 @@ render_entries (std::ostringstream& out, const InvoiceDocument& document,
             }
             out << "<td class='total-number-cell' colspan='"
                 << (columns - used > 1 ? columns - used : 1) << "'>"
-                << html_escape (format_money (payment.amount,
-                                              document.currency))
+                << html_escape (display_amount (payment.amount,
+                                                document.currency, options))
                 << "</td></tr>";
         }
     }
     total_row (out, "Amount Due",
-               format_money (document.amount_due, document.currency), columns);
+               display_amount (document.amount_due, document.currency,
+                               options),
+               columns);
     out << "</tbody></table></div>\n";
+}
+
+InvoiceSlot
+resolved_slot (InvoiceSlot set, InvoiceLayout layout, int row, bool right)
+{
+    if (set != InvoiceSlot::Default)
+        return set;
+    InvoiceSlot fallback = InvoiceSlot::Empty;
+    if (!invoice_default_slot (layout, row, right, fallback))
+        return InvoiceSlot::Empty;
+    return fallback;
 }
 
 } // namespace
 
-bool
-set_invoice_print_option (InvoicePrintOptions& options,
-                          const std::string& name, bool value)
-{
-    if (name == "show_date")         options.show_date = value;
-    else if (name == "show_description") options.show_description = value;
-    else if (name == "show_action")  options.show_action = value;
-    else if (name == "show_quantity") options.show_quantity = value;
-    else if (name == "show_price")   options.show_price = value;
-    else if (name == "show_discount") options.show_discount = value;
-    else if (name == "show_taxable") options.show_taxable = value;
-    else if (name == "show_tax_amount") options.show_tax_amount = value;
-    else if (name == "show_total")   options.show_total = value;
-    else if (name == "show_due_date") options.show_due_date = value;
-    else if (name == "show_subtotal") options.show_subtotal = value;
-    else if (name == "show_billing_id") options.show_billing_id = value;
-    else if (name == "show_owner_id") options.show_owner_id = value;
-    else if (name == "show_notes")   options.show_notes = value;
-    else if (name == "show_terms")   options.show_terms = value;
-    else if (name == "show_payments") options.show_payments = value;
-    else
-        return false;
-    return true;
-}
-
 std::string
-render_printable_invoice (const InvoiceDocument& document,
-                          const InvoicePrintOptions& options)
+render_invoice (const InvoiceDocument& document,
+                const InvoicePrintOptions& options)
 {
+    const InvoiceLayout layout = options.layout;
     const std::string kinds = options.custom_title.empty ()
                                   ? document_kind_name (document.kind)
                                   : options.custom_title;
@@ -351,31 +512,77 @@ render_printable_invoice (const InvoiceDocument& document,
 
     std::ostringstream out;
     out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
-        << html_escape (title) << "</title><style>" << stylesheet ()
-        << "</style></head><body>\n<div class='main-table'>\n"
-        << "<div class='invoice-title'>" << html_escape (title) << "</div>\n"
-        << "<table class='header-table'><tr><td>";
-    render_owner_table (out, "client-table", document.owner,
-                        options.show_owner_id);
-    out << "</td><td>";
-    render_invoice_details (out, document, options);
-    out << "</td></tr><tr><td>";
-    render_owner_table (out, "company-table", document.company, true);
-    out << "</td><td></td></tr></table>\n";
+        << html_escape (title) << "</title><style>" << stylesheet (options)
+        << "</style></head><body>\n<div class='main-table'><table>\n"
+        << "<tr><td colspan='2'><div class='invoice-title'>"
+        << html_escape (title) << "</div></td></tr>\n";
 
+    header_row (out, resolved_slot (options.row1_left, layout, 1, false),
+                resolved_slot (options.row1_right, layout, 1, true), document,
+                options);
+    header_row (out, resolved_slot (options.row2_left, layout, 2, false),
+                resolved_slot (options.row2_right, layout, 2, true), document,
+                options);
+    header_row (out, resolved_slot (options.row3_left, layout, 3, false),
+                resolved_slot (options.row3_right, layout, 3, true), document,
+                options);
+
+    out << "<tr><td colspan='2'>";
     render_entries (out, document, options);
+    out << "</td></tr>\n";
 
-    if (options.show_notes && !document.notes.empty ())
-        out << "<div class='invoice-notes'>" << multiline_html (document.notes)
-            << "</div>\n";
+    if (options.show_notes)
+        out << "<tr><td colspan='2'><div class='invoice-notes'>"
+            << multiline_html (document.notes) << "</div></td></tr>\n";
 
-    /* The Scheme report's "Extra Notes" text option has a default and is
-     * always printed (it has no display boolean); its default text is part of
-     * the document. */
-    out << "<div class='invoice-notes'>Thank you for your patronage!</div>\n";
+    if (options.show_payable_to && !document.company.name.empty ())
+        out << "<tr><td colspan='2'><div class='invoice-footer-payable-to'>"
+            << multiline_html (options.payable_to_string + ": " +
+                               document.company.name)
+            << "</div></td></tr>\n";
 
-    out << "</div>\n</body></html>\n";
+    if (options.show_company_contact && !document.company.contact.empty ())
+        out << "<tr><td colspan='2'><div "
+               "class='invoice-footer-company-contact'>"
+            << multiline_html (options.company_contact_string + ": " +
+                               document.company.contact)
+            << "</div></td></tr>\n";
+
+    /* The Scheme "Extra Notes" text option has a default and is always
+     * printed (it has no display boolean); its default text is part of the
+     * document. */
+    out << "<tr><td colspan='2'><div class='invoice-notes'>"
+        << multiline_html (options.extra_notes) << "</div></td></tr>\n";
+
+    out << "</table></div>\n</body></html>\n";
     return out.str ();
+}
+
+std::string
+render_easy_invoice (const InvoiceDocument& document,
+                     const InvoicePrintOptions& options)
+{
+    InvoicePrintOptions easy = options;
+    easy.layout = InvoiceLayout::Easy;
+    return render_invoice (document, easy);
+}
+
+std::string
+render_fancy_invoice (const InvoiceDocument& document,
+                      const InvoicePrintOptions& options)
+{
+    InvoicePrintOptions fancy = options;
+    fancy.layout = InvoiceLayout::Fancy;
+    return render_invoice (document, fancy);
+}
+
+std::string
+render_printable_invoice (const InvoiceDocument& document,
+                          const InvoicePrintOptions& options)
+{
+    InvoicePrintOptions printable = options;
+    printable.layout = InvoiceLayout::Printable;
+    return render_invoice (document, printable);
 }
 
 std::string
@@ -385,7 +592,7 @@ render_invoice_not_selected ()
      * "Invoice Number" option. */
     std::ostringstream out;
     out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
-           "Invoice</title><style>" << stylesheet ()
+           "Invoice</title><style>" << chrome_css ()
         << "</style></head><body><h3>Invoice:</h3>\n"
         << "<h3></h3>\n"
         << "<p>No valid invoice selected. Click on the Options button and "

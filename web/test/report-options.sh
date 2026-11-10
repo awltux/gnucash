@@ -398,10 +398,12 @@ done
 expect_status 404 "options for an unknown report" "/api/report/No%20Such%20Report/options"
 
 # The invoice report's selector is a document id, not a date or an account.
-# It advertises the invoice itself, a custom title and the document's display
-# switches.  The fixture book has one invoice, "yoyo1" (a vendor bill), which
-# is enough to prove the selector, the title and every switch change the
-# document.
+# It advertises the invoice itself, a custom title, the layout page (CSS,
+# picture and the six header slots) and the document's display switches.  The
+# fixture book has one invoice, "yoyo1" (a vendor bill), which is enough to
+# prove the selector, the title and every switch change the document.  Easy
+# Invoice and Fancy Invoice publish the same surface; their block below pins
+# the two defaults that make them different documents.
 echo "== the invoice document"
 expect_status 200 "Printable Invoice options" \
     "/api/report/Printable%20Invoice/options"
@@ -435,6 +437,75 @@ expect_body "unknown invoice" "unknown invoice 'NO-SUCH-INVOICE'"
 expect_status 400 "title on another report" \
     "/report/Trial%20Balance?title=Statement"
 expect_body "title on another report" "unknown option 'title'"
+
+# Easy Invoice and Fancy Invoice are the other two invoice.scm registrations:
+# one renderer, one option generator, so they publish the same option surface
+# the Printable Invoice block above pins (plus the layout page).  What is worth
+# checking here is that the selector and the 400s work for the names and that
+# the documents really are different -- the Easy stylesheet carries the rules
+# the Easy variant adds, the Fancy one enlarges the names and prints no
+# print-date row.
+for entry in "Easy%20Invoice|Easy Invoice" "Fancy%20Invoice|Fancy Invoice"
+do
+    enc=${entry%%|*}
+    name=${entry#*|}
+    expect_status 200 "$name options" "/api/report/$enc/options"
+    expect_body "$name options" "\"report\":\"$name\""
+    expect_body "$name options" '"name":"invoice"'
+    expect_body "$name options" '"name":"css"'
+    expect_body "$name options" '"name":"row3_right"'
+    expect_body "$name options" '"name":"minimum_entries"'
+    for switch in show_references show_detailed_tax show_job_details \
+                  show_payable_to show_company_contact
+    do
+        expect_body "$name options" "\"name\":\"$switch\""
+    done
+    expect_not_body "$name options has no date range" '"name":"start"'
+    expect_not_body "$name options has no account selection" '"name":"accounts"'
+    expect_not_body "$name options has no period preset" '"name":"period"'
+    expect_status 400 "start on the $name" "/report/$enc?start=2026-01-01"
+    expect_body "start on the $name" "does not accept a 'start' option"
+    expect_status 400 "accounts on the $name" "/report/$enc?accounts=all"
+    expect_body "accounts on the $name" "does not accept an 'accounts' option"
+    expect_status 400 "period on the $name" "/report/$enc?period=all"
+    expect_body "period on the $name" "does not accept a 'period' option"
+    expect_status 400 "unknown option on the $name" "/report/$enc?bogus=1"
+    expect_body "unknown option on the $name" "unknown option 'bogus'"
+    expect_status 400 "bad boolean on the $name" "/report/$enc?show_date=maybe"
+    expect_body "bad boolean on the $name" "invalid boolean 'maybe'"
+    expect_status 400 "bad layout slot on the $name" "/report/$enc?row1_left=zzz"
+    expect_body "bad layout slot on the $name" "invalid row1_left 'zzz'"
+    expect_status 400 "empty invoice on the $name" "/report/$enc?invoice="
+    expect_body "empty invoice on the $name" "empty 'invoice' value"
+    expect_status 400 "unknown invoice on the $name" \
+        "/report/$enc?invoice=NO-SUCH-INVOICE"
+    expect_body "unknown invoice on the $name" \
+        "unknown invoice 'NO-SUCH-INVOICE'"
+    fetch "/report/$enc" > /dev/null
+    expect_body "$name unselected warning" "No valid invoice selected"
+    fetch "/report/$enc?invoice=yoyo1" > /dev/null
+    expect_body "$name vendor bill renders" "entries-table"
+done
+
+# The two defaults that separate the three documents, on one vendor bill.
+fetch "/report/Printable%20Invoice?invoice=yoyo1" > /dev/null
+expect_body "the Printable document prints the date row" "invoice-print-date"
+expect_not_body "the Printable stylesheet has no Easy rules" "min-width: 600px"
+expect_not_body "the Printable stylesheet has no Fancy rules" "x-large"
+fetch "/report/Easy%20Invoice?invoice=yoyo1" > /dev/null
+expect_body "the Easy document prints the date row" "invoice-print-date"
+expect_body "the Easy stylesheet adds its rules" "min-width: 600px"
+fetch "/report/Fancy%20Invoice?invoice=yoyo1" > /dev/null
+expect_body "the Fancy stylesheet enlarges the names" "font-size: x-large"
+expect_not_body "the Fancy document prints no date row" "invoice-print-date"
+fetch "/report/Fancy%20Invoice?invoice=yoyo1&css=body%7B%7D" > /dev/null
+expect_body "a custom CSS replaces the layout's" "body{}"
+expect_not_body "a custom CSS drops the layout's Fancy rules" "x-large"
+# make-file-url prefixes "file:///" even to an absolute path, so the document
+# prints four slashes; that is what the Scheme picture slot does too.
+fetch "/report/Easy%20Invoice?invoice=yoyo1&row3_right=picture&picture=/tmp/logo.png" \
+    > /dev/null
+expect_body "a layout slot prints the picture" "file:////tmp/logo.png"
 
 # The Receipt and the two Tax Invoice variants are documents too.  They all
 # take the invoice selector; the tax invoices publish the Elements switches
@@ -1158,6 +1229,15 @@ PY
                     alternate-period) probe="alternate-period=last-year" ;;
                     format) probe="format=txf" ;;
                     period-duration) probe="period-duration=year" ;;
+                    # The invoice layout rows: each probe moves one slot to a
+                    # value the document's default does not already print
+                    # there, so the page has to change.
+                    row1_left) probe="row1_left=client" ;;
+                    row1_right) probe="row1_right=today" ;;
+                    row2_left) probe="row2_left=company" ;;
+                    row2_right) probe="row2_right=client" ;;
+                    row3_left) probe="row3_left=today" ;;
+                    row3_right) probe="row3_right=picture" ;;
                     *) bad "$report advertises choice option '$opt' with an unknown name"
                        continue ;;
                 esac ;;
@@ -1166,6 +1246,16 @@ PY
                     title) probe="title=Statement" ;;
                     report-title) probe="report-title=Statement" ;;
                     description-filter) probe="description-filter=zzz" ;;
+                    css) probe="css=body%7B%7D" ;;
+                    extra_notes) probe="extra_notes=Thanks" ;;
+                    # The picture only prints where a layout slot selects it,
+                    # so the probe also moves the default layout's date slot to
+                    # the picture slot.
+                    picture) probe="picture=/tmp/logo.png&row3_right=picture" ;;
+                    # The two phrase options only print inside rows this book
+                    # has no data for; they are the documented no-ops below.
+                    payable_to_string) probe="payable_to_string=Pay" ;;
+                    company_contact_string) probe="company_contact_string=Ask" ;;
                     *) bad "$report advertises text option '$opt' with no probe"
                        continue ;;
                 esac ;;
@@ -1173,7 +1263,12 @@ PY
                 # Lower the limit below the number of accounts the selection
                 # links, so the report switches to its "Too many accounts"
                 # warning.  The descriptor's own default is the upper case.
-                probe="$opt=1" ;;
+                # The invoice minimum entry count pads the entry table, so its
+                # probe raises it above the one entry sample1's bill has.
+                case "$opt" in
+                    minimum_entries) probe="$opt=3" ;;
+                    *) probe="$opt=1" ;;
+                esac ;;
             bool)
                 # Flip the descriptor's default, so the probe asks for the
                 # opposite of what the report already renders.
@@ -1229,11 +1324,19 @@ PY
                     else
                         bad "$report $opt is a no-op but the descriptor does not say so"
                     fi ;;
-                "Printable Invoice:show_notes"|"Printable Invoice:show_terms"|\
-                "Printable Invoice:show_payments")
-                    # sample1's bill has no notes, no terms and no payments, so
-                    # these switches have nothing to show on it.  The generated
-                    # invoice book exercises them (report-parity.sh).
+                *" Invoice:show_notes"|\
+                *" Invoice:show_terms"|*" Invoice:show_payments"|\
+                *" Invoice:show_references"|*" Invoice:show_job_details"|\
+                *" Invoice:show_payable_to"|\
+                *" Invoice:show_company_contact"|\
+                *" Invoice:payable_to_string"|\
+                *" Invoice:company_contact_string")
+                    # sample1's bill has no notes, no terms, no payments, no
+                    # order references, no job, and the book has no company
+                    # identity, so these switches and phrases have nothing to
+                    # show on it.  The generated invoice book exercises them
+                    # (report-parity.sh).  The three invoice layouts share the
+                    # option surface, so one pattern covers them all.
                     if grep -qF 'has no effect' "$OPTDIR/options.json"; then
                         ok "$report $opt has nothing to show on this book; the descriptor says so"
                     else

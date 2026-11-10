@@ -1178,11 +1178,17 @@ build_report_request (const std::string& report, const std::string& query,
             else if (report == "Customer Summary")
                 accepted = gnc::report::set_customer_summary_option (
                     request.customer_summary_options, param.name, value);
-            else if (report == "Printable Invoice")
-                accepted = gnc::report::set_invoice_print_option (
-                    request.invoice_options, param.name, value);
             else
-                accepted = false;
+            {
+                /* The three invoice documents share one option surface, so
+                 * the layout the report name selects does not change which
+                 * switch names it accepts. */
+                gnc::report::InvoiceLayout layout;
+                accepted = gnc::report::invoice_layout_from_name (report,
+                                                                  layout) &&
+                           gnc::report::set_invoice_print_option (
+                               request.invoice_options, param.name, value);
+            }
             if (!accepted)
             {
                 /* A switch the report publishes and this route has no
