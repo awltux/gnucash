@@ -1114,6 +1114,17 @@ render_table_spec (const TableSpec& requested, Account* root, std::string& html,
         return true;
     }
 
+    if (requested.source == SpecSource::BalanceSheet)
+    {
+        /* The source's fields are the as-of date and the commodity; the
+         * columns, sections and signs are the report's (see
+         * balance_sheet_spec_table()). */
+        html = render_html (balance_sheet_spec_table (root, requested),
+                            requested.title.empty () ? "Custom Report"
+                                                     : requested.title);
+        return true;
+    }
+
     if (requested.columns.empty ())
         return false;
 
@@ -2957,6 +2968,18 @@ balance_sheet (Account* root, std::optional<time64> as_of,
     table.chart = std::move (chart);
 
     return table;
+}
+
+Table
+balance_sheet_spec_table (Account* root, const TableSpec& spec)
+{
+    /* The report's own table builder, with the spec's as-of date and
+     * commodity.  Deliberately no second implementation: the section order,
+     * the sign reversal and the retained-earnings arithmetic are the report
+     * (balance_sheet() above), and a copy could drift from it.  A null
+     * `spec.end` is an unbounded balance sheet, which is the report route's
+     * "all dates". */
+    return balance_sheet (root, spec.end, spec.currency);
 }
 
 /* ----------------------------------------------------- income statement */

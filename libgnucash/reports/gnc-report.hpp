@@ -319,14 +319,20 @@ enum class PeriodUnit
 };
 
 /** Where a spec's rows come from: the account table the designer has always
- *  built (columns from `Column`), or a listing of the book's individual
- *  splits (columns from `SplitColumn`). */
+ *  built (columns from `Column`), a listing of the book's individual splits
+ *  (columns from `SplitColumn`), or the native Balance Sheet's own table. */
 enum class SpecSource
 {
     /** One row per account or period: the account reports' own axis. */
     Accounts,
     /** One row per split, as the entry listings print them. */
     Splits,
+    /** The Balance Sheet's fixed table: Assets, Liabilities and Equity
+     *  sections with the report's sign convention and retained-earnings line,
+     *  drawn as of `TableSpec::end`.  A spec cannot choose the columns, the
+     *  grouping or the section order; only the as-of date and the commodity
+     *  are its own. */
+    BalanceSheet,
 };
 
 /** How a split listing orders and sections its rows.  Each value reproduces
@@ -409,6 +415,20 @@ struct TableSpec
  *  the General Ledger; the transaction layout lists them, as the General
  *  Journal does.  The table's currency defaults to the report currency. */
 Table split_table (Account* root, const TableSpec& spec);
+
+/** Build the table a balance-sheet spec asks for.  The structure is the native
+ *  Balance Sheet's and is deliberately not configurable: the Assets,
+ *  Liabilities and Equity sections in the report's order, one row per account
+ *  as of `spec.end`, liabilities and equity sign-reversed, the income and
+ *  expense balances folded into the "Retained Earnings" line inside equity,
+ *  and the report's own totals.  `spec.currency` is the commodity the amounts
+ *  convert into; every other field is the spec layer's business, and it
+ *  rejects the fields the report does not have rather than ignoring them.
+ *
+ *  The table is the report's, not a copy of it: a second implementation of the
+ *  section order, the sign reversal or the retained-earnings arithmetic could
+ *  drift from the report the source claims to be. */
+Table balance_sheet_spec_table (Account* root, const TableSpec& spec);
 
 /** The account type names a spec may scope by, in display order: the engine's
  *  persistent names (xaccAccountTypeEnumAsString), without the hidden root. */

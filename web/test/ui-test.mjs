@@ -781,11 +781,31 @@ const explicitRows = await page.evaluate(async (target) => {
         [...row.cells].map((cell) =>
             cell.textContent.replace(/\s+/g, ' ').trim()).join(' | '));
 }, explicitUrl);
-const readTableRows = () => page.evaluate(() => {
-    const doc = document.getElementById('view').contentDocument;
-    return [...doc.querySelectorAll('table tr')].map((row) =>
-        [...row.cells].map((cell) =>
-            cell.textContent.replace(/\s+/g, ' ').trim()).join(' | '));
+const readTableRows = () => page.evaluate(async () => {
+    const rowsOf = () => {
+        const doc = document.getElementById('view').contentDocument;
+        return doc ? [...doc.querySelectorAll('table tr')].map((row) =>
+            [...row.cells].map((cell) =>
+                cell.textContent.replace(/\s+/g, ' ').trim()).join(' | ')) : [];
+    };
+    // The frame's document is parsed asynchronously, so the wait conditions
+    // above can be satisfied by the title and the first rows while the rest of
+    // the table is still being parsed; reading then compares a partial table
+    // (and the numbers, not the document, look wrong).  Wait for the document
+    // to finish parsing and for two reads to agree before returning.
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 20));
+    let previous = rowsOf();
+    for (let attempt = 0; attempt < 250; ++attempt) {
+        const doc = document.getElementById('view').contentDocument;
+        const current = rowsOf();
+        if (doc && doc.readyState === 'complete' &&
+            current.length === previous.length &&
+            JSON.stringify(current) === JSON.stringify(previous))
+            return current;
+        previous = current;
+        await pause();
+    }
+    return previous;
 });
 
 await page.click('#spec-preview');

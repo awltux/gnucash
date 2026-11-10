@@ -74,6 +74,12 @@ struct ReportSpec
     std::vector<std::string> chart_series;
 };
 
+/** The two columns a balance-sheet spec always has, in the report's order
+ *  ("account-name", "balance").  They are the report's columns, not a choice:
+ *  spec_from_json() accepts only these on a balance-sheet spec and
+ *  /api/spec/options publishes them, so both read this one list. */
+const std::vector<std::string>& balance_sheet_columns ();
+
 /** Where saved reports live: $GNC_WEBUI_REPORTS when set (the tests use a
  *  temporary file), else $XDG_DATA_HOME/gnucash/webui/reports.json, else
  *  ~/.local/share/gnucash/webui/reports.json. */

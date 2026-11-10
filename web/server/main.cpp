@@ -414,7 +414,29 @@ spec_options_json ()
     }
     body += "],\"sources\":["
             "{\"name\":\"accounts\",\"label\":\"Accounts and periods\"},"
-            "{\"name\":\"splits\",\"label\":\"Transactions' splits\"}],"
+            "{\"name\":\"splits\",\"label\":\"Transactions' splits\"},"
+            "{\"name\":\"balance-sheet\",\"label\":\"Balance sheet (the "
+            "report's fixed sections)\"}],"
+            "\"balance_sheet\":{\"columns\":[";
+    first = true;
+    for (const std::string& column : web::balance_sheet_columns ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "\"";
+        body += json_escape (column.c_str ());
+        body += "\"";
+    }
+    body += "],\"options\":[\"end\",\"currency\"],"
+            "\"note\":\"A balance-sheet spec is the native Balance Sheet's own "
+            "table: the Assets, Liabilities and Equity sections in the "
+            "report's order, liabilities and equity sign-reversed, the income "
+            "and expense balances folded into one Retained Earnings line, and "
+            "the report's totals and chart.  It takes an as-of date ('end') "
+            "and a currency; it has no start date, date preset, grouping, "
+            "column selection, account scope or chart option, and a request "
+            "that sets one is refused by name rather than ignored.\"},"
             "\"split_columns\":[";
     first = true;
     for (const gnc::report::SplitColumn column :

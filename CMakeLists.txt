@@ -980,6 +980,7 @@ set(web_DIST
   web/ui/index.html
   web/test/make-aging-book.py
   web/test/make-budget-book.py
+  web/test/make-demo-book.py
   web/test/make-invoice-book.py
   web/test/make-investment-book.py
   web/test/make-tax-book.py
@@ -987,7 +988,10 @@ set(web_DIST
   web/test/report-parity.sh
   web/test/report-options.sh
   web/test/report-spec.sh
+  web/test/report-spec-listings.sh
+  web/test/report-spec-balance-sheet.sh
   web/test/tax-txf-parity.sh
+  web/test/demo-book-check.sh
   web/test/ui-test.mjs)
 add_subdirectory (bindings)
 add_subdirectory (test-templates)

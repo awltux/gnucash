@@ -223,45 +223,78 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (!optional_string (value, "source", spec.source, present, error))
         return false;
     const bool split_source = spec.source == "splits";
-    if (!split_source && spec.source != "accounts")
+    const bool balance_sheet_source = spec.source == "balance-sheet";
+    if (!split_source && !balance_sheet_source && spec.source != "accounts")
         return fail (error, "unknown source '" + spec.source +
-                             "' (expected accounts or splits)");
+                             "' (expected accounts, splits or balance-sheet)");
 
     const json::Value* columns = value.find ("columns");
-    if (columns == nullptr || !columns->is_array () || columns->array.empty ())
-        return fail (error, "'columns' must be a non-empty array of column names");
-    if (split_source && columns->array.size () > 11)
-        return fail (error, "'columns' has more than 11 entries");
-    if (!split_source && columns->array.size () > 8)
-        return fail (error, "'columns' has more than 8 entries");
-    spec.columns.clear ();
-    std::set<std::string> seen_columns;
-    for (const json::Value& entry : columns->array)
+    if (balance_sheet_source)
     {
-        if (!entry.is_string ())
-            return fail (error, "'columns' entries must be strings");
-        if (split_source)
+        /* The report prints two columns and the source is its table, so the
+         * columns are not a choice: omit them, or give exactly the report's
+         * two in the report's order.  A caller asking for a third column (or
+         * another order) is asking for a different report, not a setting. */
+        spec.columns.clear ();
+        if (columns != nullptr && !columns->is_null ())
         {
-            gnc::report::SplitColumn column;
-            if (!gnc::report::split_column_from_name (entry.string, column))
-                return fail (error, "unknown split column '" + entry.string +
-                                     "' (expected date, num, description, "
-                                     "memo, transfer, account, reconcile, "
-                                     "debit, credit, amount or "
-                                     "running-balance)");
+            if (!columns->is_array ())
+                return fail (error,
+                             "'columns' must be an array of column names");
+            for (const json::Value& entry : columns->array)
+            {
+                if (!entry.is_string ())
+                    return fail (error, "'columns' entries must be strings");
+                spec.columns.push_back (entry.string);
+            }
         }
-        else
+        if (spec.columns.empty ())
+            spec.columns = balance_sheet_columns ();
+        else if (spec.columns != balance_sheet_columns ())
+            return fail (error, "'columns' is fixed on a balance-sheet spec: "
+                                 "the report prints exactly 'account-name' and "
+                                 "'balance', in that order, so the columns are "
+                                 "not a choice");
+    }
+    else
+    {
+        if (columns == nullptr || !columns->is_array () ||
+            columns->array.empty ())
+            return fail (
+                error, "'columns' must be a non-empty array of column names");
+        if (split_source && columns->array.size () > 11)
+            return fail (error, "'columns' has more than 11 entries");
+        if (!split_source && columns->array.size () > 8)
+            return fail (error, "'columns' has more than 8 entries");
+        spec.columns.clear ();
+        std::set<std::string> seen_columns;
+        for (const json::Value& entry : columns->array)
         {
-            gnc::report::Column column;
-            if (!gnc::report::column_from_name (entry.string, column))
-                return fail (error, "unknown column '" + entry.string +
-                                     "' (expected account-name, debit, credit, "
-                                     "balance or subtotal)");
+            if (!entry.is_string ())
+                return fail (error, "'columns' entries must be strings");
+            if (split_source)
+            {
+                gnc::report::SplitColumn column;
+                if (!gnc::report::split_column_from_name (entry.string, column))
+                    return fail (error, "unknown split column '" + entry.string +
+                                         "' (expected date, num, description, "
+                                         "memo, transfer, account, reconcile, "
+                                         "debit, credit, amount or "
+                                         "running-balance)");
+            }
+            else
+            {
+                gnc::report::Column column;
+                if (!gnc::report::column_from_name (entry.string, column))
+                    return fail (error, "unknown column '" + entry.string +
+                                         "' (expected account-name, debit, credit, "
+                                         "balance or subtotal)");
+            }
+            if (!seen_columns.insert (entry.string).second)
+                return fail (error, "column '" + entry.string +
+                                     "' appears more than once");
+            spec.columns.push_back (entry.string);
         }
-        if (!seen_columns.insert (entry.string).second)
-            return fail (error, "column '" + entry.string +
-                                 "' appears more than once");
-        spec.columns.push_back (entry.string);
     }
 
     spec.grouping = "none";
@@ -275,6 +308,10 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "a split listing has no 'grouping'; its sections "
                              "come from 'split_grouping' (none, account, "
                              "account-code or transaction)");
+    if (balance_sheet_source && spec.grouping != "none")
+        return fail (error, "a balance-sheet spec has no 'grouping': the "
+                             "report's sections are fixed (Assets, "
+                             "Liabilities, Equity)");
 
     spec.split_grouping = "none";
     if (!optional_string (value, "split_grouping", spec.split_grouping, present,
@@ -301,6 +338,9 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (split_source && spec.period_unit != "year")
         return fail (error, "a split listing has no 'period_unit': its rows "
                              "are splits, not periods");
+    if (balance_sheet_source && spec.period_unit != "year")
+        return fail (error, "a balance-sheet spec has no 'period_unit': it is "
+                             "drawn as of one date, not over periods");
 
     spec.period_mode = "activity";
     if (!optional_string (value, "period_mode", spec.period_mode, present,
@@ -312,6 +352,9 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (split_source && spec.period_mode != "activity")
         return fail (error, "a split listing has no 'period_mode': its rows "
                              "are splits, not period balances");
+    if (balance_sheet_source && spec.period_mode != "activity")
+        return fail (error, "a balance-sheet spec has no 'period_mode': it is "
+                             "drawn as of one date, not over periods");
     if (spec.period_mode == "cumulative" && spec.grouping != "period")
         return fail (error, "period_mode 'cumulative' needs grouping "
                              "'period'");
@@ -327,6 +370,18 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (!optional_string (value, "currency", spec.query.currency, present,
                           error))
         return false;
+
+    /* The report has one date, its "Balance Sheet Date", which the spec calls
+     * 'end'.  A start date, or a preset that would resolve to a range, is not
+     * a setting the report has: the route accepts a start date for range
+     * symmetry and ignores it, and the spec must not do the same silently. */
+    if (balance_sheet_source && !spec.query.start.empty ())
+        return fail (error, "a balance-sheet spec has no 'start': the report "
+                             "is drawn as of one date, 'end'");
+    if (balance_sheet_source && !spec.query.date_preset.empty ())
+        return fail (error, "a balance-sheet spec has no 'date_preset': it "
+                             "resolves to a range, and the report is drawn as "
+                             "of one date, 'end'");
 
     if (!spec.query.date_preset.empty () &&
         (!spec.query.start.empty () || !spec.query.end.empty ()))
@@ -429,6 +484,15 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         }
     }
 
+    if (balance_sheet_source && !spec.query.accounts.empty ())
+        return fail (error, "a balance-sheet spec covers the whole chart of "
+                             "accounts, as the report does, so it has no "
+                             "'accounts'");
+    if (balance_sheet_source && !spec.account_types.empty ())
+        return fail (error, "a balance-sheet spec covers the whole chart of "
+                             "accounts, as the report does, so it has no "
+                             "'account_types'");
+
     if (split_source && spec.split_grouping == "transaction")
     {
         /* The General Journal's layout is the whole book's journal: the
@@ -458,15 +522,25 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (split_source && !spec.chart.empty ())
         return fail (error, "a split listing has no chart: a chart plots "
                              "account or period amounts");
+    if (balance_sheet_source && !spec.chart.empty ())
+        return fail (error, "a balance-sheet spec has no 'chart': the report "
+                             "always prints its own chart of the three section "
+                             "totals");
 
     spec.chart_series.clear ();
-    if (split_source)
+    if (split_source || balance_sheet_source)
     {
         const json::Value* series = value.find ("chart_series");
         if (series != nullptr && !series->is_null () && series->is_array () &&
             !series->array.empty ())
-            return fail (error, "a split listing has no chart_series: a chart "
-                                 "plots account or period amounts");
+            return fail (error, balance_sheet_source
+                                      ? "a balance-sheet spec has no "
+                                        "'chart_series': the report always "
+                                        "prints its own chart of the three "
+                                        "section totals"
+                                      : "a split listing has no chart_series: "
+                                        "a chart plots account or period "
+                                        "amounts");
     }
     const json::Value* series = value.find ("chart_series");
     if (series != nullptr && !series->is_null ())
@@ -592,6 +666,14 @@ json_field (const char* name, const std::string& value)
 }
 
 } // namespace
+
+const std::vector<std::string>&
+balance_sheet_columns ()
+{
+    static const std::vector<std::string> columns = {"account-name",
+                                                     "balance"};
+    return columns;
+}
 
 std::string
 spec_store_path ()
@@ -1109,16 +1191,44 @@ no_spec_note (const std::string& name)
                "their gains.  A spec has no lot, price or gain column, so it "
                "cannot describe the report.";
     }
-    if (name == "Balance Sheet" || name == "Equity Statement" ||
-        name == "Balance Sheet (Multicolumn)" ||
-        name == "Income Statement (Multicolumn)")
+    if (name == "Balance Sheet (Multicolumn)")
     {
-        return "It sign-reverses liabilities and equity, groups rows into "
-               "sections with their own totals, folds income and expense into "
-               "retained earnings and prints an as-of balance.  A spec row is "
-               "one account's own amount: it has no section, sign reversal or "
-               "retained-earnings row, so a flat or account-tree list would be "
-               "a different report.";
+        return "It prints the Balance Sheet's sections, sign reversal and "
+               "retained-earnings line again, but as one amount column per "
+               "period end: each row carries a value per date, the column "
+               "headings are dates, and the single-column form of the report "
+               "is not the Balance Sheet either (its headings are 'Asset', "
+               "'Total For Asset' and so on, and a parent account prints its "
+               "subtree and then its own balance on two rows).  The table "
+               "model already has the grouped column axis the report uses "
+               "(column_headings with one Row::values entry per column), but "
+               "a spec has no field for it: 'period_unit' groups rows by "
+               "period, and no field asks for a period column axis.  "
+               "Expressing it therefore needs a new spec field (the report's "
+               "'Period duration' and 'Period order is most recent first') "
+               "and the multicolumn row rules, which is a second source, not "
+               "a setting on this one.";
+    }
+    if (name == "Equity Statement")
+    {
+        return "It is an equity roll-forward, not a balance list: opening "
+               "capital, the period's net income or loss, investments, "
+               "withdrawals and closing capital, each derived from the equity, "
+               "income and expense accounts over two dates.  No spec source "
+               "produces those rows; an account spec's row is one account's "
+               "own amount over a date range, with no opening balance and no "
+               "capital-movement line.";
+    }
+    if (name == "Income Statement (Multicolumn)")
+    {
+        return "It is the Income Statement's rows with one amount column per "
+               "period end: income sign-reversed, a Net Income block, and the "
+               "same rows across the columns.  The table model's grouped "
+               "column axis (column_headings and Row::values) renders that "
+               "shape, but a spec has no field asking for a period column "
+               "axis -- 'period_unit' groups rows by period -- and an account "
+               "spec's rows carry no sections or sign reversal, so it cannot "
+               "be described as a spec today.";
     }
     if (name == "Budget Report" || name == "Budget Income Statement" ||
         name == "Budget Profit & Loss" || name == "Budget Balance Sheet" ||
@@ -1214,6 +1324,35 @@ native_designer_info (const std::string& report, NativeDesignerInfo& info)
             "same as-of date, which is the C++ trial balance's own table.  The "
             "copy has its own name and title; its cells are the report's "
             "cells.";
+        return true;
+    }
+
+    if (report == "Balance Sheet")
+    {
+        /* The source is the report's own table, so the only things that carry
+         * over are the as-of date and the commodity.  The fixed columns are
+         * the report's two, and the copy gets its own name and title. */
+        ReportSpec spec;
+        spec.name = report + " (copy)";
+        spec.title = spec.name;
+        spec.source = "balance-sheet";
+        spec.columns = {"account-name", "balance"};
+        spec.query.end = option_default (options, "end");
+        spec.query.currency = option_default (options, "currency");
+        info.spec = std::move (spec);
+        info.has_spec = true;
+        info.equivalence = "exact";
+        info.note =
+            "Its cells are the report's own: the Assets, Liabilities and "
+            "Equity sections in the report's order, one row per account as of "
+            "the Balance Sheet Date with liabilities and equity "
+            "sign-reversed, the income and expense balances folded into one "
+            "Retained Earnings line inside equity, and the report's totals.  "
+            "The structure is the report's, not a choice: a balance-sheet "
+            "spec has no start date, grouping, column selection, account "
+            "scope or chart option, and the report's chart of the three "
+            "section totals is always printed.  The copy has its own name and "
+            "title; its cells are the report's cells.";
         return true;
     }
 
@@ -1373,6 +1512,15 @@ render_spec_html (const ReportSpec& spec, Account* root, std::string& html,
             table.split_grouping = gnc::report::SplitGrouping::Transaction;
         else
             table.split_grouping = gnc::report::SplitGrouping::None;
+    }
+    else if (spec.source == "balance-sheet")
+    {
+        /* The report's own table: its columns, sections and signs come from
+         * balance_sheet_spec_table(), and the spec's own two fields are the
+         * as-of date (`table.end` below) and the currency.  Nothing is copied
+         * from spec.columns here, so a spec cannot select a third column even
+         * by posting one the validator would accept. */
+        table.source = gnc::report::SpecSource::BalanceSheet;
     }
     else
     {

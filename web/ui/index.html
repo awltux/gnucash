@@ -160,6 +160,10 @@
   </p>
   <p id="spec-error" class="error" role="alert" hidden></p>
   <form id="spec-form">
+    <!-- The source a populated spec came with.  The form has no source
+         picker: a report's starting point is the source it was published
+         with, and a new report is the account source. -->
+    <input id="spec-source" type="hidden" value="accounts">
     <div class="option">
       <label for="spec-name">Name</label>
       <input id="spec-name" type="text" maxlength="80" autocomplete="off"
@@ -297,6 +301,7 @@ const reportList = document.getElementById("report-list");
 const searchBox = document.getElementById("report-search");
 const filterNote = document.getElementById("report-filter-note");
 const specForm = document.getElementById("spec-form");
+const specSource = document.getElementById("spec-source");
 const specName = document.getElementById("spec-name");
 const specTitle = document.getElementById("spec-title");
 const specTags = document.getElementById("spec-tags");
@@ -1002,6 +1007,8 @@ function applySpecToDesigner(spec) {
   specName.value = typeof spec.name === "string" ? spec.name : "";
   specTitle.value = typeof spec.title === "string" ? spec.title : "";
   specTags.value = Array.isArray(spec.tags) ? spec.tags.join(", ") : "";
+  specSource.value = typeof spec.source === "string" && spec.source !== ""
+    ? spec.source : "accounts";
   setChecked(specColumns, "spec-columns", spec.columns);
   orderChecked(specColumns, "spec-columns", spec.columns);
   setChecked(specAccounts, "spec-accounts", spec.accounts);
@@ -1032,6 +1039,7 @@ function clearDesigner() {
   specName.value = "";
   specTitle.value = "";
   specTags.value = "";
+  specSource.value = "accounts";
   setChecked(specColumns, "spec-columns", ["account-name"]);
   setChecked(specAccounts, "spec-accounts", []);
   setChecked(specAccountTypes, "spec-account-types", []);
@@ -1278,6 +1286,10 @@ function readDesignerSpec() {
     chart_series: [...specChartSeries.querySelectorAll("input:checked")]
       .map((box) => box.value),
   };
+  // The account source is the default, so it is left out; a populated
+  // balance-sheet spec must keep its source or the server would read it as an
+  // account list (and the report it came from would not be its cells).
+  if (specSource.value !== "accounts") spec.source = specSource.value;
   const preset = specField("date_preset");
   if (preset !== "") {
     spec.date_preset = preset;
@@ -1393,6 +1405,23 @@ async function selectSpec(spec, builtin = false) {
   savedWrap.hidden = true;
   savedList.replaceChildren();
   view.removeAttribute("srcdoc");
+
+  // Re-read the spec from its own route before the frame navigates: the list
+  // entry and this document are meant to be the same spec, and the designer
+  // shows exactly what /api/specs/<id> serves, not a cached summary.  The
+  // read finishes before the frame is pointed at the report, so no request of
+  // this view's is still in flight once the report is on screen and the page
+  // can be replaced, reloaded or navigated by the next click.
+  let full = spec;
+  try {
+    const response =
+      await fetch(api("api/specs/" + encodeURIComponent(spec.id)));
+    if (response.ok) full = await response.json();
+  } catch (err) {
+    full = spec; // the list entry is still the server's own document
+  }
+  if (generation !== formGeneration) return;
+
   view.hidden = false;
   view.src = api("report/spec/" + encodeURIComponent(spec.id));
 
@@ -1403,19 +1432,6 @@ async function selectSpec(spec, builtin = false) {
                    id: spec.id };
   setSaveAs(true);
   await ensureDesignerVocabulary();
-  if (generation !== formGeneration) return;
-
-  // Re-read the spec from its own route: the list entry and this document
-  // are meant to be the same spec, and the designer shows exactly what
-  // /api/specs/<id> serves, not a cached summary.
-  let full = spec;
-  try {
-    const response =
-      await fetch(api("api/specs/" + encodeURIComponent(spec.id)));
-    if (response.ok) full = await response.json();
-  } catch (err) {
-    full = spec; // the list entry is still the server's own document
-  }
   if (generation !== formGeneration) return;
 
   applySpecToDesigner(full);
@@ -1440,8 +1456,15 @@ async function deleteSpec(spec) {
   try {
     const response = await fetch(
       api("api/specs/" + encodeURIComponent(spec.id)), { method: "DELETE" });
+    // Read the reply before moving on, success or not.  The server answers
+    // with a body and closes the connection; a body nobody reads leaves the
+    // request unfinished, and the browser reports that as an aborted request
+    // as soon as it tears the stream down — a failed request that would look
+    // like a defect in the console and in a test's request log, long after
+    // the delete itself worked.
+    const body = await response.text();
     if (!response.ok) {
-      showSpecError((await response.text()).trim() ||
+      showSpecError(body.trim() ||
                     `The report could not be deleted (HTTP ${response.status}).`);
       return;
     }
