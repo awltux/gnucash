@@ -420,7 +420,9 @@ spec_options_json ()
             "{\"name\":\"invoices\",\"label\":\"Invoices and bills (the aging "
             "reports)\"},"
             "{\"name\":\"lots\",\"label\":\"Lots (the Lot Viewer's transaction "
-            "table)\"}],"
+            "table)\"},"
+            "{\"name\":\"budgets\",\"label\":\"Budgets (the Budget Report's "
+            "budget-vs-actual table)\"}],"
             "\"balance_sheet\":{\"columns\":[";
     first = true;
     for (const std::string& column : web::balance_sheet_columns ())
@@ -523,6 +525,41 @@ spec_options_json ()
             "refused by name rather than ignored.  The two portfolio reports "
             "are not this source: their rows are accounts with priced values, "
             "not lots.\"},"
+            "\"budgets\":{\"columns\":[";
+    first = true;
+    for (const std::string& column : web::budget_columns ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "\"";
+        body += json_escape (column.c_str ());
+        body += "\"";
+    }
+    body += "],\"options\":[\"accounts\"],"
+            "\"note\":\"A budgets spec is the native Budget Report's own "
+            "table: one row per account of its default selection (ASSET, "
+            "LIABILITY, INCOME and EXPENSE) or of the accounts it names, laid "
+            "out as the account tree to the report's display depth of two, "
+            "and one 'Bgt <period start>' / 'Act <period start>' pair per "
+            "period of the book's budget.  The periods are the budget's own, "
+            "so 'budget' and 'actual' stand for the repeating pair and a "
+            "budgets spec has no start, end, date preset, period unit or "
+            "period mode; the report always uses the book's default budget, "
+            "so there is no budget selection either.  The budget figure is "
+            "the report's rolled-up value and the actual is the period's "
+            "actual excluding closing entries, both sign-reversed for "
+            "credit-normal accounts, and a zero budget prints the report's "
+            "'.'.  'accounts' is the report's Account option (a named account "
+            "means that account and its subtree); the report prints each "
+            "amount in its account's commodity, so a request that sets a "
+            "currency, account type, grouping, chart or preset is refused by "
+            "name rather than ignored.  With no budget in the book the spec "
+            "renders the report's 'No budgets exist. You must create at least "
+            "one budget.' page.  The other four budget reports are not this "
+            "source: the two budget statements and the budget balance sheet "
+            "print whole-budget statement rows, and Budget Flow prints one "
+            "type-sectioned period, each needing its own source.\"},"
             "\"split_columns\":[";
     first = true;
     for (const gnc::report::SplitColumn column :

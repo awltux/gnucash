@@ -51,7 +51,7 @@ struct ReportSpec
      *  book, unlike the localStorage saved views. */
     std::vector<std::string> tags;
     /** "accounts" (the default, and what a spec without the field means),
-     *  "splits", "balance-sheet", "invoices" or "lots".  A split spec's
+     *  "splits", "balance-sheet", "invoices", "lots" or "budgets".  A split spec's
      *  `columns` are split columns, its rows are the book's individual splits,
      *  and `split_grouping` decides their order and sections.  An invoices
      *  spec's rows are the aging reports' owners or the documents they age, and
@@ -117,6 +117,15 @@ const std::vector<std::string>& invoice_document_columns ();
  *  list is fixed and the lot columns are the book's.  Like the other lists,
  *  one definition serves validation, serialization and /api/spec/options. */
 const std::vector<std::string>& lots_columns ();
+
+/** The columns a budgets spec has, in display order: the account label and the
+ *  budget/actual pair the Budget Report prints for every period of the book's
+ *  budget.  "budget" and "actual" are placeholders for the pair, the way
+ *  "lots" stands for the Lot Viewer's lot columns: the number of pairs is the
+ *  budget's own period count, not the spec's, and the producer writes one
+ *  "Bgt <date>"/"Act <date>" pair per period in this order.  One definition
+ *  serves validation, serialization and /api/spec/options. */
+const std::vector<std::string>& budget_columns ();
 
 /** Where saved reports live: $GNC_WEBUI_REPORTS when set (the tests use a
  *  temporary file), else $XDG_DATA_HOME/gnucash/webui/reports.json, else

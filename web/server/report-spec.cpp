@@ -202,6 +202,9 @@ chart_series_refusal (const std::string& source)
     if (source == "lots")
         return "a lots spec has no 'chart_series': the Lot Viewer prints its "
                "transaction table, not a chart";
+    if (source == "budgets")
+        return "a budgets spec has no 'chart_series': the Budget Report prints "
+               "its period-column table, not a chart";
     return "a split listing has no chart_series: a chart plots account or "
            "period amounts";
 }
@@ -289,11 +292,12 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     const bool balance_sheet_source = spec.source == "balance-sheet";
     const bool invoice_source = spec.source == "invoices";
     const bool lots_source = spec.source == "lots";
+    const bool budget_source = spec.source == "budgets";
     if (!split_source && !balance_sheet_source && !invoice_source &&
-        !lots_source && spec.source != "accounts")
+        !lots_source && !budget_source && spec.source != "accounts")
         return fail (error, "unknown source '" + spec.source +
                              "' (expected accounts, splits, balance-sheet, "
-                             "invoices or lots)");
+                             "invoices, lots or budgets)");
 
     /* The invoice source's three settings are read before the columns: which
      * row set the spec has decides which columns it may name.  A field on a
@@ -428,6 +432,23 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                 spec.columns, error))
             return false;
     }
+    else if (budget_source)
+    {
+        /* The Budget Report prints the account label and then one Bgt/Act
+         * pair per period of the book's budget.  The pair count is the
+         * budget's, so the spec names it with the two placeholders "budget"
+         * and "actual" and the producer writes the pairs; a third column or
+         * another order is a different table. */
+        if (!fixed_columns (
+                columns, budget_columns (),
+                "'columns' is fixed on a budgets spec: the Budget Report "
+                "prints 'account' and then, for every period of the book's "
+                "budget, one budget column and one actual column ('budget' and "
+                "'actual' stand for that repeating pair), so the columns are "
+                "not a choice",
+                spec.columns, error))
+            return false;
+    }
     else
     {
         if (columns == nullptr || !columns->is_array () ||
@@ -493,6 +514,11 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "a lots spec has no 'grouping': the Lot Viewer's "
                              "rows are one per transaction in date order, split "
                              "into its own lot columns");
+    if (budget_source && spec.grouping != "none")
+        return fail (error, "a budgets spec has no 'grouping': the Budget "
+                             "Report's rows are its account tree, drawn to the "
+                             "report's own display depth, and its columns are "
+                             "the budget's periods");
 
     spec.split_grouping = "none";
     if (!optional_string (value, "split_grouping", spec.split_grouping, present,
@@ -528,6 +554,11 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (lots_source && spec.period_unit != "year")
         return fail (error, "a lots spec has no 'period_unit': its rows are "
                              "transactions in the report's period, not periods");
+    if (budget_source && spec.period_unit != "year")
+        return fail (error, "a budgets spec has no 'period_unit': the period "
+                             "structure is the budget's own recurrence, which "
+                             "the report reads from the budget, not from a "
+                             "spec setting");
 
     spec.period_mode = "activity";
     if (!optional_string (value, "period_mode", spec.period_mode, present,
@@ -548,6 +579,10 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (lots_source && spec.period_mode != "activity")
         return fail (error, "a lots spec has no 'period_mode': its rows are "
                              "transactions, not period balances");
+    if (budget_source && spec.period_mode != "activity")
+        return fail (error, "a budgets spec has no 'period_mode': every budget "
+                             "period column is that period's own budgeted and "
+                             "actual amounts, not a running balance");
     if (spec.period_mode == "cumulative" && spec.grouping != "period")
         return fail (error, "period_mode 'cumulative' needs grouping "
                              "'period'");
@@ -605,6 +640,27 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "a lots spec has no 'currency': the Lot Viewer "
                              "prints its amounts in the selected account's "
                              "commodity, and does not convert");
+
+    /* The Budget Report's period axis is the budget's own periods: it has no
+     * start or end date, and no preset resolves to a budget period.  Its
+     * amounts are each account's own commodity, so it has no currency option
+     * either. */
+    if (budget_source && !spec.query.start.empty ())
+        return fail (error, "a budgets spec has no 'start': the Budget "
+                             "Report's columns are the periods of the book's "
+                             "budget, not a date range");
+    if (budget_source && !spec.query.end.empty ())
+        return fail (error, "a budgets spec has no 'end': the Budget Report's "
+                             "columns are the periods of the book's budget, not "
+                             "a date range");
+    if (budget_source && !spec.query.date_preset.empty ())
+        return fail (error, "a budgets spec has no 'date_preset': it resolves "
+                             "to a date range, and the Budget Report's columns "
+                             "are the budget's own periods");
+    if (budget_source && !spec.query.currency.empty ())
+        return fail (error, "a budgets spec has no 'currency': the Budget "
+                             "Report prints each amount in its account's "
+                             "commodity");
 
     if (!spec.query.date_preset.empty () &&
         (!spec.query.start.empty () || !spec.query.end.empty ()))
@@ -763,6 +819,15 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                              "not by account type, so it has no "
                              "'account_types'");
 
+    /* The Budget Report's default account selection is its own four types --
+     * ASSET, LIABILITY, INCOME and EXPENSE -- and it is not a report option;
+     * a caller narrows the report by naming accounts, not by types. */
+    if (budget_source && !spec.account_types.empty ())
+        return fail (error, "a budgets spec has no 'account_types': the Budget "
+                             "Report's default selection is its own four account "
+                             "types, a fixed rule, and a caller narrows it by "
+                             "naming accounts in 'accounts'");
+
     spec.chart.clear ();
     if (!optional_string (value, "chart", spec.chart, present, error))
         return false;
@@ -782,9 +847,13 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (lots_source && !spec.chart.empty ())
         return fail (error, "a lots spec has no 'chart': the Lot Viewer prints "
                              "its transaction table, not a chart");
+    if (budget_source && !spec.chart.empty ())
+        return fail (error, "a budgets spec has no 'chart': the Budget Report "
+                             "prints its period-column table, not a chart");
 
     spec.chart_series.clear ();
-    if (split_source || balance_sheet_source || invoice_source || lots_source)
+    if (split_source || balance_sheet_source || invoice_source || lots_source ||
+        budget_source)
     {
         const json::Value* series = value.find ("chart_series");
         if (series != nullptr && !series->is_null () && series->is_array () &&
@@ -951,6 +1020,18 @@ lots_columns ()
      * column name no report has. */
     static const std::vector<std::string> columns = {
         "date", "description", "type", "lots", "other-account"};
+    return columns;
+}
+
+const std::vector<std::string>&
+budget_columns ()
+{
+    /* "budget" and "actual" are not single columns: they are the pair the
+     * Budget Report prints for every period of the book's budget, and the
+     * producer writes one pair per period.  The account label is the only
+     * column that appears exactly once. */
+    static const std::vector<std::string> columns = {"account", "budget",
+                                                     "actual"};
     return columns;
 }
 
@@ -1536,13 +1617,45 @@ no_spec_note (const std::string& name)
                "spec's rows carry no sections or sign reversal, so it cannot "
                "be described as a spec today.";
     }
-    if (name == "Budget Report" || name == "Budget Income Statement" ||
-        name == "Budget Profit & Loss" || name == "Budget Balance Sheet" ||
-        name == "Budget Flow")
+    if (name == "Budget Income Statement" || name == "Budget Profit & Loss")
     {
-        return "Its amounts come from the book's budget object and budget "
-               "periods, not from splits in a date range.  A spec queries "
-               "splits, so it cannot describe a budget value.";
+        return "It sums each account's budget value over the whole budget and "
+               "prints one amount per row, under 'Revenues' and 'Expenses' "
+               "headings with Total Revenue, Total Expenses and a 'Net income "
+               "for Budget ...' line, in the income statement's sign "
+               "convention.  The 'budgets' source is the Budget Report's "
+               "period-column table: one Bgt/Act pair per budget period, with "
+               "no section order, no statement totals and no net line.  "
+               "Expressing this report needs a budget-statement source (its "
+               "sections, sign reversal and net row), or at least a "
+               "whole-budget total field on this one, which the Budget Report "
+               "does not have.";
+    }
+    if (name == "Budget Balance Sheet")
+    {
+        return "It prints a budgeted balance sheet: Existing/Allocated/"
+               "Unallocated Assets, Existing/New Liabilities, retained "
+               "earnings and equity, each account row being its balance before "
+               "the budget starts plus its budget total.  The 'budgets' source "
+               "is the Budget Report's period-column table and has no initial "
+               "balance, section heading or total row, so it cannot describe "
+               "this report.  Expressing it needs a budget-balance-sheet "
+               "source carrying the report's sections and totals, not a "
+               "setting on this one.";
+    }
+    if (name == "Budget Flow")
+    {
+        return "It prints one row per leaf account of every type for a single "
+               "budget period -- the Scheme report's 'Period' option, which "
+               "the native route does not expose and which is therefore the "
+               "first period -- with Budget and Actual columns, a 'Total:' row "
+               "per account type and a summary block of the six type totals.  "
+               "The 'budgets' source is the Budget Report: its default "
+               "selection is four account types, its rows are the account tree "
+               "to depth two, and its columns are one Bgt/Act pair per budget "
+               "period, with no type sections or totals.  Expressing this "
+               "report needs a budget-period selector and the flow's section "
+               "and total rules -- a second source, not a field on this one.";
     }
     if (one_of (name, {"Printable Invoice", "Easy Invoice", "Fancy Invoice",
                        "Receipt", "Tax Invoice", "Australian Tax Invoice",
@@ -1743,6 +1856,50 @@ native_designer_info (const std::string& report, NativeDesignerInfo& info)
         return true;
     }
 
+    if (report == "Budget Report")
+    {
+        /* The source is the report's own table, so the only thing that carries
+         * over is its account selection (and the copy gets its own name and
+         * title).  The periods are the book's budget's, so there is no date or
+         * currency to copy: the report has neither option. */
+        ReportSpec spec;
+        spec.name = report + " (copy)";
+        spec.title = spec.name;
+        spec.source = "budgets";
+        spec.columns = budget_columns ();
+        info.spec = std::move (spec);
+        info.has_spec = true;
+        info.equivalence = "exact";
+        info.note =
+            "Its cells are the report's own: one row per account of its "
+            "default selection (ASSET, LIABILITY, INCOME and EXPENSE, not the "
+            "engine's debit/credit families), laid out as the account tree to "
+            "the report's logical display depth of two, and one 'Bgt <period "
+            "start>' / 'Act <period start>' pair per period of the book's "
+            "default budget.  The budget figure is the report's rolled-up "
+            "value -- a value set on an account wins, otherwise its children's "
+            "values are summed and converted into the account's commodity at "
+            "the period start -- and the actual is the account's actual for "
+            "the period, children included and closing entries excluded; both "
+            "are sign-reversed for a credit-normal account, and a zero budget "
+            "prints the report's '.'.  The periods are the budget's own, not a "
+            "date range, so a budgets spec has no 'start', 'end' or "
+            "'date_preset', and it has no 'currency' because the report prints "
+            "each amount in its account's commodity (the spec's one table "
+            "commodity is the commodity the displayed accounts share; where "
+            "they do not share one, the spec converts into the report currency "
+            "at each period start, which is the one place a multi-commodity "
+            "book can differ).  The report always uses the book's default "
+            "budget -- the native route has no budget selection -- so a spec "
+            "has none either; a book with no budget prints the report's 'No "
+            "budgets exist' page.  'accounts' is the report's Account option: "
+            "empty is its default selection, and a named account means that "
+            "account and its subtree, as the report route expands it.  The "
+            "copy has its own name and title; its cells are the report's "
+            "cells.";
+        return true;
+    }
+
     if (report == "Income Statement" || report == "Profit & Loss")
     {
         /* Close, and labelled as approximate: the accounts and the period are
@@ -1908,6 +2065,16 @@ render_spec_html (const ReportSpec& spec, Account* root, std::string& html,
          * from spec.columns here, so a spec cannot select a third column even
          * by posting one the validator would accept. */
         table.source = gnc::report::SpecSource::BalanceSheet;
+    }
+    else if (spec.source == "budgets")
+    {
+        /* The Budget Report's own table.  Its columns are the report's: one
+         * account column and one Bgt/Act pair per period of the book's default
+         * budget, which the producer writes.  Nothing here copies
+         * spec.columns into the table, so a spec cannot ask for a column the
+         * report does not print; the only thing the spec carries over is its
+         * account selection, below. */
+        table.source = gnc::report::SpecSource::Budgets;
     }
     else if (spec.source == "invoices")
     {

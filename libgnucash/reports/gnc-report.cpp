@@ -1274,6 +1274,21 @@ render_table_spec (const TableSpec& requested, Account* root, std::string& html,
         return true;
     }
 
+    if (requested.source == SpecSource::Budgets)
+    {
+        /* The Budget Report's own table, with the budget's periods as the
+         * column axis.  A book with no budget is the report's explanation
+         * page, not an empty table. */
+        const Table table = budget_spec_table (root, requested);
+        const std::string title = requested.title.empty () ? "Custom Report"
+                                                           : requested.title;
+        if (table.warning.empty ())
+            html = render_html (table, title);
+        else
+            html = render_no_budget (title);
+        return true;
+    }
+
     if (requested.source == SpecSource::Splits)
     {
         if (requested.split_columns.empty ())
@@ -9113,6 +9128,11 @@ namespace
  * shown.  The traversal below mirrors that. */
 constexpr int budget_display_depth = 2;
 
+/* The budget reports' explanation when the book has no budget.  The native
+ * route and a budgets spec both print it, so it is one string. */
+constexpr const char* no_budget_explanation =
+    "No budgets exist. You must create at least one budget.";
+
 /* The Scheme report's default account selection: exactly these four types,
  * not the engine's debit/credit families.  A bank account (ACCT_TYPE_BANK) is
  * therefore outside the default scope, as it is in the Scheme report. */
@@ -9129,6 +9149,44 @@ budget_default_account_type (const Account* account)
     default:
         return false;
     }
+}
+
+/* The Budget Report's default selection: its own four types over the whole
+ * account tree.  The report and a budgets spec share it, so the two cannot
+ * disagree about which accounts the default page shows. */
+std::set<Account*>
+budget_default_selection (Account* root)
+{
+    std::set<Account*> selected;
+    std::vector<Account*> all;
+    collect_accounts (root, all);
+    for (Account* account : all)
+    {
+        if (budget_default_account_type (account))
+            selected.insert (account);
+    }
+    return selected;
+}
+
+/* The caller's selection with each named account expanded to its subtree,
+ * which is what the report route does to a GUID before the report sees it.
+ * A spec stores GUIDs, so this makes the spec and the route mean the same
+ * accounts. */
+std::set<Account*>
+budget_expanded_selection (const std::vector<Account*>& accounts)
+{
+    std::set<Account*> selected;
+    for (Account* account : accounts)
+    {
+        if (account == nullptr)
+            continue;
+        selected.insert (account);
+        GList* descendants = gnc_account_get_descendants_sorted (account);
+        for (GList* node = descendants; node != nullptr; node = node->next)
+            selected.insert (static_cast<Account*> (node->data));
+        g_list_free (descendants);
+    }
+    return selected;
 }
 
 /* gnc:get-account-period-rolledup-budget-value(): a value set on the account
@@ -9164,11 +9222,28 @@ budget_rolled_up_value (const GncBudget* budget, Account* account,
     return total;
 }
 
+/* One displayed account's budget and actual for every period of the budget, in
+ * the report's sign convention.  The Budget Report's CellTable and a budgets
+ * spec's typed table are two renderings of this list, so the two cannot
+ * disagree about the selection, the display depth, the rolled-up budget or the
+ * sign. */
+struct BudgetPeriodValues
+{
+    gnc_numeric budget = gnc_numeric_zero ();
+    gnc_numeric actual = gnc_numeric_zero ();
+};
+
+struct BudgetRow
+{
+    Account* account = nullptr;
+    std::vector<BudgetPeriodValues> periods;
+};
+
 void
 collect_budget_rows (Account* parent, int logical_depth,
                      const std::set<Account*>& selected,
                      GncBudget* budget, guint period_count,
-                     GNCPriceDB* price_db, CellTable& table)
+                     GNCPriceDB* price_db, std::vector<BudgetRow>& out)
 {
     GList* children = gnc_account_get_children_sorted (parent);
     for (GList* node = children; node != nullptr; node = node->next)
@@ -9181,10 +9256,10 @@ collect_budget_rows (Account* parent, int logical_depth,
         if (displayed)
         {
             const bool reverse = gnc_reverse_balance (account);
-            gnc_commodity* commodity = xaccAccountGetCommodity (account);
 
-            std::vector<Cell> row;
-            row.push_back ({account_name (account), "text-cell", 1});
+            BudgetRow row;
+            row.account = account;
+            row.periods.reserve (period_count);
             for (guint period = 0; period < period_count; ++period)
             {
                 gnc_numeric budget_value = budget_rolled_up_value (
@@ -9197,22 +9272,14 @@ collect_budget_rows (Account* parent, int logical_depth,
                     budget_value = gnc_numeric_neg (budget_value);
                     actual_value = gnc_numeric_neg (actual_value);
                 }
-
-                /* The Scheme report prints "." for a zero budget, but a
-                 * monetary zero for an actual that happens to be zero. */
-                row.push_back ({gnc_numeric_zero_p (budget_value)
-                                    ? "."
-                                    : format_amount (budget_value, commodity),
-                                "number-cell"});
-                row.push_back (
-                    {format_amount (actual_value, commodity), "number-cell"});
+                row.periods.push_back ({budget_value, actual_value});
             }
-            table.rows.push_back (std::move (row));
+            out.push_back (std::move (row));
         }
 
         collect_budget_rows (account,
                              displayed ? logical_depth + 1 : logical_depth,
-                             selected, budget, period_count, price_db, table);
+                             selected, budget, period_count, price_db, out);
     }
     g_list_free (children);
 }
@@ -9435,28 +9502,37 @@ budget_report (Account* root, GncBudget* budget,
 
     std::set<Account*> selected;
     if (accounts.empty ())
-    {
-        std::vector<Account*> all;
-        collect_accounts (root, all);
-        for (Account* account : all)
-        {
-            if (budget_default_account_type (account))
-                selected.insert (account);
-        }
-    }
+        selected = budget_default_selection (root);
     else
-    {
-        for (Account* account : accounts)
-            selected.insert (account);
-    }
+        selected.insert (accounts.begin (), accounts.end ());
 
     if (selected.empty ())
         return table;
 
     GNCPriceDB* price_db =
         gnc_pricedb_get_db (qof_instance_get_book (QOF_INSTANCE (root)));
+    std::vector<BudgetRow> rows;
     collect_budget_rows (root, 0, selected, budget, period_count, price_db,
-                         table);
+                         rows);
+    for (const BudgetRow& entry : rows)
+    {
+        gnc_commodity* commodity = xaccAccountGetCommodity (entry.account);
+
+        std::vector<Cell> row;
+        row.push_back ({account_name (entry.account), "text-cell", 1});
+        for (const BudgetPeriodValues& values : entry.periods)
+        {
+            /* The Scheme report prints "." for a zero budget, but a monetary
+             * zero for an actual that happens to be zero. */
+            row.push_back ({gnc_numeric_zero_p (values.budget)
+                                ? "."
+                                : format_amount (values.budget, commodity),
+                            "number-cell"});
+            row.push_back (
+                {format_amount (values.actual, commodity), "number-cell"});
+        }
+        table.rows.push_back (std::move (row));
+    }
     return table;
 }
 
@@ -9865,6 +9941,123 @@ budget_flow (Account* root, GncBudget* budget,
     return table;
 }
 
+Table
+budget_spec_table (Account* root, const TableSpec& spec)
+{
+    Table table;
+    if (root == nullptr)
+        return table;
+
+    QofBook* book = qof_instance_get_book (QOF_INSTANCE (root));
+    GncBudget* budget =
+        book != nullptr ? gnc_budget_get_default (book) : nullptr;
+    if (budget == nullptr)
+    {
+        /* The report's own no-budget page, not an empty table: the caller
+         * prints the explanation the native budget route prints. */
+        table.warning = no_budget_explanation;
+        return table;
+    }
+
+    const guint period_count = gnc_budget_get_num_periods (budget);
+
+    /* The report's account selection: its own default four types, or the
+     * caller's expanded selection. */
+    const std::set<Account*> selected =
+        spec.accounts.empty () ? budget_default_selection (root)
+                               : budget_expanded_selection (spec.accounts);
+    if (selected.empty ())
+        return table;
+
+    /* The report's rows: its traversal, display depth, rolled-up budget,
+     * actual and sign, shared with the native Budget Report. */
+    GNCPriceDB* price_db = gnc_pricedb_get_db (book);
+    std::vector<BudgetRow> rows;
+    collect_budget_rows (root, 0, selected, budget, period_count, price_db,
+                         rows);
+    if (rows.empty ())
+        return table;
+
+    /* The report prints each amount in its own account's commodity.  A table
+     * has one commodity, so use the displayed accounts' shared commodity, and
+     * convert into the report currency only when they do not share one. */
+    gnc_commodity* shared = xaccAccountGetCommodity (rows.front ().account);
+    bool one_commodity = true;
+    for (const BudgetRow& entry : rows)
+    {
+        gnc_commodity* commodity = xaccAccountGetCommodity (entry.account);
+        if (shared == nullptr || commodity == nullptr ||
+            !gnc_commodity_equiv (shared, commodity))
+        {
+            one_commodity = false;
+            break;
+        }
+    }
+    gnc_commodity* currency =
+        one_commodity ? shared : report_currency (root, nullptr);
+    table.currency = currency;
+
+    auto convert = [&] (gnc_numeric amount, Account* account, guint period)
+    {
+        if (one_commodity)
+            return amount;
+        return budget_convert (amount, xaccAccountGetCommodity (account),
+                               currency, price_db,
+                               gnc_budget_get_period_start_date (budget,
+                                                                 period));
+    };
+
+    table.column_defs.push_back (
+        {"account", "Account", CellType::Text, CellAlign::Left});
+    for (guint period = 0; period < period_count; ++period)
+    {
+        const std::string date = printed_short_date (
+            gnc_budget_get_period_start_date (budget, period));
+        table.column_defs.push_back ({"budget-" + std::to_string (period),
+                                      "Bgt " + date, CellType::Amount,
+                                      CellAlign::Right});
+        table.column_defs.push_back ({"actual-" + std::to_string (period),
+                                      "Act " + date, CellType::Amount,
+                                      CellAlign::Right});
+    }
+
+    for (const BudgetRow& entry : rows)
+    {
+        Row row;
+        row.type = RowType::Account;
+        row.label = account_name (entry.account);
+
+        TypedCell label;
+        label.type = CellType::Text;
+        label.text = row.label;
+        row.cells.push_back (label);
+
+        for (guint period = 0; period < entry.periods.size (); ++period)
+        {
+            const BudgetPeriodValues& values = entry.periods[period];
+
+            TypedCell budget_cell;
+            budget_cell.type = CellType::Amount;
+            budget_cell.amount =
+                convert (values.budget, entry.account, period);
+            /* The report prints "." for a zero budget and a monetary zero for
+             * a zero actual; the placeholder is the cell's text, so the
+             * document is the report's while the cell still holds zero. */
+            if (gnc_numeric_zero_p (values.budget))
+                budget_cell.text = ".";
+            row.cells.push_back (budget_cell);
+
+            TypedCell actual_cell;
+            actual_cell.type = CellType::Amount;
+            actual_cell.amount = convert (values.actual, entry.account, period);
+            row.cells.push_back (actual_cell);
+        }
+        table.rows.push_back (std::move (row));
+    }
+
+    return table;
+}
+
 std::string
 render_no_budget (const std::string& title)
 {
@@ -9872,8 +10065,8 @@ render_no_budget (const std::string& title)
     out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
         << html_escape (title) << "</title><style>" << report_stylesheet ()
         << "</style></head><body><h3>" << html_escape (title)
-        << ":</h3>\n<h3></h3>\n<p>No budgets exist. You must create at "
-           "least one budget.</p>\n</body></html>\n";
+        << ":</h3>\n<h3></h3>\n<p>" << no_budget_explanation
+        << "</p>\n</body></html>\n";
     return out.str ();
 }
 
@@ -10081,6 +10274,12 @@ render_typed_rows (std::ostringstream& out, const Table& table)
                 << "'>";
             if (blank)
                 out << " ";
+            else if (number && !cell->text.empty ())
+                /* The report's own placeholder for a number it does not
+                 * print as a monetary amount (the Budget Report's "." for an
+                 * unset budget); the cell is still a number cell holding the
+                 * amount. */
+                out << html_escape (cell->text);
             else if (number && no_commodity)
                 out << html_escape (xaccPrintAmount (
                     cell->amount, gnc_default_print_info (TRUE)));

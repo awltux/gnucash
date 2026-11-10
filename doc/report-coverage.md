@@ -96,6 +96,30 @@ behaviour was changed by the measurement itself; the later stages edited
 > reports render: Investment Portfolio prints its headings with no rows,
 > Advanced Portfolio prints its headings and its zero-valued Total row, and
 > Customer Summary prints "No valid customer found." instead of a zero total.
+>
+> **Open defect: the two net-worth built-ins do not match the Scheme chart
+> under an explicit date range.**  The comparison that exposes it is
+> `report-parity.sh <qt> <build> <src> sample1.gnucash "Net Worth Barchart"
+> 2018-01-01 2018-12-31` (the Linechart fails the same way), on both
+> `ext4-web` and `ext4-noguile`: four differing rows every time.  The Scheme
+> document plots 13 points, `01/01/18` … `12/01/18` plus the range end
+> `12/31/18`, with `Assets [0,0,10000,…]`, `Liabilities [0,0,585,…]` and
+> `Net Worth [0,0,9415,…]`; the built-in plots 12 points, `January 2018` …
+> `December 2018`, with `Debit [0,10000,…]`, `Credit [0,585,…]` and
+> `Balance [0,9415,…]`.  The amounts are the same; the axes are one step
+> apart.  The cause is the step convention, not the range: `net-charts.scm`
+> builds its dates with `gnc:make-date-list (end-day-time from) (end-day-time
+> to) MonthDelta`, which steps from the from-date and appends the end date
+> when it is not a step (`bindings/guile/date-utilities.scm:356`), while a
+> period spec plots calendar month ends.  The two agree when the from-date is
+> itself a month end -- `2017-12-31 .. 2018-12-31` matches, 6 rows, which is
+> why the earlier measurement saw the same series -- and disagree by one step
+> when it is not.  Fixing it means teaching the period axis to step from the
+> from-date and append the end date (a change shared by every period report,
+> and a new spec field), not a one-line correction to these two reports.  It
+> is recorded as open; the matrix therefore reports **58/62** (29/31 per
+> build), not 62/62, until it is fixed.  It is independent of the budgets
+> work: the five budget reports pass the same matrix in both builds.
 
 > **What changed since the first measurement.**  The first version of this
 > document was measured at `a639555722`, when nine Scheme report names rendered

@@ -229,6 +229,12 @@ struct ColumnDef
 struct TypedCell
 {
     CellType type = CellType::Text;
+    /** A Text or Date cell's text.  On an Amount cell it is normally empty and
+     *  the cell prints its `amount`; when it is set the cell prints this text
+     *  instead and stays a number cell.  This is how the Budget Report's "."
+     *  for an unset budget survives a typed cell: the cell still holds (and
+     *  reports) the zero amount, and the document prints the report's own
+     *  placeholder rather than a monetary zero. */
     std::string text;
     gnc_numeric amount = gnc_numeric_zero ();
     bool blank = false;
@@ -439,6 +445,11 @@ enum class SpecSource
      *  set is the book's, not the spec's), and the report's own heading,
      *  document and balance rows.  See lots_spec_table(). */
     Lots,
+    /** The Budget Report's table: one row per account and, for every period of
+     *  the book's default budget, the period's budgeted and actual amounts.
+     *  The columns come in Budget/Actual pairs whose number is the budget's,
+     *  not a date range's; see budget_spec_table(). */
+    Budgets,
 };
 
 /** How a split listing orders and sections its rows.  Each value reproduces
@@ -609,6 +620,45 @@ Table invoices_table (Account* root, const TableSpec& spec);
  *  their sum, because a typed cell holds one amount.  That is the one place the
  *  two documents can differ, and only a book with such a transaction shows it. */
 Table lots_spec_table (Account* root, const TableSpec& spec);
+
+/** Build the table a budgets spec asks for: the native Budget Report's own
+ *  table.
+ *
+ *  The columns are the report's and are not a choice: one Account column, then
+ *  for every period of the book's **default budget** a "Bgt <period start>"
+ *  and an "Act <period start>" amount column.  The number of pairs is the
+ *  budget's own period count, not anything the spec says: a budgets spec has
+ *  no date fields, because the periods are the budget's, and no currency
+ *  field, because the report prints each amount in its account's commodity.
+ *  The spec's `columns` names the repeating middle of the table with the two
+ *  placeholders "budget" and "actual", the way a lots spec names its lot
+ *  columns with "lots".
+ *
+ *  The rows are the report's too: the accounts of the report's default type
+ *  selection (ASSET, LIABILITY, INCOME and EXPENSE -- not the engine's
+ *  debit/credit families), or the caller's expanded account selection, laid
+ *  out as the account tree to the report's logical display depth of two, in
+ *  the engine's sorted order.  Each cell holds the report's own figure: the
+ *  budget is the account's rolled-up budget value (a value set on the account
+ *  wins, otherwise the children's values are summed, converted into the
+ *  account's commodity at the period start), the actual is the account's
+ *  actual for the period including children and excluding closing entries, and
+ *  both are sign-reversed for a credit-normal account.  A zero budget prints
+ *  the report's "." (an amount cell that holds zero and carries the dot as
+ *  its text), and a zero actual prints its monetary zero.
+ *
+ *  A book with no budget is not an error: the table carries the report's
+ *  "No budgets exist. You must create at least one budget." explanation in
+ *  `Table::warning` and no rows, and the caller prints the report's
+ *  no-budget page.  The report has no budget selection option -- it always
+ *  uses the book's default budget -- so a spec has none either.
+ *
+ *  Where the displayed accounts do not share one commodity the table converts
+ *  every amount into the report currency at each period's start, because a
+ *  table has one commodity; the report prints each amount in its own account's
+ *  commodity.  On a single-commodity book (the budget fixture) the cells are
+ *  the report's; see the designer note. */
+Table budget_spec_table (Account* root, const TableSpec& spec);
 
 /** The account type names a spec may scope by, in display order: the engine's
  *  persistent names (xaccAccountTypeEnumAsString), without the hidden root. */
