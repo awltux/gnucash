@@ -1266,6 +1266,15 @@ customer_summary (Account* root, const CustomerSummaryOptions& options)
                                              options.show_inactive ? TRUE
                                                                    : FALSE);
 
+    /* customer-summary.scm's second branch: with no customer in the book the
+     * report prints "No valid customer found." and no table at all -- not a
+     * summary whose totals are zero. */
+    if (owners == nullptr)
+    {
+        report.warning = "No valid customer found.";
+        return report;
+    }
+
     std::vector<SummaryRow> rows;
     for (GList* node = owners; node != nullptr; node = node->next)
     {

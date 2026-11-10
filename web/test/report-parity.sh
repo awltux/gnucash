@@ -248,6 +248,8 @@ extractor_for() {
         "Customer Report"|"Vendor Report"|"Employee Report"|\
         "Job Report") echo owner-report ;;
         "Customer Summary") echo customer-summary ;;
+        "Cash Flow") echo cash-flow ;;
+        "Income and GST Statement") echo gst ;;
         "Net Worth Barchart"|"Net Worth Linechart") echo chart ;;
         *) return 1 ;;
     esac
@@ -290,6 +292,8 @@ report_guid() {
         "Employee Report") echo "08ae9c2e884b4f9787144f47eacd7f44" ;;
         "Job Report") echo "5518ac227e474f47a34439f2d4d049de" ;;
         "Customer Summary") echo "4166a20981985fd2b07ff8cb3b7d384e" ;;
+        "Cash Flow") echo "f8748b813fab4220ba26e743aedf38da" ;;
+        "Income and GST Statement") echo "5bf27f249a0d11e7abc4cec278b6b50a" ;;
         "Net Worth Barchart") echo "cbba1696c8c24744848062c7f1cf4a72" ;;
         "Net Worth Linechart") echo "d8b63264186b11e19038001558291366" ;;
         *) return 1 ;;
@@ -381,6 +385,8 @@ native_takes_accounts() {
         "Budget Balance Sheet"|"Budget Flow"|\
         "Tax Schedule Report/TXF Export"|\
         "Investment Portfolio"|"Advanced Portfolio"|\
+        "Cash Flow"|\
+        "Income and GST Statement"|\
         "IFRS weighted-average cost basis report") return 0 ;;
         *) return 1 ;;
     esac
@@ -392,6 +398,7 @@ native_takes_accounts() {
 scheme_account_option() {
     case "$1" in
         "Budget Report"|"Budget Flow") echo "Account" ;;
+        "Income and GST Statement") echo "Sales" ;;
         "IFRS weighted-average cost basis report") echo "Stock Account" ;;
         "Tax Schedule Report/TXF Export") echo "Select Accounts (none = all)" ;;
         *) echo "Accounts" ;;
@@ -766,6 +773,45 @@ PY
                         report-title) page="General"; name="Report Title" ;;
                         *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
                     esac ;;
+                "Cash Flow")
+                    case "$key" in
+                        show-full-names)
+                            page="General"; name="Show Full Account Names" ;;
+                        show-selected-accts)
+                            page="General"; name="Show Selected Accounts" ;;
+                        show-subaccounts)
+                            page="Accounts"; name="Always show sub-accounts" ;;
+                        include-trading)
+                            page="Accounts"; name="Include Trading Accounts in report" ;;
+                        display-depth)
+                            EXTRA_SCHEME="$EXTRA_SCHEME
+      (gnc-set-option (gnc:optiondb options) \"Accounts\" \"Account Display Depth\" $value)"
+                            continue ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
+                "Income and GST Statement")
+                    case "$key" in
+                        report-format)
+                            page="Format"; name="Report Format"
+                            # The multichoice value is a symbol, not a string.
+                            case "$value" in
+                                default|au-bas|uk-vat) value="SYMBOL:$value" ;;
+                                *) fail "no Scheme format '$value'" ;;
+                            esac ;;
+                        individual-sales)
+                            page="Format"; name="Individual sales columns" ;;
+                        individual-purchases)
+                            page="Format"; name="Individual purchases columns" ;;
+                        individual-tax)
+                            page="Format"; name="Individual tax columns" ;;
+                        gross-balance)
+                            page="Format"; name="Gross Balance" ;;
+                        net-balance)
+                            page="Format"; name="Net Balance" ;;
+                        tax-payable)
+                            page="Format"; name="Tax payable" ;;
+                        *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
+                    esac ;;
                 *)
                     case "$key" in
                         title)                 page="Headings 1"; name="Report Title" ;;
@@ -788,6 +834,9 @@ PY
             case "$value" in
                 true)  scheme_value="#t" ;;
                 false) scheme_value="#f" ;;
+                # A multichoice option stores a symbol; "SYMBOL:name" is how
+                # the mappings above ask for one.
+                SYMBOL:*) scheme_value="(quote ${value#SYMBOL:})" ;;
                 *)     scheme_value="\"$value\"" ;;
             esac
             EXTRA_SCHEME="$EXTRA_SCHEME
@@ -1216,6 +1265,28 @@ def multicolumn(rows):
     return out
 
 
+def cash_flow(rows):
+    """(label, amounts) for the cash-flow sections.
+
+    The Scheme report's account rows carry no cell class at all -- the label
+    is an anchor inside a plain cell -- so this extractor reads the label as
+    the row's first non-empty cell and keeps every amount cell after it.  A
+    section heading ("Money into selected accounts comes from") is a row with
+    a label and no amount, and it is part of the claim: the wording of the two
+    headings and the Difference row is compared as well as the figures.
+    """
+    out = []
+    for cells in rows:
+        kept = [(text, cell_class) for text, cell_class in cells
+                if text.strip()]
+        if not kept:
+            continue
+        values = [amount(text) for text, cell_class in kept[1:]
+                  if is_number(cell_class) and text.strip()]
+        out.append((kept[0][0], tuple(values)))
+    return out
+
+
 def transaction_report(rows):
     """Rows of the split listing: group headings, split lines, totals.
 
@@ -1611,6 +1682,48 @@ def tax_invoice(rows):
     return out
 
 
+def gst_value(text, cell_class):
+    """One cell of the GST statement as a comparable value.
+
+    An empty cell is None, not zero: a calculated column with no matching
+    split prints blank in both documents, and "blank" is a different claim
+    from "$0.00".
+    """
+    if not text.strip():
+        return None
+    if is_number(cell_class):
+        return amount(text)
+    return text
+
+
+def gst_statement(rows):
+    """The GST statement: its headings, one row per transaction, its total.
+
+    The Scheme report's transaction rows put the date, num, description and
+    memo/notes in the first four cells and one calculated amount after each;
+    a column with no matching split is a plain empty cell.  The Grand Total
+    row's label spans the four text columns, so it is the only cell before
+    the amounts.  The Scheme table also prints a rule before the total row
+    (a row whose only cell is empty), which is dropped here.
+    """
+    out = []
+    for cells in rows:
+        texts = [" ".join(t.split()) for t, _ in cells]
+        if not any(texts):
+            continue
+        if texts[0] == "Date":
+            out.append(("HEADINGS",) + tuple(texts[1:]))
+            continue
+        if any(cell_class == "total-label-cell" for _, cell_class in cells):
+            label = next(t for t, c in cells if c == "total-label-cell")
+            values = tuple(gst_value(t, c) for t, c in cells[1:])
+            out.append(("TOTAL", label) + values)
+            continue
+        values = tuple(gst_value(t, c) for t, c in cells[4:])
+        out.append(("ROW",) + tuple(texts[:4]) + values)
+    return out
+
+
 def tax_schedule(rows):
     """The US Tax Schedule: its headings and every subtotal, with signs.
 
@@ -1862,7 +1975,9 @@ EXTRACTORS = {"trial-balance": trial_balance, "balance-sheet": balance_sheet,
               "invoice": invoice, "receipt": receipt,
               "tax-invoice": tax_invoice, "tax-schedule": tax_schedule,
               "owner-report": owner_report,
-              "customer-summary": customer_summary}
+              "customer-summary": customer_summary,
+              "cash-flow": cash_flow,
+              "gst": gst_statement}
 
 extractor = EXTRACTORS.get(sys.argv[3])
 report = sys.argv[4]

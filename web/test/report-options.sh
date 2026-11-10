@@ -745,9 +745,15 @@ expect_body "accounts on the Customer Summary" \
 expect_status 400 "bad boolean on the Customer Summary" \
     "/report/Customer%20Summary?show_expense=maybe"
 expect_body "bad boolean on the Customer Summary" "invalid boolean 'maybe'"
+# sample1 has no customer on its owner list, and customer-summary.scm's page
+# for that case is the sentence -- not a table with headings and a total row.
+# The generated owner book and report-parity.sh cover the table's headings,
+# rows and total rows.
 fetch "/report/Customer%20Summary" > /dev/null
-expect_body "the Customer Summary renders its headings" "Markup"
-expect_body "the Customer Summary renders a total" "Total"
+expect_body "the Customer Summary says this book has no customer" \
+    "No valid customer found."
+expect_not_body "the Customer Summary does not print a table for it" \
+    "<table"
 
 echo "== the options apply"
 fetch "/report/Trial%20Balance?end=2018-12-31" > /dev/null
@@ -882,6 +888,127 @@ expect_body "an unknown option on the equity statement" "unknown option 'window'
 fetch "/report/Equity%20Statement?report-title=Statement" > /dev/null
 expect_body "the equity statement takes a title" "<h3>Statement</h3>"
 
+# The Cash Flow report classifies the counterpart splits of the selected
+# accounts into money in and money out; it is not a balance table, so it has
+# no debit/credit columns and no period preset.  The Scheme "Always show
+# sub-accounts" switch is not published: the route's account GUIDs already
+# select each account's subtree, which is all that switch adds.
+expect_status 200 "Cash Flow options" "/api/report/Cash%20Flow/options"
+expect_body "Cash Flow options" '"report":"Cash Flow"'
+expect_body "Cash Flow options" '"name":"start"'
+expect_body "Cash Flow options" '"name":"end"'
+expect_body "Cash Flow options" '"name":"currency"'
+expect_body "Cash Flow options" '"name":"accounts"'
+expect_body "Cash Flow options" '"type":"account-list"'
+expect_body "Cash Flow options" '"name":"show-full-names"'
+expect_body "Cash Flow options" '"name":"show-selected-accts"'
+expect_body "Cash Flow options" '"name":"include-trading"'
+expect_body "Cash Flow options" '"name":"display-depth"'
+expect_body "Cash Flow options" '"type":"number"'
+expect_body "Cash Flow options" '"default":2'
+expect_not_body "Cash Flow has no period preset" '"name":"period"'
+expect_not_body "Cash Flow does not publish the sub-account switch" \
+    '"name":"show-subaccounts"'
+expect_status 400 "period on the Cash Flow report" "/report/Cash%20Flow?period=all"
+expect_body "period on the Cash Flow report" "does not accept a 'period' option"
+expect_status 400 "bad depth on the Cash Flow report" \
+    "/report/Cash%20Flow?display-depth=deep"
+expect_body "bad depth on the Cash Flow report" \
+    "invalid number 'deep' for option 'display-depth'"
+
+# Its date options default to the accounting period, so this book's 2018
+# activity is outside the default page: that page is the two section headings
+# with zero totals.  With the 2018 period the sample book's single transaction
+# has its counterpart in the "money in" section, and each display switch
+# changes the page around it.
+fetch "/report/Cash%20Flow" > /dev/null
+expect_body "Cash Flow default page" "Money into selected accounts comes from"
+expect_body "Cash Flow default page" "Money out of selected accounts goes to"
+expect_body "Cash Flow default page" "Difference"
+fetch "/report/Cash%20Flow?start=2018-01-01&end=2018-12-31" > /dev/null
+expect_body "Cash Flow 2018" "Opening Balances"
+expect_body "Cash Flow 2018" "Money In"
+CF_PAGE=$(mktemp)
+cp "$BODY" "$CF_PAGE"
+fetch "/report/Cash%20Flow?start=2018-01-01&end=2018-12-31&show-full-names=false" > /dev/null
+if cmp -s "$CF_PAGE" "$BODY"; then
+    bad "Cash Flow show-full-names=false does not change the page"
+else
+    ok "Cash Flow show-full-names=false changes the account labels"
+fi
+fetch "/report/Cash%20Flow?start=2018-01-01&end=2018-12-31&show-selected-accts=false" > /dev/null
+if cmp -s "$CF_PAGE" "$BODY"; then
+    bad "Cash Flow show-selected-accts=false does not change the page"
+else
+    ok "Cash Flow show-selected-accts=false drops the account list"
+fi
+fetch "/report/Cash%20Flow?start=2018-01-01&end=2018-12-31&display-depth=1" > /dev/null
+if cmp -s "$CF_PAGE" "$BODY"; then
+    bad "Cash Flow display-depth=1 does not change the account list"
+else
+    ok "Cash Flow display-depth=1 shortens the account list"
+fi
+rm -f "$CF_PAGE"
+# Accepted, and a no-op only because this book has no trading account.
+expect_status 200 "include-trading on the Cash Flow report" \
+    "/report/Cash%20Flow?start=2018-01-01&end=2018-12-31&include-trading=true"
+
+# The Income and GST Statement is a trep-engine listing with calculated
+# columns: one row per transaction and one column per heading.  Its period
+# defaults to the previous calendar quarter, not the accounting period.
+expect_status 200 "Income and GST Statement options" \
+    "/api/report/Income%20and%20GST%20Statement/options"
+expect_body "Income and GST Statement options" '"name":"start"'
+expect_body "Income and GST Statement options" '"name":"end"'
+expect_body "Income and GST Statement options" '"name":"currency"'
+expect_body "Income and GST Statement options" '"name":"accounts"'
+expect_body "Income and GST Statement options" '"label":"Sales"'
+expect_body "Income and GST Statement options" '"name":"purchases"'
+expect_body "Income and GST Statement options" '"name":"tax-accounts"'
+expect_body "Income and GST Statement options" '"name":"report-format"'
+expect_body "Income and GST Statement options" \
+    '"choices":["default","au-bas","uk-vat"]'
+expect_body "Income and GST Statement options" '"name":"individual-sales"'
+expect_body "Income and GST Statement options" '"name":"individual-tax"'
+expect_body "Income and GST Statement options" '"name":"gross-balance"'
+expect_body "Income and GST Statement options" '"name":"net-balance"'
+expect_body "Income and GST Statement options" '"name":"tax-payable"'
+expect_not_body "the GST statement has no period preset" '"name":"period"'
+expect_status 400 "period on the GST statement" \
+    "/report/Income%20and%20GST%20Statement?period=all"
+expect_body "period on the GST statement" "does not accept a 'period' option"
+expect_status 400 "unknown format on the GST statement" \
+    "/report/Income%20and%20GST%20Statement?report-format=bas"
+expect_body "unknown format on the GST statement" \
+    "invalid report-format 'bas'"
+
+# This book's activity is outside the default quarter, so the default page is
+# the engine's "No matching transactions found" warning.  With the 2018 period
+# the default format prints the six calculated columns around the book's one
+# purchase, and the format and column switches change the page.
+fetch "/report/Income%20and%20GST%20Statement" > /dev/null
+expect_body "GST default page" "No matching transactions found"
+GST_QUERY="start=2018-01-01&end=2018-12-31"
+fetch "/report/Income%20and%20GST%20Statement?$GST_QUERY" > /dev/null
+expect_body "GST 2018 headings" "Gross Sales"
+expect_body "GST 2018 headings" "Net Purchases"
+expect_body "GST 2018 row" "Yoyodyne, Inc."
+expect_body "GST 2018 total" "Grand Total"
+expect_not_body "GST default columns" "Tax payable"
+fetch "/report/Income%20and%20GST%20Statement?$GST_QUERY&gross-balance=true&net-balance=true&tax-payable=true" > /dev/null
+expect_body "GST optional columns" "Gross Balance"
+expect_body "GST optional columns" "Net Balance"
+expect_body "GST optional columns" "Tax payable"
+fetch "/report/Income%20and%20GST%20Statement?$GST_QUERY&report-format=au-bas" > /dev/null
+expect_body "GST AU BAS format" "1A GST on Sales"
+expect_body "GST AU BAS format" "1B GST on Purchases"
+expect_not_body "GST AU BAS format" "Gross Sales"
+fetch "/report/Income%20and%20GST%20Statement?$GST_QUERY&report-format=uk-vat" > /dev/null
+expect_body "GST UK VAT format" "Box 1 VAT Sales"
+expect_body "GST UK VAT format" "Box 5 VAT Difference"
+fetch "/report/Income%20and%20GST%20Statement?$GST_QUERY&individual-tax=true" > /dev/null
+expect_not_body "GST individual tax columns" "Tax on Sales"
+
 echo "== every advertised option is effective or rejected"
 # The descriptors are the contract.  For every native report and every option
 # its descriptor publishes, sending the option must either change the rendered
@@ -981,6 +1108,21 @@ PY
             # period, the display switches have nothing to change.  The
             # generated owner book and report-parity.sh cover them.
             ok "$report has no customer activity in this book; the generated owner book covers it"
+            continue ;;
+        "Cash Flow")
+            # Its period defaults to the accounting period, so this book's
+            # 2018 activity is outside every generic probe's comparison.  The
+            # report's own section above checks the switches on 2018, and
+            # report-parity.sh compares the page with the Scheme report.
+            ok "$report's period defaults away from this book's activity; its switches are checked above"
+            continue ;;
+        "Income and GST Statement")
+            # Its period defaults to the previous calendar quarter, so the
+            # generic probes would all compare the same "no matching
+            # transactions" page.  The report's own section above checks the
+            # format and column switches on 2018, and report-parity.sh compares
+            # every column with the Scheme report.
+            ok "$report's period defaults to the previous quarter; its switches are checked above"
             continue ;;
         "Investment Portfolio"|"Advanced Portfolio"|"Lot Viewer"|\
         "IFRS weighted-average cost basis report")

@@ -8,6 +8,63 @@ added as built-in specs and the other three spec claims were withdrawn)
 Scope: registry enumeration, classification, coverage and cost. No report
 behaviour was changed; the edited files are this one and `web/`.
 
+> **Addendum: the 34-name measurement below is one stage behind.**  The body of
+> this document measures **34 native names**, taken at `0da4be5ca1`.  The
+> following stage (commits through `fe47e67523`) added the three cross-tab
+> statements, and the stage after it closed the last two **logic** names, so
+> the counts to quote are:
+>
+> - **Native: 36 names** (34 + `Cash Flow` + `Income and GST Statement`).
+> - **By name: 36/66 = 54.5% native**; native plus spec (the two net-worth
+>   charts) is **38/66 = 57.6%**; native plus spec plus closed (22) is
+>   **60/66 = 90.9%** done-or-decided.
+> - **Unported: 6/66 = 9.1%** -- 4 logic (Cash Flow Barchart, Average Balance,
+>   Balance Forecast, Future Scheduled Transactions Summary) and 2 template
+>   (Easy Invoice, Fancy Invoice).
+> - The per-class tables, the per-report tables and the cost estimates below
+>   are the 34-name measurement.  Their deltas are exactly these two names:
+>   `Cash Flow` moves from the logic table (section 3.3) to the native list
+>   (section 3.1), and `Income and GST Statement` does the same.  Every
+>   statement below that names either report as missing (sections 5.1, 5.2 and
+>   6.3) is superseded by this addendum.
+>
+> **How the two names closed.**  Both are ports, not stubs.
+> `Cash Flow` (`standard/cash-flow.scm` plus `cash-flow-calc.scm`) classifies
+> the counterpart splits of the selected accounts into money in and money out
+> and is implemented natively with its Scheme options (dates, report currency,
+> account selection, full names, selected-account list, trading accounts and
+> display depth); the parity harness's new `cash-flow` extractor compares the
+> section headings, every account row and the three totals, verbatim, on
+> `sample1` and on `taxreport.gnucash` in both builds (including the 56-row
+> taxreport period run and every display-switch variant).
+> `Income and GST Statement` (`standard/income-gst-statement.scm`) is a
+> trep-engine listing with calculated columns; the native report reproduces the
+> engine's row selection (sales/purchases splits, non-void, non-closing, the
+> report's NONE/INVOICE transaction filter, unique transactions by date then
+> the engine's split order), the Date/Num/Description/Memo-Notes columns and
+> every column definition of all three formats (default, Australia BAS, UK
+> VAT, including the *EUVAT*/*EUGOODS* markers) with the six optional-column
+> switches.  The parity harness's new `gst` extractor compares the headings,
+> every transaction row and the Grand Total, verbatim, on both fixtures in both
+> builds, on all three formats and with the optional columns enabled.
+>
+> One defect was fixed on the way, and it is worth recording because it would
+> have undermined every other figure: the Advanced Portfolio's rate of gain and
+> rate of return printed a cent low when the rate landed on a decimal half
+> (`30.64` where the Scheme report prints `30.65` on `taxreport`).  The cause
+> was not the arithmetic or the denominator -- `100.0 * gain / money_in` and
+> `100.0 * (gain / money_in)` are bit-identical here -- but the formatter:
+> Scheme's `(format #f "~,2f" ...)` rounds the *shortest round-trip decimal*
+> representation half away from zero, while C's `%.2f` rounds the exact binary
+> value, which sits just below the tie.  `gnc-report.cpp` now has a
+> `format_fixed_2()` that reproduces Guile's rounding, and the Advanced
+> Portfolio's `taxreport` parity case passes verbatim.
+>
+> Three empty-selection pages were also wrong and are now the pages the Scheme
+> reports render: Investment Portfolio prints its headings with no rows,
+> Advanced Portfolio prints its headings and its zero-valued Total row, and
+> Customer Summary prints "No valid customer found." instead of a zero total.
+
 > **What changed since the first measurement.**  The first version of this
 > document was measured at `a639555722`, when nine Scheme report names rendered
 > natively, and its verdict was "the majority is not covered".  At
@@ -626,10 +683,11 @@ What that user **cannot** do natively:
   price scatterplot and the sample graphs;
 - Average Balance, Balance Forecast and the Future Scheduled Transactions
   Summary;
-- Cash Flow;
-- the Income and GST Statement (relevant where GST applies);
 - Easy Invoice and Fancy Invoice layouts;
 - the German tax report/ELSTER export.
+
+(Cash Flow and the Income and GST Statement were on this list at the 34-name
+measurement; both are native now -- see the addendum at the top.)
 
 For a personal user who mostly reads balances and income/expenses, the missing
 items are analytics and portfolio reports, not the bookkeeping loop.  That is a
@@ -649,20 +707,19 @@ native as well, for books in that locale.
 
 A business that needs any of the following **cannot**:
 
-- **Statements:** Cash Flow.  The single-column Balance Sheet and P&L and their
-  multicolumn forms, and the Equity Statement, are native.
+- **Statements:** none.  Cash Flow is native now, and so are the single-column
+  Balance Sheet and P&L, their multicolumn forms and the Equity Statement.
 - **Audit/listing:** none; General Journal, Reconciliation Report and Transaction
   Breakdown Report are native.
-- **Tax:** Income and GST Statement (non-US GST); Tax Report / TXF Export
-  (German ELSTER).  The US schedule is native.
+- **Tax:** Tax Report / TXF Export (German ELSTER).  The US schedule and the
+  Income and GST Statement (all three of its formats) are native.
 - **Documents:** Easy Invoice, Fancy Invoice.  The four native documents cover
   the standard printable invoice, receipt and tax invoice, not those two
   layouts.
 - **Container:** Multicolumn View.  Composite dashboards are a recorded loss.
 
 For that business the web tier is not Guile-free for the reports it needs: the
-missing names are cash flow, GST, the two extra document layouts and German
-tax.
+missing names are the two extra document layouts and German tax.
 
 ### 5.3 How far is the gap?
 
@@ -1168,25 +1225,25 @@ specs).
   column axis and a one-column page makes them look inert; that is an extension
   of the test, not a loosening of it -- each one is still compared against a
   rendered page.  The smoke test's "non-native report" example moved from
-  `Income Statement (Multicolumn)`, which is native now, to `Cash Flow`.
-- **The matrix.**  52 cases per build: every native name the two fixture books
-  can serve with its default options (26 names -- the four invoice documents
+  `Income Statement (Multicolumn)`, which is native now, to `Cash Flow`, and
+  then to `Average Balance`, because Cash Flow is native now too.
+- **The matrix.**  56 cases per build: every native name the two fixture books
+  can serve with its default options (28 names -- the four invoice documents
   and the four owner reports need their own fixtures and are exercised by the
   harness's document/owner runs), on `sample1` and `taxreport.gnucash`, in
-  `ext4-web` and `ext4-noguile`.  45 pass in both builds.  The 7 that do not are
-  the two `taxreport` multicolumn cases above and five empty-book cases that
-  predate this stage: `Investment Portfolio`, `Advanced Portfolio` and
-  `Customer Summary` on `sample1` (and the advanced portfolio and the summary
-  on `taxreport`) render the native "No accounts selected" warning or a Total
-  row where the Scheme report prints its header and no rows (the advanced
-  portfolio's `taxreport` case is a one-cent rate-of-return rounding: 30.64
-  versus 30.65).  Those five were verified as pre-existing by rebuilding the
-  `HEAD` report layer and running the same cases, which fail identically; they
-  are not regressions of this change, and their populated-book behaviour is the
-  generated-book parity the earlier sections record.
+  `ext4-web` and `ext4-noguile`.  **54 pass in both builds.**  The 2 that do not
+  are the two `taxreport` multicolumn cases recorded above, where the Scheme
+  report lays out one amount per commodity in a cell and the native table
+  converts into the report currency -- the documented multi-currency gap, not a
+  regression.  The five empty-book cases this section used to list are closed:
+  `Investment Portfolio` now prints its headings with no rows, `Advanced
+  Portfolio` its headings plus the zero-valued Total row, and `Customer Summary`
+  says "No valid customer found.", each matching the Scheme page; the
+  Advanced Portfolio's one-cent rate-of-return rounding (30.64 versus 30.65) is
+  fixed by the Guile-compatible formatter described in the addendum at the top.
 - **Build hygiene.**  No new files: the reports live in the existing
-  `gnc-report.cpp`/`.hpp`, so `set_dist_list` is unchanged.  Both builds compile
-  with `-Werror`; `ldd` on the Guile-free `gnc-webd` has no `libguile`,
-  `libgtk` or `libwebkit` dependency (the Guile build links `libguile` by
-  design).
+  `gnc-report.cpp`/`.hpp` (and the Customer Summary's empty-owner-list case in
+  `gnc-owner.cpp`), so `set_dist_list` is unchanged.  Both builds compile with
+  `-Werror`; `ldd` on the Guile-free `gnc-webd` has no `libguile`, `libgtk` or
+  `libwebkit` dependency (the Guile build links `libguile` by design).
 

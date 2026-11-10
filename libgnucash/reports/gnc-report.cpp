@@ -15,7 +15,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -169,6 +171,109 @@ format_amount (gnc_numeric amount, gnc_commodity* currency)
     const char* text = xaccPrintAmount (
         rounded, gnc_commodity_print_info (currency, TRUE));
     return text != nullptr ? std::string (text) : std::string ();
+}
+
+/* The shortest decimal representation that round-trips to `value`: what
+ * Scheme's number->string prints and Guile's (ice-9 format) "~f" rounds.
+ * %.17g always round-trips, so the first precision that does is the shortest
+ * one (glibc's %g rounds correctly, which is what makes the search exact). */
+std::string
+shortest_decimal (double value)
+{
+    char buffer[64] = {0};
+    for (int precision = 1; precision <= 17; ++precision)
+    {
+        g_snprintf (buffer, sizeof buffer, "%.*g", precision, value);
+        if (std::strtod (buffer, nullptr) == value)
+            break;
+    }
+    return buffer;
+}
+
+/* A fixed-point number with two fraction digits, rounded the way Guile's
+ * (format #f "~,2f" ...) rounds: the *shortest round-trip decimal* is
+ * rounded half away from zero.  C's "%.2f" rounds the double's exact binary
+ * value instead, and the two disagree whenever that binary value sits just
+ * below the tie while its shortest decimal form ends on a 5.  The rate of
+ * return in the Advanced Portfolio on taxreport is exactly that case: 100 *
+ * 183.87 / 600 is the double 30.64499999999999957, whose shortest form is
+ * "30.645", so Guile prints 30.65 and printf printed 30.64.  Every Scheme
+ * percentage is formatted with ~,2f, so this reproduces the oracle rather
+ * than the platform printf. */
+std::string
+format_fixed_2 (double value)
+{
+    if (!std::isfinite (value))
+        return {};
+
+    const bool negative = std::signbit (value);
+    std::string text = shortest_decimal (std::fabs (value));
+
+    /* Split the shortest form into its significant digits and a base-10
+     * exponent: |value| == digits * 10^exponent. */
+    std::string digits;
+    int exponent = 0;
+    const size_t e = text.find_first_of ("eE");
+    const size_t mantissa_end = e == std::string::npos ? text.size () : e;
+    if (e != std::string::npos)
+        exponent = std::atoi (text.c_str () + e + 1);
+    for (size_t position = 0; position < mantissa_end; ++position)
+    {
+        if (text[position] == '.')
+        {
+            exponent -= static_cast<int> (mantissa_end - position - 1);
+            continue;
+        }
+        digits += text[position];
+    }
+    const size_t first = digits.find_first_not_of ('0');
+    if (first == std::string::npos)
+        return std::string (negative ? "-0.00" : "0.00");
+    digits.erase (0, first);
+
+    /* |value| * 100 == digits * 10^shift, so round that integer. */
+    const int shift = exponent + 2;
+    std::string kept;
+    bool round_up = false;
+    if (shift >= 0)
+    {
+        kept = digits + std::string (static_cast<size_t> (shift), '0');
+    }
+    else
+    {
+        const size_t dropped = static_cast<size_t> (-shift);
+        if (dropped <= digits.size ())
+        {
+            round_up = digits[digits.size () - dropped] >= '5';
+            kept = digits.substr (0, digits.size () - dropped);
+        }
+        /* A value smaller than one unit of the last place has nothing but
+         * zeros in the dropped digits and rounds to zero. */
+    }
+
+    if (round_up)
+    {
+        int position = static_cast<int> (kept.size ()) - 1;
+        while (position >= 0 && kept[position] == '9')
+        {
+            kept[position] = '0';
+            --position;
+        }
+        if (position >= 0)
+            ++kept[position];
+        else
+            kept.insert (kept.begin (), '1');
+    }
+    if (kept.empty ())
+        kept = "0";
+
+    std::string result;
+    if (kept.size () <= 2)
+        result = "0." + std::string (2 - kept.size (), '0') + kept;
+    else
+        result = kept.substr (0, kept.size () - 2) + "." +
+                 kept.substr (kept.size () - 2);
+    return negative ? "-" + result : result;
 }
 
 std::string
@@ -3243,6 +3348,819 @@ equity_statement (Account* root, const EquityStatementOptions& options)
     return table;
 }
 
+/* ------------------------------------------------------------- cash flow */
+
+namespace
+{
+
+/* The report's default account selection: the account types its Scheme
+ * account option allows (BANK, CASH, ASSET, STOCK, MUTUAL), every one below
+ * the root, in the engine's sorted order.  gnc:options-add-account-selection!
+ * evaluates the same thunk when it registers the option, so this list *is*
+ * the option's default value -- not "the whole book". */
+bool
+cash_flow_account_type (const Account* account)
+{
+    switch (xaccAccountGetType (account))
+    {
+    case ACCT_TYPE_BANK:
+    case ACCT_TYPE_CASH:
+    case ACCT_TYPE_ASSET:
+    case ACCT_TYPE_STOCK:
+    case ACCT_TYPE_MUTUAL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* One counterpart account's share of the money in or out, and the running
+ * total the Scheme report keeps in a commodity collector. */
+struct CashFlowBucket
+{
+    Account* account = nullptr;
+    gnc_numeric total = gnc_numeric_zero ();
+};
+
+/* gnc:make-commodity-collector's 'add: the first amount for an account
+ * creates its bucket, and later ones add to it. */
+void
+cash_flow_add (std::vector<CashFlowBucket>& buckets, Account* account,
+               gnc_numeric amount)
+{
+    for (CashFlowBucket& bucket : buckets)
+    {
+        if (bucket.account == account)
+        {
+            bucket.total = numeric_add (bucket.total, amount);
+            return;
+        }
+    }
+    buckets.push_back ({account, amount});
+}
+
+/* gnc:account-full-name<?: the engine's Unicode collation, not strcmp. */
+int
+cash_flow_name_compare (Account* left, Account* right)
+{
+    const gchar* left_name = gnc_account_get_full_name (left);
+    const gchar* right_name = gnc_account_get_full_name (right);
+    return gnc_unicode_compare_accented_case_sensitive (
+        left_name != nullptr ? left_name : "",
+        right_name != nullptr ? right_name : "");
+}
+
+/* Convert a counterpart's absolute value into the report currency at the
+ * transaction's date, as cash-flow.scm's to-report-currency closure does with
+ * gnc:case-exchange-time-fn at the default pricedb-nearest source. */
+gnc_numeric
+cash_flow_convert (gnc_numeric amount, gnc_commodity* from,
+                   gnc_commodity* report_cur, GNCPriceDB* db, time64 when)
+{
+    if (from == nullptr || report_cur == nullptr ||
+        gnc_commodity_equiv (from, report_cur))
+        return amount;
+    return gnc_pricedb_convert_balance_nearest_price_t64 (
+        db, amount, from, report_cur, when);
+}
+
+} // namespace
+
+CashFlowReport
+cash_flow (Account* root, const CashFlowOptions& options)
+{
+    CashFlowReport report;
+
+    gnc_commodity* report_cur = report_currency (root, options.currency);
+    const std::string interval =
+        options.start.has_value () && options.end.has_value ()
+            ? print_date (*options.start) + " to " + print_date (*options.end)
+            : std::string ();
+    report.title = "Cash Flow";
+    if (!interval.empty ())
+        report.title += " " + interval;
+
+    /* The selection.  The route has already expanded each GUID to its
+     * subtree, so the Scheme report's "Always show sub-accounts" switch has
+     * nothing to add and is not published as an option. */
+    std::vector<Account*> accounts = options.accounts;
+    if (accounts.empty ())
+    {
+        std::vector<Account*> all;
+        collect_accounts (root, all);
+        for (Account* account : all)
+            if (cash_flow_account_type (account))
+                accounts.push_back (account);
+    }
+
+    std::sort (accounts.begin (), accounts.end (), [] (Account* left,
+                                                       Account* right)
+    {
+        return cash_flow_name_compare (left, right) < 0;
+    });
+
+    /* The Scheme report renders its "No accounts selected" warning for an
+     * empty selection instead of an empty table; that is the caller's. */
+    if (accounts.empty ())
+    {
+        report.no_accounts = true;
+        return report;
+    }
+
+    QofBook* book = gnc_account_get_book (root);
+    GNCPriceDB* db = book != nullptr ? gnc_pricedb_get_db (book) : nullptr;
+
+    /* The splits the Scheme report's query selects: the selected accounts'
+     * own splits, in the period, without the voided ones.  Each of them makes
+     * its transaction's *other* splits the money in or out. */
+    std::vector<Split*> triggers;
+    for (Account* account : accounts)
+        gnc_account_foreach_split_between_dates (
+            account, options.start, options.end, false,
+            [&triggers] (Split* split)
+            {
+                if (!xaccTransGetVoidStatus (xaccSplitGetParent (split)))
+                    triggers.push_back (split);
+            });
+
+    std::vector<CashFlowBucket> money_in;
+    std::vector<CashFlowBucket> money_out;
+    gnc_numeric money_in_total = gnc_numeric_zero ();
+    gnc_numeric money_out_total = gnc_numeric_zero ();
+    std::set<const Split*> seen;
+
+    for (Split* trigger : triggers)
+    {
+        Transaction* txn = xaccSplitGetParent (trigger);
+        if (txn == nullptr)
+            continue;
+        gnc_commodity* txn_cur = xaccTransGetCurrency (txn);
+        const time64 when = xaccTransGetDate (txn);
+
+        for (GList* node = xaccTransGetSplitList (txn); node != nullptr;
+             node = node->next)
+        {
+            auto* split = static_cast<Split*> (node->data);
+            Account* split_account = xaccSplitGetAccount (split);
+            if (split_account == nullptr)
+                continue;
+
+            /* A counterpart inside the selection is not money in or out: the
+             * transaction is internal to the accounts the report covers. */
+            if (std::find (accounts.begin (), accounts.end (), split_account) !=
+                accounts.end ())
+                continue;
+            if (options.include_trading &&
+                xaccAccountGetType (split_account) == ACCT_TYPE_TRADING)
+                continue;
+            if (seen.count (split) > 0)
+                continue;
+
+            const gnc_numeric value = xaccSplitGetValue (split);
+            const bool inflow = gnc_numeric_negative_p (value);
+            const bool outflow = gnc_numeric_positive_p (value);
+            if (!inflow && !outflow)
+                continue;
+
+            /* cash-flow-calc.scm converts the *absolute* value, so a
+             * counterpart's sign only decides the side it belongs to. */
+            const gnc_numeric magnitude =
+                inflow ? gnc_numeric_neg (value) : value;
+            const gnc_numeric amount =
+                cash_flow_convert (magnitude, txn_cur, report_cur, db, when);
+
+            seen.insert (split);
+            if (inflow)
+            {
+                cash_flow_add (money_in, split_account, amount);
+                money_in_total = numeric_add (money_in_total, amount);
+            }
+            else
+            {
+                cash_flow_add (money_out, split_account, amount);
+                money_out_total = numeric_add (money_out_total, amount);
+            }
+        }
+    }
+
+    std::sort (money_in.begin (), money_in.end (),
+               [] (const CashFlowBucket& left, const CashFlowBucket& right)
+               {
+                   return cash_flow_name_compare (left.account,
+                                                  right.account) < 0;
+               });
+    std::sort (money_out.begin (), money_out.end (),
+               [] (const CashFlowBucket& left, const CashFlowBucket& right)
+               {
+                   return cash_flow_name_compare (left.account,
+                                                  right.account) < 0;
+               });
+
+    /* The "Selected Accounts" list the Scheme page prints above the table:
+     * every selected account at or above the display depth, with the
+     * "and subaccounts" suffix on an account that has children at the
+     * deepest displayed level.  It is a list, not a cell, so it travels as
+     * the table's preamble. */
+    if (options.show_selected_accounts)
+    {
+        std::ostringstream preamble;
+        preamble << "<p>Selected Accounts</p><ul>";
+        for (Account* account : accounts)
+        {
+            const int depth = gnc_account_get_current_depth (account);
+            if (options.display_depth >= 0 && depth > options.display_depth)
+                continue;
+            const std::string label =
+                options.show_full_names ? account_full_name (account)
+                                        : account_name (account);
+            const bool deepest =
+                options.display_depth >= 0 && depth == options.display_depth &&
+                gnc_account_n_children (account) > 0;
+            preamble << "<li><a href='gnc-register:acct-guid="
+                     << account_guid (account) << "#'>"
+                     << html_escape (label) << "</a>";
+            if (deepest)
+                preamble << " and selected subaccounts";
+            preamble << "</li>";
+        }
+        preamble << "</ul>";
+        report.table.preamble = preamble.str ();
+    }
+
+    /* The three sections, in the Scheme report's order.  Its account rows
+     * carry no cell class and its headings are plain cells; the label and
+     * amount cells here use the classes the rest of the native tables use,
+     * which is what lets one extractor read both documents. */
+    auto add_section = [&] (const std::string& heading,
+                            const std::vector<CashFlowBucket>& buckets,
+                            const std::string& total_label,
+                            gnc_numeric total)
+    {
+        report.table.rows.push_back (
+            {Cell {heading, ""}, Cell {"", ""}});
+        for (const CashFlowBucket& bucket : buckets)
+        {
+            const std::string label =
+                options.show_full_names ? account_full_name (bucket.account)
+                                        : account_name (bucket.account);
+            report.table.rows.push_back ({
+                Cell {label, "text-cell"},
+                Cell {format_amount (bucket.total, report_cur), "number-cell"},
+            });
+        }
+        report.table.rows.push_back ({
+            Cell {total_label, "text-cell"},
+            Cell {format_amount (total, report_cur), "total-number-cell"},
+        });
+    };
+
+    add_section ("Money into selected accounts comes from", money_in,
+                 "Money In", money_in_total);
+    add_section ("Money out of selected accounts goes to", money_out,
+                 "Money Out", money_out_total);
+    report.table.rows.push_back ({
+        Cell {"Difference", "text-cell"},
+        Cell {format_amount (numeric_add (money_in_total,
+                                          gnc_numeric_neg (money_out_total)),
+                             report_cur),
+              "total-number-cell"},
+    });
+
+    return report;
+}
+
+/* ------------------------------------------------------- GST statement */
+
+namespace
+{
+
+/* A calculated column's value with the trep engine's "absent" state: the
+ * Scheme calculators return #f when no split matched an account list, and
+ * myadd()/myneg() propagate that instead of turning it into zero.  A present
+ * zero prints as "$0.00"; an absent value leaves the cell blank. */
+struct GstAmount
+{
+    bool present = false;
+    gnc_numeric value = gnc_numeric_zero ();
+};
+
+/* the Scheme report's myadd */
+GstAmount
+gst_add (GstAmount left, GstAmount right)
+{
+    if (left.present && right.present)
+        return {true, numeric_add (left.value, right.value)};
+    return left.present ? left : right;
+}
+
+/* the Scheme report's myneg */
+GstAmount
+gst_negate (GstAmount amount)
+{
+    if (!amount.present)
+        return amount;
+    return {true, gnc_numeric_neg (amount.value)};
+}
+
+/* gnc:exchange-by-pricedb-nearest: from the split's account commodity into
+ * the report currency, at the transaction's canonical day time. */
+gnc_numeric
+gst_convert (gnc_numeric amount, gnc_commodity* from, gnc_commodity* to,
+             GNCPriceDB* db, time64 when)
+{
+    if (from == nullptr || to == nullptr || gnc_commodity_equiv (from, to))
+        return amount;
+    return gnc_pricedb_convert_balance_nearest_price_t64 (db, amount, from, to,
+                                                          when);
+}
+
+/* split-adder: the transaction's splits in `accounts`, summed in the report
+ * currency.  A voided transaction contributes its splits' former amounts,
+ * which is what the Scheme calculator does. */
+GstAmount
+gst_sum (Transaction* txn, const std::vector<Account*>& accounts,
+         gnc_commodity* report_cur, GNCPriceDB* db)
+{
+    GstAmount total;
+    if (accounts.empty ())
+        return total;
+
+    const bool voided = xaccTransGetVoidStatus (txn);
+    const time64 when = time64CanonicalDayTime (xaccTransGetDate (txn));
+    for (GList* node = xaccTransGetSplitList (txn); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*> (node->data);
+        Account* account = xaccSplitGetAccount (split);
+        if (account == nullptr ||
+            std::find (accounts.begin (), accounts.end (), account) ==
+                accounts.end ())
+            continue;
+        const gnc_numeric amount = voided
+                                       ? xaccSplitVoidFormerAmount (split)
+                                       : xaccSplitGetAmount (split);
+        total.present = true;
+        total.value = numeric_add (
+            total.value,
+            gst_convert (amount, xaccAccountGetCommodity (account), report_cur,
+                         db, when));
+    }
+    return total;
+}
+
+/* The account lists and currency every column closes over. */
+struct GstContext
+{
+    const std::vector<Account*>* sales = nullptr;
+    const std::vector<Account*>* purchases = nullptr;
+    const std::vector<Account*>* tax_collected = nullptr;
+    const std::vector<Account*>* tax_paid = nullptr;
+    gnc_commodity* currency = nullptr;
+    GNCPriceDB* db = nullptr;
+
+    GstAmount sum (Transaction* txn, const std::vector<Account*>& accounts) const
+    {
+        return gst_sum (txn, accounts, currency, db);
+    }
+};
+
+/* One column of the table: its heading and the value it prints for a
+ * transaction.  This is the Scheme report's column vector (heading,
+ * calculator) without the unused subtotal/dual-column fields. */
+struct GstColumn
+{
+    std::string heading;
+    std::function<GstAmount (Transaction*)> amount;
+};
+
+/* gnc-get-num-action(): the book's "use split action for Num" option decides
+ * whether the Num column prints the split's action or the transaction's
+ * number.  It is one or the other, not both. */
+std::string
+gst_num_action (Transaction* txn, Split* split)
+{
+    QofBook* book = gnc_account_get_book (xaccSplitGetAccount (split));
+    if (book != nullptr && qof_book_use_split_action_for_num_field (book))
+        return text_or_empty (xaccSplitGetAction (split));
+    return text_or_empty (xaccTransGetNum (txn));
+}
+
+/* The default period: the previous calendar quarter, which is what the Scheme
+ * options' '(relative . start-prev-quarter) / end-prev-quarter resolve to. */
+DateRange
+gst_default_period ()
+{
+    GDate today;
+    g_date_set_time_t (&today,
+                       static_cast<time_t> (gnc_time64_get_today_start ()));
+    const int month = g_date_get_month (&today);
+    const int quarter = (month - 1) / 3;
+    int year = g_date_get_year (&today);
+    int first_month = quarter == 0 ? 10 : (quarter - 1) * 3 + 1;
+    if (quarter == 0)
+        --year;
+
+    GDate start;
+    g_date_clear (&start, 1);
+    g_date_set_dmy (&start, 1, static_cast<GDateMonth> (first_month), year);
+    GDate end = start;
+    g_date_add_months (&end, 3);
+    g_date_subtract_days (&end, 1);
+
+    DateRange range;
+    range.start = gnc_time64_get_day_start_gdate (&start);
+    range.end = gnc_time64_get_day_end_gdate (&end);
+    return range;
+}
+
+/* The account types the Sales/Purchases selections default to. */
+std::vector<Account*>
+gst_default_accounts (Account* root, bool income)
+{
+    std::vector<Account*> all;
+    collect_accounts (root, all);
+    std::vector<Account*> selected;
+    for (Account* account : all)
+    {
+        const GNCAccountType type = xaccAccountGetType (account);
+        if (income ? type == ACCT_TYPE_INCOME : type == ACCT_TYPE_EXPENSE)
+            selected.push_back (account);
+    }
+    return selected;
+}
+
+} // namespace
+
+GstReport
+gst_statement (Account* root, const GstOptions& options)
+{
+    GstReport report;
+    report.title = "Income and GST Statement";
+
+    const DateRange period =
+        options.start.has_value () || options.end.has_value ()
+            ? DateRange {options.start, options.end}
+            : gst_default_period ();
+    gnc_commodity* report_cur = report_currency (root, options.currency);
+    if (period.start.has_value () && period.end.has_value ())
+        report.title += " " + print_date (*period.start) + " to " +
+                        print_date (*period.end);
+
+    std::vector<Account*> sales = options.sales;
+    if (sales.empty ())
+        sales = gst_default_accounts (root, true);
+    std::vector<Account*> purchases = options.purchases;
+    if (purchases.empty ())
+        purchases = gst_default_accounts (root, false);
+
+    std::vector<Account*> tax_collected;
+    std::vector<Account*> tax_paid;
+    for (Account* account : options.tax_accounts)
+    {
+        const GNCAccountType type = xaccAccountGetType (account);
+        if (type == ACCT_TYPE_LIABILITY)
+            tax_collected.push_back (account);
+        else if (type == ACCT_TYPE_ASSET)
+            tax_paid.push_back (account);
+    }
+
+    QofBook* book = gnc_account_get_book (root);
+    GNCPriceDB* db = book != nullptr ? gnc_pricedb_get_db (book) : nullptr;
+
+    GstContext context {&sales, &purchases, &tax_collected, &tax_paid,
+                        report_cur, db};
+
+    /* The column definitions, exactly the Scheme report's per-format lists.
+     * The derived columns combine the same base sums the individual ones
+     * compute, so they are recomputed rather than cached: the fixture books
+     * make that a handful of splits per transaction. */
+    auto net_sales = [] (const GstContext& ctx)
+    {
+        return [ctx] (Transaction* txn)
+        { return gst_negate (ctx.sum (txn, *ctx.sales)); };
+    };
+    auto tax_sales = [] (const GstContext& ctx)
+    {
+        return [ctx] (Transaction* txn)
+        { return gst_negate (ctx.sum (txn, *ctx.tax_collected)); };
+    };
+    auto net_purch = [] (const GstContext& ctx)
+    {
+        return [ctx] (Transaction* txn) { return ctx.sum (txn, *ctx.purchases); };
+    };
+    auto tax_purch = [] (const GstContext& ctx)
+    {
+        return [ctx] (Transaction* txn)
+        { return ctx.sum (txn, *ctx.tax_paid); };
+    };
+    auto tot_sales = [] (const GstContext& ctx)
+    {
+        return [ctx] (Transaction* txn)
+        {
+            return gst_add (gst_negate (ctx.sum (txn, *ctx.tax_collected)),
+                            gst_negate (ctx.sum (txn, *ctx.sales)));
+        };
+    };
+    auto tot_purch = [] (const GstContext& ctx)
+    {
+        return [ctx] (Transaction* txn)
+        {
+            return gst_add (ctx.sum (txn, *ctx.tax_paid),
+                            ctx.sum (txn, *ctx.purchases));
+        };
+    };
+
+    std::vector<GstColumn> columns;
+    const std::string format = options.format.empty () ? "default"
+                                                       : options.format;
+    if (format == "au-bas")
+    {
+        columns.push_back ({"G1 Total Sales inc GST",
+                            [ctx = context] (Transaction* txn)
+                            {
+                                return gst_add (
+                                    gst_negate (ctx.sum (txn, *ctx.sales)),
+                                    gst_negate (
+                                        ctx.sum (txn, *ctx.tax_collected)));
+                            }});
+        columns.push_back ({"1A GST on Sales", tax_sales (context)});
+        columns.push_back ({"1B GST on Purchases", tax_purch (context)});
+    }
+    else if (format == "uk-vat")
+    {
+        /* The UK format splits the tax accounts by the *EUVAT* marker in the
+         * account description and the sales/purchase accounts by *EUGOODS*. */
+        auto marked = [] (const std::vector<Account*>& accounts,
+                          const char* marker)
+        {
+            std::vector<Account*> out;
+            for (Account* account : accounts)
+            {
+                const char* description = xaccAccountGetDescription (account);
+                if (description != nullptr &&
+                    std::strstr (description, marker) != nullptr)
+                    out.push_back (account);
+            }
+            return out;
+        };
+        std::vector<Account*> vat_non_ec;
+        std::vector<Account*> eu_vat;
+        for (Account* account : options.tax_accounts)
+        {
+            const char* description = xaccAccountGetDescription (account);
+            if (description != nullptr &&
+                std::strstr (description, "*EUVAT*") != nullptr)
+                eu_vat.push_back (account);
+            else
+                vat_non_ec.push_back (account);
+        }
+        std::vector<Account*> vat_on_sales;
+        std::vector<Account*> vat_on_purchases;
+        for (Account* account : vat_non_ec)
+        {
+            const GNCAccountType type = xaccAccountGetType (account);
+            if (type == ACCT_TYPE_LIABILITY)
+                vat_on_sales.push_back (account);
+            else if (type == ACCT_TYPE_ASSET)
+                vat_on_purchases.push_back (account);
+        }
+        std::vector<Account*> eu_vat_rev;
+        for (Account* account : eu_vat)
+            if (xaccAccountGetType (account) == ACCT_TYPE_LIABILITY)
+                eu_vat_rev.push_back (account);
+
+        const std::vector<Account*> eu_sales = marked (sales, "*EUGOODS*");
+        const std::vector<Account*> eu_purch = marked (purchases, "*EUGOODS*");
+
+        auto box1 = [ctx = context, vat_on_sales] (Transaction* txn)
+        { return gst_negate (gst_sum (txn, vat_on_sales, ctx.currency, ctx.db)); };
+        auto box2 = [ctx = context, eu_vat_rev] (Transaction* txn)
+        { return gst_negate (gst_sum (txn, eu_vat_rev, ctx.currency, ctx.db)); };
+        auto box4 = [ctx = context, vat_on_purchases] (Transaction* txn)
+        {
+            return gst_sum (txn, vat_on_purchases, ctx.currency, ctx.db);
+        };
+        auto box3 = [box1, box2] (Transaction* txn)
+        { return gst_add (box1 (txn), box2 (txn)); };
+        auto box5 = [box3, box4] (Transaction* txn)
+        { return gst_add (box3 (txn), gst_negate (box4 (txn))); };
+        auto box6 = [ctx = context] (Transaction* txn)
+        { return gst_negate (gst_sum (txn, *ctx.sales, ctx.currency, ctx.db)); };
+        auto box7 = [ctx = context] (Transaction* txn)
+        { return gst_sum (txn, *ctx.purchases, ctx.currency, ctx.db); };
+        auto box8 = [ctx = context, eu_sales] (Transaction* txn)
+        { return gst_negate (gst_sum (txn, eu_sales, ctx.currency, ctx.db)); };
+        auto box9 = [ctx = context, eu_purch] (Transaction* txn)
+        { return gst_sum (txn, eu_purch, ctx.currency, ctx.db); };
+
+        columns.push_back ({"Box 1 VAT Sales", box1});
+        columns.push_back ({"Box 2 VAT Goods Purchases from EU to NI", box2});
+        columns.push_back ({"Box 3 VAT Output", box3});
+        columns.push_back ({"Box 4 VAT Purchases", box4});
+        columns.push_back ({"Box 5 VAT Difference", box5});
+        columns.push_back ({"Box 6 Tot Sales", box6});
+        columns.push_back ({"Box 7 Tot Purchases", box7});
+        columns.push_back ({"Box 8 Net Goods Sales from NI to EU", box8});
+        columns.push_back ({"Box 9 Net Goods Purchases from EU to NI", box9});
+    }
+    else
+    {
+        columns.push_back ({"Gross Sales", tot_sales (context)});
+        if (options.individual_sales)
+        {
+            for (Account* account : sales)
+                columns.push_back (
+                    {account_name (account),
+                     [ctx = context, account] (Transaction* txn)
+                     {
+                         const std::vector<Account*> one {account};
+                         return gst_negate (
+                             gst_sum (txn, one, ctx.currency, ctx.db));
+                     }});
+        }
+        else
+            columns.push_back ({"Net Sales", net_sales (context)});
+
+        if (options.individual_tax)
+        {
+            for (Account* account : tax_collected)
+                columns.push_back (
+                    {account_name (account),
+                     [ctx = context, account] (Transaction* txn)
+                     {
+                         const std::vector<Account*> one {account};
+                         return gst_negate (
+                             gst_sum (txn, one, ctx.currency, ctx.db));
+                     }});
+        }
+        else
+            columns.push_back ({"Tax on Sales", tax_sales (context)});
+
+        columns.push_back ({"Gross Purchases", tot_purch (context)});
+
+        if (options.individual_purchases)
+        {
+            for (Account* account : purchases)
+                columns.push_back (
+                    {account_name (account),
+                     [ctx = context, account] (Transaction* txn)
+                     {
+                         const std::vector<Account*> one {account};
+                         return gst_sum (txn, one, ctx.currency, ctx.db);
+                     }});
+        }
+        else
+            columns.push_back ({"Net Purchases", net_purch (context)});
+
+        if (options.individual_tax)
+        {
+            for (Account* account : tax_paid)
+                columns.push_back (
+                    {account_name (account),
+                     [ctx = context, account] (Transaction* txn)
+                     {
+                         const std::vector<Account*> one {account};
+                         return gst_sum (txn, one, ctx.currency, ctx.db);
+                     }});
+        }
+        else
+            columns.push_back ({"Tax on Purchases", tax_purch (context)});
+
+        if (options.gross_balance)
+            columns.push_back ({"Gross Balance",
+                                [ctx = context] (Transaction* txn)
+                                {
+                                    return gst_add (
+                                        gst_add (
+                                            gst_negate (ctx.sum (
+                                                txn, *ctx.tax_collected)),
+                                            gst_negate (
+                                                ctx.sum (txn, *ctx.sales))),
+                                        gst_negate (gst_add (
+                                            ctx.sum (txn, *ctx.tax_paid),
+                                            ctx.sum (txn, *ctx.purchases))));
+                                }});
+        if (options.net_balance)
+            columns.push_back ({"Net Balance",
+                                [ctx = context] (Transaction* txn)
+                                {
+                                    return gst_add (
+                                        gst_negate (ctx.sum (txn, *ctx.sales)),
+                                        gst_negate (
+                                            ctx.sum (txn, *ctx.purchases)));
+                                }});
+        if (options.tax_payable)
+            columns.push_back ({"Tax payable",
+                                [ctx = context] (Transaction* txn)
+                                {
+                                    return gst_add (
+                                        gst_negate (
+                                            ctx.sum (txn, *ctx.tax_collected)),
+                                        gst_negate (
+                                            ctx.sum (txn, *ctx.tax_paid)));
+                                }});
+    }
+
+    /* The rows: the splits of the sales and purchases accounts in the period,
+     * non-void, non-closing, from a transaction the report's own filter
+     * admits, one per transaction in the engine's order. */
+    std::vector<Split*> splits;
+    std::vector<Account*> sources = sales;
+    sources.insert (sources.end (), purchases.begin (), purchases.end ());
+    for (Account* account : sources)
+        gnc_account_foreach_split_between_dates (
+            account, period.start, period.end, false,
+            [&splits] (Split* split)
+            {
+                Transaction* txn = xaccSplitGetParent (split);
+                if (xaccTransGetVoidStatus (txn) ||
+                    xaccTransGetIsClosingTxn (txn))
+                    return;
+                const char type = xaccTransGetTxnType (txn);
+                if (type != TXN_TYPE_NONE && type != TXN_TYPE_INVOICE)
+                    return;
+                splits.push_back (split);
+            });
+
+    std::stable_sort (splits.begin (), splits.end (),
+                      [] (Split* left, Split* right)
+                      {
+                          const time64 left_date = xaccTransGetDate (
+                              xaccSplitGetParent (left));
+                          const time64 right_date = xaccTransGetDate (
+                              xaccSplitGetParent (right));
+                          if (left_date != right_date)
+                              return left_date < right_date;
+                          /* The trep engine's secondary key is "none", i.e.
+                           * the engine's own default split order. */
+                          return xaccSplitOrder (left, right) < 0;
+                      });
+
+    report.table.headings = {"Date", "Num", "Description", "Memo/Notes"};
+    for (const GstColumn& column : columns)
+        report.table.headings.push_back (column.heading);
+    report.table.subtitle = report.title;
+
+    std::vector<GstAmount> totals (columns.size ());
+    std::set<Transaction*> seen;
+    for (Split* split : splits)
+    {
+        Transaction* txn = xaccSplitGetParent (split);
+        if (seen.count (txn) > 0)
+            continue;
+        seen.insert (txn);
+
+        std::vector<Cell> row;
+        row.push_back ({print_date (xaccTransGetDate (txn)), "date-cell"});
+        row.push_back ({gst_num_action (txn, split), "text-cell"});
+        row.push_back ({text_or_empty (xaccTransGetDescription (txn)),
+                        "text-cell"});
+        std::string memo = text_or_empty (xaccSplitGetMemo (split));
+        if (memo.empty ())
+            memo = text_or_empty (xaccTransGetNotes (txn));
+        row.push_back ({memo, ""});
+
+        for (size_t index = 0; index < columns.size (); ++index)
+        {
+            const GstAmount value = columns[index].amount (txn);
+            totals[index] = gst_add (totals[index], value);
+            row.push_back ({value.present
+                                ? format_amount (value.value, report_cur)
+                                : std::string (),
+                            value.present ? "number-cell" : ""});
+        }
+        report.table.rows.push_back (std::move (row));
+    }
+
+    if (report.table.rows.empty ())
+    {
+        report.no_data = true;
+        return report;
+    }
+
+    /* The trep engine prints its grand-total row only when at least one
+     * column collected an amount: the row's cells come from the collectors'
+     * commodity list, and an empty collector list prints no row at all. */
+    const bool any_total = std::any_of (
+        totals.begin (), totals.end (),
+        [] (const GstAmount& total) { return total.present; });
+    if (any_total)
+    {
+        std::vector<Cell> total_row;
+        total_row.push_back (
+            {"Grand Total", "total-label-cell",
+             static_cast<int> (report.table.headings.size ()) - 4});
+        for (const GstAmount& total : totals)
+            total_row.push_back ({total.present
+                                      ? format_amount (total.value, report_cur)
+                                      : std::string (),
+                                  "total-number-cell"});
+        report.table.rows.push_back (std::move (total_row));
+    }
+
+    return report;
+}
+
 /* ---------------------------------------------------------- aging reports */
 
 namespace
@@ -5573,11 +6491,13 @@ advanced_portfolio (Account* root, const PortfolioOptions& options,
     {
         if (gnc_numeric_zero_p (money_in))
             return Cell {"", "number-cell"};
-        const double rate = 100.0 * gnc_numeric_to_double (gain) /
-                            gnc_numeric_to_double (money_in);
-        char text[32] = {0};
-        g_snprintf (text, sizeof text, "%.2f%%", rate);
-        return Cell {text, "number-cell"};
+        /* advanced-portfolio.scm formats this with (format #f "~,2f%"
+         * (* 100 (/ gain money_in))): the same arithmetic order, and Guile's
+         * rounding rather than printf's, so a rate that lands on a decimal
+         * half prints the same cent as the oracle. */
+        const double rate = 100.0 * (gnc_numeric_to_double (gain) /
+                                     gnc_numeric_to_double (money_in));
+        return Cell {format_fixed_2 (rate) + "%", "number-cell"};
     };
 
     for (Account* account : accounts)
@@ -5911,7 +6831,10 @@ advanced_portfolio (Account* root, const PortfolioOptions& options,
             gnc_price_unref (quote.price);
     }
 
-    if (!report.table.rows.empty ())
+    /* The grand-total row is unconditional: advanced-portfolio.scm appends it
+     * (and its rule) whatever the account list produced, so a book with no
+     * stock account prints the headings and a zero-valued Total row rather
+     * than an empty table. */
     {
         const gnc_numeric total_both_gain = gnc_numeric_add_fixed (
             total_gain, total_ugain);
@@ -7674,11 +8597,23 @@ render_no_accounts (const std::string& title, bool with_title_heading)
     return out.str ();
 }
 
+/* customer-summary.scm's page for a book with no customer: the document
+ * title and the sentence, with no table (and therefore no total rows). */
+std::string
+render_no_customers (const std::string& title)
+{
+    std::ostringstream out;
+    out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
+        << html_escape (title) << "</title><style>" << report_stylesheet ()
+        << "</style></head><body><h3>" << html_escape (title) << "</h3>\n"
+        << "No valid customer found.</body></html>\n";
+    return out.str ();
+}
+
 std::string
 render_warning (const std::string& title, const std::string& heading,
                 const std::string& text)
-{
-    /* gnc:html-make-generic-warning(): the report's name and a colon, the
+{    /* gnc:html-make-generic-warning(): the report's name and a colon, the
      * warning's own heading (which may be empty) and the explanation. */
     std::ostringstream out;
     out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
@@ -7703,6 +8638,8 @@ render_cell_table (const CellTable& table, const std::string& title)
      * though the document title stays the report name. */
     if (!table.subtitle.empty ())
         out << "<h3>" << html_escape (table.subtitle) << "</h3>\n";
+    if (!table.preamble.empty ())
+        out << table.preamble << "\n";
     out << "<table cellspacing='0' cellpadding='4' border='0'>";
     /* A report may put its column headings in the body instead (the lots
      * report repeats a heading row per account), so the header is optional.
@@ -7752,7 +8689,12 @@ render_cell_table (const CellTable& table, const std::string& title)
         out << "</tr>\n";
     }
 
-    out << "</tbody></table></body></html>\n";
+    out << "</tbody></table>\n";
+
+    if (!table.postamble.empty ())
+        out << table.postamble << "\n";
+
+    out << "</body></html>\n";
     return out.str ();
 }
 
@@ -7773,7 +8715,8 @@ native_report_names ()
             "Printable Invoice", "Receipt", "Tax Invoice",
             "Australian Tax Invoice", "Tax Schedule Report/TXF Export",
             "Customer Report", "Vendor Report", "Employee Report",
-            "Job Report", "Customer Summary"};
+            "Job Report", "Customer Summary", "Cash Flow",
+            "Income and GST Statement"};
 }
 
 /* --------------------------------------------------------------- options */
@@ -8576,6 +9519,173 @@ report_options (const std::string& name)
          * balance date to a closing one, so "all dates" has no meaning. */
         return options;
     }
+    else if (name == "Cash Flow")
+    {
+        /* cash-flow.scm's option page.  The dates and the report currency are
+         * the General page's; the account page holds the display depth, the
+         * sub-account switch, the selection and the trading-account switch;
+         * the "Show Exchange Rates" switch is not published because the
+         * native report always converts at the Scheme option's default price
+         * source and has no rates table to show. */
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the period whose activity the report covers.",
+            default_start_date ()));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the period whose activity the report covers.",
+            default_end_date ()));
+        options.push_back (currency_option ());
+        options.push_back (accounts_option ());
+
+        struct Switch
+        {
+            const char* name;
+            const char* label;
+            const char* description;
+            bool default_value;
+        };
+        static const Switch switches[] = {
+            {"show-full-names", "Show Full Account Names",
+             "Print the full account name (\"Assets:Checking\") rather than "
+             "the account's own name.", true},
+            {"show-selected-accts", "Show Selected Accounts",
+             "Print the list of accounts the report covers above the table.",
+             true},
+            {"include-trading", "Include Trading Accounts in report",
+             "Count the counterpart splits that sit in a trading account.  A "
+             "book with no trading account has nothing for it to change.",
+             false},
+        };
+        for (const Switch& item : switches)
+        {
+            OptionDescriptor option;
+            option.name = item.name;
+            option.type = OptionType::Bool;
+            option.label = item.label;
+            option.description = item.description;
+            option.default_value = item.default_value ? "true" : "false";
+            options.push_back (option);
+        }
+
+        OptionDescriptor depth;
+        depth.name = "display-depth";
+        depth.type = OptionType::Number;
+        depth.label = "Account Display Depth";
+        depth.description =
+            "How many levels of the account tree the \"Selected Accounts\" "
+            "list prints.  It does not change which accounts the figures "
+            "cover; the option's default is 2.";
+        depth.default_value = "2";
+        depth.minimum = 0;
+        depth.maximum = 100;
+        options.push_back (depth);
+        return options;
+    }
+    else if (name == "Income and GST Statement")
+    {
+        /* income-gst-statement.scm's option page.  Its dates default to the
+         * previous calendar quarter, not the accounting period; the account
+         * page has three selections (Sales, Purchases, Tax Accounts); the
+         * Format page holds the format choice and the six optional-column
+         * switches.  The trep-engine options it inherits are internal on its
+         * page, so they are not published: the native report fixes the
+         * listing to the report's own defaults (unique transactions, by
+         * date, non-void, non-closing, common currency). */
+        const DateRange quarter = gst_default_period ();
+        options.push_back (date_option (
+            "start", "Start Date",
+            "The first day of the period.  The Scheme option defaults to the "
+            "first day of the previous calendar quarter.",
+            quarter.start.value_or (default_start_date ())));
+        options.push_back (date_option (
+            "end", "End Date",
+            "The last day of the period.  The Scheme option defaults to the "
+            "last day of the previous calendar quarter.",
+            quarter.end.value_or (default_end_date ())));
+        options.push_back (currency_option ());
+
+        OptionDescriptor sales;
+        sales.name = "accounts";
+        sales.type = OptionType::AccountList;
+        sales.label = "Sales";
+        sales.description =
+            "The income accounts whose splits are the report's sales, as a "
+            "comma-separated list of account GUIDs.  Without it every income "
+            "account in the book is used, which is the Scheme option's "
+            "default selection.";
+        options.push_back (sales);
+
+        OptionDescriptor purchases;
+        purchases.name = "purchases";
+        purchases.type = OptionType::AccountList;
+        purchases.label = "Purchases";
+        purchases.description =
+            "The expense accounts whose splits are the report's purchases.  "
+            "Without it every expense account in the book is used.";
+        options.push_back (purchases);
+
+        OptionDescriptor tax;
+        tax.name = "tax-accounts";
+        tax.type = OptionType::AccountList;
+        tax.label = "Tax Accounts";
+        tax.description =
+            "The accounts holding the tax collected or paid: liability "
+            "accounts for tax collected on sales, asset accounts for tax paid "
+            "on purchases.  Empty is the Scheme option's default and leaves "
+            "the tax columns empty.";
+        options.push_back (tax);
+
+        OptionDescriptor format;
+        /* "format" is the route's name for the tax schedule's output choice,
+         * so this one is named after the Scheme option it is: "Report
+         * Format". */
+        format.name = "report-format";
+        format.type = OptionType::Choice;
+        format.label = "Report Format";
+        format.description =
+            "The report layout: the default GST/VAT statement, the Australian "
+            "Business Activity Statement, or the UK VAT Return.";
+        format.default_value = "default";
+        format.choices = {"default", "au-bas", "uk-vat"};
+        options.push_back (format);
+
+        struct Switch
+        {
+            const char* name;
+            const char* label;
+            const char* description;
+            bool default_value;
+        };
+        static const Switch switches[] = {
+            {"individual-sales", "Individual sales columns",
+             "Display individual sales columns rather than their sum.", false},
+            {"individual-purchases", "Individual purchases columns",
+             "Display individual purchases columns rather than their sum.",
+             false},
+            {"individual-tax", "Individual tax columns",
+             "Display individual tax columns rather than their sum.", false},
+            {"gross-balance", "Gross Balance",
+             "Add the gross balance column (gross sales - gross purchases).",
+             false},
+            {"net-balance", "Net Balance",
+             "Add the net balance column (net sales - net purchases).", false},
+            {"tax-payable", "Tax payable",
+             "Add the tax-payable column (tax on sales - tax on purchases).",
+             false},
+        };
+        for (const Switch& item : switches)
+        {
+            OptionDescriptor option;
+            option.name = item.name;
+            option.type = OptionType::Bool;
+            option.label = item.label;
+            option.description = item.description;
+            option.default_value = item.default_value ? "true" : "false";
+            options.push_back (option);
+        }
+        return options;
+    }
     else if (name == "Transaction Report" || name == "General Ledger")
     {
         options.push_back (date_option (
@@ -9176,6 +10286,10 @@ render_report (const std::string& name, Account* root,
         CustomerSummary summary = customer_summary (root, options);
         if (summary.warning == "No accounts selected")
             html = render_no_accounts ("Customer Summary", false);
+        else if (summary.warning == "No valid customer found.")
+            /* customer-summary.scm's own empty-owner-list page: the title and
+             * the sentence, with no table at all. */
+            html = render_no_customers (summary.title);
         else
             html = render_cell_table (summary.table, summary.title);
         return true;
@@ -9389,6 +10503,78 @@ render_report (const std::string& name, Account* root,
         html = render_html (equity_statement (root, options), title);
         return true;
     }
+    if (name == "Cash Flow")
+    {
+        CashFlowOptions options;
+        options.start = start;
+        options.end = end;
+        options.accounts = request.accounts;
+        options.currency = request.currency;
+        options.show_full_names =
+            request.boolean_option ("show-full-names", true);
+        options.show_selected_accounts =
+            request.boolean_option ("show-selected-accts", true);
+        options.include_trading =
+            request.boolean_option ("include-trading", false);
+        if (const auto depth = request.texts.find ("display-depth");
+            depth != request.texts.end ())
+        {
+            char* end_text = nullptr;
+            const long parsed = std::strtol (depth->second.c_str (),
+                                             &end_text, 10);
+            if (end_text != depth->second.c_str ())
+                options.display_depth = static_cast<int> (
+                    std::min<long> (std::max<long> (parsed, 0), 100));
+        }
+        CashFlowReport report = cash_flow (root, options);
+        /* The Scheme report renders the engine's "No accounts selected"
+         * warning when its selection is empty; the default selection is
+         * empty only on a book with none of the allowed account types. */
+        if (report.no_accounts)
+            html = render_no_accounts ("Cash Flow", false);
+        else
+            html = render_cell_table (report.table, report.title);
+        return true;
+    }
+    if (name == "Income and GST Statement")
+    {
+        GstOptions options;
+        /* The report's own date defaults are the previous quarter, not the
+         * accounting period, and period=all is not a thing it offers: a
+         * government return always covers a period. */
+        options.start = request.start;
+        options.end = request.end;
+        options.sales = request.accounts;
+        options.purchases = request.account_lists.count ("purchases") > 0
+                                ? request.account_lists.at ("purchases")
+                                : std::vector<Account*> ();
+        options.tax_accounts = request.account_lists.count ("tax-accounts") > 0
+                                   ? request.account_lists.at ("tax-accounts")
+                                   : std::vector<Account*> ();
+        options.currency = request.currency;
+        options.format = request.choice_option ("report-format", "default");
+        options.individual_sales =
+            request.boolean_option ("individual-sales", false);
+        options.individual_purchases =
+            request.boolean_option ("individual-purchases", false);
+        options.individual_tax =
+            request.boolean_option ("individual-tax", false);
+        options.gross_balance =
+            request.boolean_option ("gross-balance", false);
+        options.net_balance =
+            request.boolean_option ("net-balance", false);
+        options.tax_payable = request.boolean_option ("tax-payable", false);
+
+        GstReport report = gst_statement (root, options);
+        if (report.no_data)
+            html = render_warning (
+                "Income and GST Statement", "No matching transactions found",
+                "No transactions were found that match the time interval and "
+                "account selection specified in the Options panel.");
+        else
+            html = render_cell_table (report.table, report.title);
+        return true;
+    }
     if (name == "Transaction Report")
     {
         /* The Scheme report's default account selection is empty, and an
@@ -9525,42 +10711,24 @@ render_report (const std::string& name, Account* root,
     if (name == "Investment Portfolio")
     {
         /* An as-of report: the end date is the valuation date, so a start
-         * date is accepted and ignored. */
+         * date is accepted and ignored.  A selection that turns out empty is
+         * not an error and not the engine's no-accounts warning: portfolio.scm
+         * renders the table's column headings with no rows, which is what an
+         * empty row list produces. */
         PortfolioOptions options = portfolio_options (request, false);
         PortfolioReport report =
             investment_portfolio (root, options, request.currency);
-        if (report.table.rows.empty ())
-        {
-            /* The Scheme report's empty selection renders the engine's
-             * "No accounts selected" warning, not an empty table. */
-            std::vector<Account*> accounts = options.accounts;
-            if (accounts.empty ())
-                accounts = default_portfolio_accounts (root);
-            if (accounts.empty ())
-            {
-                html = render_no_accounts ("Investment Portfolio", false);
-                return true;
-            }
-        }
         html = render_cell_table (report.table, report.title);
         return true;
     }
     if (name == "Advanced Portfolio")
     {
+        /* Like the Investment Portfolio: an empty selection renders the
+         * headings and the report's zero-valued Total row, which is what
+         * advanced-portfolio.scm's unconditional grand-total row prints. */
         PortfolioOptions options = portfolio_options (request, true);
         PortfolioReport report =
             advanced_portfolio (root, options, request.currency);
-        if (report.table.rows.empty ())
-        {
-            std::vector<Account*> accounts = options.accounts;
-            if (accounts.empty ())
-                accounts = default_portfolio_accounts (root);
-            if (accounts.empty ())
-            {
-                html = render_no_accounts ("Advanced Portfolio", false);
-                return true;
-            }
-        }
         html = render_cell_table (report.table, report.title);
         return true;
     }

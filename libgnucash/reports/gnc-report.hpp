@@ -461,6 +461,14 @@ struct CellTable
     /** A date-interval line under the title, as the Scheme transaction
      *  engine prints above its table ("01/01/2018 to 12/31/2018"). */
     std::string subtitle;
+    /** Raw HTML between the headings and the table, for a report whose
+     *  Scheme page carries text of its own there (the Cash Flow's "Selected
+     *  Accounts" list).  It is markup, not a cell: a report that has nothing
+     *  to say here leaves it empty. */
+    std::string preamble;
+    /** Raw HTML after the table, for a report whose Scheme page prints a
+     *  note under the table (the GST statement's tax-setup explanation). */
+    std::string postamble;
 };
 
 std::string render_cell_table (const CellTable& table, const std::string& title);
@@ -605,6 +613,12 @@ std::string render_no_accounts (const std::string& title,
  *  options are incomplete renders this instead of a table. */
 std::string render_warning (const std::string& title, const std::string& heading,
                             const std::string& text);
+
+/** The Customer Summary's page for a book with no customer on its owner list:
+ *  the document title and the sentence "No valid customer found.", which is
+ *  what customer-summary.scm prints there -- with no table and therefore no
+ *  total rows. */
+std::string render_no_customers (const std::string& title);
 
 /* ---------------------------------------------------------- aging reports */
 
@@ -1031,6 +1045,146 @@ CellTable budget_flow (Account* root, GncBudget* budget,
 /** Render the Budget Report's "no budget" explanation, the Scheme engine's
  *  gnc:html-make-generic-budget-warning(). */
 std::string render_no_budget (const std::string& title);
+
+/* ------------------------------------------------------------- cash flow */
+
+/** The Cash Flow report's options, as its Scheme option page defines them. */
+struct CashFlowOptions
+{
+    /** The period.  Unset means the report's own default range, which is the
+     *  accounting period (the Scheme date-interval option's default). */
+    std::optional<time64> start;
+    std::optional<time64> end;
+    /** The account selection.  Empty means the report's default selection:
+     *  every bank, cash, asset, stock and mutual fund account below the
+     *  root.  The route expands each GUID to that account's subtree, which is
+     *  what the Scheme report's "Always show sub-accounts" switch adds, so
+     *  that switch has nothing left to do here and is not published. */
+    std::vector<Account*> accounts;
+    /** "Account Display Depth": how many levels of the selection the
+     *  "Selected Accounts" list prints.  It does not change which accounts
+     *  the figures cover -- that is the selection -- and the default is 2. */
+    int display_depth = 2;
+    /** "Show Full Account Names": print "Assets:Checking" rather than
+     *  "Checking" on the account rows. */
+    bool show_full_names = true;
+    /** "Show Selected Accounts": print the list of accounts the report
+     *  covers above the table. */
+    bool show_selected_accounts = true;
+    /** "Include Trading Accounts in report": count the counterpart splits
+     *  that sit in a trading account.  Off by default. */
+    bool include_trading = false;
+    gnc_commodity* currency = nullptr;
+};
+
+/** The Cash Flow ("Cash Flow", cash-flow.scm): the selected accounts' period
+ *  activity split into money that came *into* them and money that went *out*
+ *  of them, as cash-flow-calc.scm classifies it.  That classification is not
+ *  a debit/credit balance: for every split of a transaction that touches a
+ *  selected account, the transaction's *other* splits are examined, and a
+ *  counterpart split with a negative value is money in (its value flowed from
+ *  that account into the selection) while a positive one is money out.  Each
+ *  counterpart is counted once per transaction, in its absolute value
+ *  converted into the report currency at the transaction's date.
+ *
+ *  The rows are the "Money into selected accounts comes from" section with
+ *  one row per contributing account and the Money In total, then the same for
+ *  "Money out of selected accounts goes to" and Money Out, then the
+ *  difference.  Rows are sorted by account full name with the engine's
+ *  Unicode collation, which is the order the Scheme report sorts them into.
+ *
+ *  A selection that is empty after the default is applied renders the
+ *  Scheme engine's "No accounts selected" warning rather than a table.
+ *
+ *  Deliberately not reproduced, because they are presentation rather than
+ *  figure: the horizontal rules the Scheme table puts between the sections,
+ *  and the exchange-rates table behind "Show Exchange Rates" (the native
+ *  report always converts with the pricedb-nearest source, which is the
+ *  Scheme option's default). */
+struct CashFlowReport
+{
+    CellTable table;
+    std::string title;
+    /** The account rows the report could not resolve to a table because the
+     *  selection was empty: then `table` has no rows and render_report()
+     *  renders the engine's warning instead. */
+    bool no_accounts = false;
+};
+
+CashFlowReport cash_flow (Account* root, const CashFlowOptions& options);
+
+/* ------------------------------------------------------- GST statement */
+
+/** The Income and GST Statement's options.  The Scheme report is a
+ *  trep-engine listing with calculated columns; the options below are the
+ *  ones that change what it computes (the account selections and the format
+ *  switches) plus its period and currency. */
+struct GstOptions
+{
+    /** The period.  Unset means the report's own default: the previous
+     *  calendar quarter (the Scheme options' relative start/end defaults). */
+    std::optional<time64> start;
+    std::optional<time64> end;
+    /** "Sales": the income accounts whose splits are the report's sales.
+     *  Empty means every income account below the root, which is the Scheme
+     *  option's default selection. */
+    std::vector<Account*> sales;
+    /** "Purchases": the expense accounts.  Empty means every expense
+     *  account below the root. */
+    std::vector<Account*> purchases;
+    /** "Tax Accounts": the asset (tax paid) and liability (tax collected)
+     *  accounts.  Empty is the Scheme option's default and leaves the tax
+     *  columns empty. */
+    std::vector<Account*> tax_accounts;
+    gnc_commodity* currency = nullptr;
+    /** The "Report Format" choice: "default", "au-bas" or "uk-vat". */
+    std::string format = "default";
+
+    /* The default format's optional columns.  The three "individual"
+     * switches replace a summed column with one column per account. */
+    bool individual_sales = false;
+    bool individual_purchases = false;
+    bool individual_tax = false;
+    bool gross_balance = false;
+    bool net_balance = false;
+    bool tax_payable = false;
+};
+
+struct GstReport
+{
+    CellTable table;
+    std::string title;
+    /** No transaction in scope: the trep engine's "No matching transactions
+     *  found" warning instead of a table. */
+    bool no_data = false;
+};
+
+/** The Income and GST Statement ("Income and GST Statement",
+ *  income-gst-statement.scm): one row per transaction that touches a sales or
+ *  purchases account in the period, with the date, num, description and
+ *  memo/notes, then one calculated column per heading.  Each column sums the
+ *  transaction's splits in a set of accounts -- net sales (income, negated),
+ *  tax on sales (liability tax accounts, negated), net purchases (expense),
+ *  tax on purchases (asset tax accounts) -- and the gross/net/tax-payable
+ *  columns combine those sums, exactly as gst-calculated-cells does.  A
+ *  column with no matching split prints blank, not zero.
+ *
+ *  The rows are the trep engine's: the splits of the sales and purchases
+ *  accounts in the period, non-void and non-closing, only from transactions
+ *  whose type is NONE or INVOICE (the report's own split filter), one per
+ *  transaction, ordered by transaction date and then by the engine's split
+ *  order.  The "Common Currency" default is forced by the report, so every
+ *  amount is converted into the report currency at its transaction's date
+ *  with the pricedb-nearest source.
+ *
+ *  The AU BAS and UK VAT formats are the same rows under different column
+ *  definitions, and are reproduced; the UK format's *EUVAT* / *EUGOODS*
+ *  account-description markers are honoured.  Not reproduced, because it is
+ *  not part of the table: the Scheme report's tax-setup explanation, which its
+ *  renderer appends only when the tax-account selection is empty -- the
+ *  oracle's own rendered document does not contain it for these fixtures, so
+ *  the native document matches the oracle rather than the source. */
+GstReport gst_statement (Account* root, const GstOptions& options);
 
 /* ------------------------------------------------------- tax schedule */
 
