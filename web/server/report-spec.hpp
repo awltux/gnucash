@@ -51,11 +51,13 @@ struct ReportSpec
      *  book, unlike the localStorage saved views. */
     std::vector<std::string> tags;
     /** "accounts" (the default, and what a spec without the field means),
-     *  "splits", "balance-sheet" or "invoices".  A split spec's `columns` are
-     *  split columns, its rows are the book's individual splits, and
-     *  `split_grouping` decides their order and sections.  An invoices spec's
-     *  rows are the aging reports' owners or the documents they age, and
-     *  `invoice_owner`, `invoice_grouping` and `bucket_basis` say which. */
+     *  "splits", "balance-sheet", "invoices" or "lots".  A split spec's
+     *  `columns` are split columns, its rows are the book's individual splits,
+     *  and `split_grouping` decides their order and sections.  An invoices
+     *  spec's rows are the aging reports' owners or the documents they age, and
+     *  `invoice_owner`, `invoice_grouping` and `bucket_basis` say which.  A
+     *  lots spec is the Lot Viewer's table: one row per transaction, one
+     *  column per lot the transactions touch. */
     std::string source = "accounts";
     std::vector<std::string> columns;
     /** "none" (the default), "account", "account-code" or "transaction"; only
@@ -75,6 +77,10 @@ struct ReportSpec
      *  "invoices".  Which invoice date decides the bucket, the report's "Due
      *  or Post Date" option. */
     std::string bucket_basis = "due";
+    /** The Lot Viewer's "Description Filter"; only meaningful for `source`
+     *  "lots".  Only transactions whose description contains this string are
+     *  listed, and empty lists every transaction in the period. */
+    std::string description_filter;
     std::string grouping = "none";
     std::string period_unit = "year";
     /** "activity" (the default) or "cumulative"; cumulative turns a period
@@ -103,6 +109,14 @@ const std::vector<std::string>& balance_sheet_columns ();
  *  /api/spec/options, so the three cannot disagree. */
 const std::vector<std::string>& invoice_owner_columns ();
 const std::vector<std::string>& invoice_document_columns ();
+
+/** The columns a lots spec has, in display order: the Lot Viewer's row labels,
+ *  the middle column that stands for one column per lot the transactions
+ *  touch, and the transaction's remaining splits.  The middle entry is a
+ *  placeholder, not a column: the report writes one column per lot, so the
+ *  list is fixed and the lot columns are the book's.  Like the other lists,
+ *  one definition serves validation, serialization and /api/spec/options. */
+const std::vector<std::string>& lots_columns ();
 
 /** Where saved reports live: $GNC_WEBUI_REPORTS when set (the tests use a
  *  temporary file), else $XDG_DATA_HOME/gnucash/webui/reports.json, else

@@ -307,6 +307,12 @@ const specTitle = document.getElementById("spec-title");
 const specTags = document.getElementById("spec-tags");
 const tagSuggestions = document.getElementById("spec-tag-suggestions");
 const specColumns = document.getElementById("spec-columns");
+// The Columns row: a source whose table is the report's own (the balance
+// sheet, the aging reports, the Lot Viewer) prints the report's columns, and
+// the server refuses any other list, so the account-vocabulary checkboxes are
+// hidden and the spec's own list is what the form sends.
+const specColumnsRow = specColumns.closest(".option");
+let designerFixedColumns = null;
 const specGrouping = document.getElementById("spec-grouping");
 const specPeriodUnit = document.getElementById("spec-period-unit");
 const specPeriodUnitRow = document.getElementById("spec-period-unit-row");
@@ -1009,6 +1015,13 @@ function applySpecToDesigner(spec) {
   specTags.value = Array.isArray(spec.tags) ? spec.tags.join(", ") : "";
   specSource.value = typeof spec.source === "string" && spec.source !== ""
     ? spec.source : "accounts";
+  // A source whose table is the report's own: its columns are the report's,
+  // not a choice, so the checkbox group steps aside and the spec's list is
+  // what the form sends back.  The account source keeps the group.
+  designerFixedColumns =
+    specSource.value !== "accounts" && Array.isArray(spec.columns) &&
+    spec.columns.length > 0 ? spec.columns.slice() : null;
+  specColumnsRow.hidden = designerFixedColumns !== null;
   setChecked(specColumns, "spec-columns", spec.columns);
   orderChecked(specColumns, "spec-columns", spec.columns);
   setChecked(specAccounts, "spec-accounts", spec.accounts);
@@ -1040,6 +1053,8 @@ function clearDesigner() {
   specTitle.value = "";
   specTags.value = "";
   specSource.value = "accounts";
+  designerFixedColumns = null;
+  specColumnsRow.hidden = false;
   setChecked(specColumns, "spec-columns", ["account-name"]);
   setChecked(specAccounts, "spec-accounts", []);
   setChecked(specAccountTypes, "spec-account-types", []);
@@ -1263,8 +1278,11 @@ function readDesignerSpec() {
     specName.focus();
     return null;
   }
-  const columns = [...specColumns.querySelectorAll("input:checked")]
-    .map((box) => box.value);
+  // A fixed-column source keeps the report's own list; the other sources read
+  // the checkboxes, which are the account vocabulary.
+  const columns = designerFixedColumns !== null
+    ? designerFixedColumns.slice()
+    : [...specColumns.querySelectorAll("input:checked")].map((box) => box.value);
   if (columns.length === 0) {
     showSpecError("Choose at least one column.");
     return null;

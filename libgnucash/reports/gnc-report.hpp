@@ -315,6 +315,12 @@ struct Table
     std::vector<ColumnDef> column_defs;
     std::vector<Row> rows;
     gnc_commodity* currency = nullptr;
+    /** Print this table's amount cells with the default monetary format when
+     *  `currency` is null: the format the Scheme engine gives a null-commodity
+     *  monetary, which is how the Lot Viewer's page over the whole book prints
+     *  its share counts.  A table with a currency prints every amount in it
+     *  and ignores this. */
+    bool amounts_without_commodity = false;
     bool has_totals = false;
     gnc_numeric debit_total = gnc_numeric_zero ();
     gnc_numeric credit_total = gnc_numeric_zero ();
@@ -428,6 +434,11 @@ enum class SpecSource
      *  one projection of that walk and its documents another; both come from
      *  the same collection, so the buckets cannot disagree. */
     Invoices,
+    /** The Lot Viewer's table: one row per transaction of the selected account
+     *  in the period, one column per lot those transactions touch (the column
+     *  set is the book's, not the spec's), and the report's own heading,
+     *  document and balance rows.  See lots_spec_table(). */
+    Lots,
 };
 
 /** How a split listing orders and sections its rows.  Each value reproduces
@@ -470,7 +481,10 @@ struct TableSpec
     gnc_commodity* currency = nullptr;
     /** The accounts in scope.  Empty means every account in the book.  For a
      *  split listing this is the report's account selection: the account and
-     *  its subtree, as the report route expands a GUID. */
+     *  its subtree, as the report route expands a GUID.  For a lots spec it is
+     *  the Lot Viewer's single Account option: at most one account, and that
+     *  account alone (no subtree), so the field is the report's rather than a
+     *  scope. */
     std::vector<Account*> accounts;
     /** Further restrict the scope to these account types.  Empty means every
      *  type.  This is what makes a built-in spec portable between books: a
@@ -496,6 +510,10 @@ struct TableSpec
     /** The invoice date the buckets are measured from, when `source` is
      *  Invoices. */
     AgingDate invoice_bucket_basis = AgingDate::Due;
+    /** The Lot Viewer's "Description Filter", when `source` is Lots: only
+     *  transactions whose description contains this string are listed.  Empty
+     *  means every transaction in the period. */
+    std::string lot_description_filter;
 };
 
 /** Build the table a split spec asks for.  The rows are the splits of the
@@ -559,6 +577,38 @@ Table balance_sheet_spec_table (Account* root, const TableSpec& spec);
  *  is nothing to age the table carries the report's explanation in
  *  `Table::warning` and no rows. */
 Table invoices_table (Account* root, const TableSpec& spec);
+
+/** Build the table a lots spec asks for: the native Lot Viewer's table.
+ *
+ *  The columns are the report's own and are not a choice: Date, Desc, Type,
+ *  one column per lot the period's transactions touch -- in the order the lots
+ *  first appear in the report's date-ordered split list, headed by the lot's
+ *  title and, on the row below, its GUID's first eight characters -- and Other
+ *  Account.  The lot columns are therefore the book's, not a vocabulary: the
+ *  producer builds them from the rows it is about to emit.  The rows are the
+ *  report's too: the heading row, the GUID row, the Document row, one row per
+ *  transaction and the Balance row.
+ *
+ *  A cell holds that transaction's amount in that lot (its splits' amounts
+ *  summed), printed in the account's commodity, and Other Account holds the
+ *  transaction's splits that belong to none of the listed lots -- which the
+ *  report prints in the account's commodity too, even though they are other
+ *  accounts' money.  With no account the page is the report's default one: the
+ *  whole book's transactions and every lot they touch, with the amounts in the
+ *  default monetary format.
+ *
+ *  `spec.accounts` is the report's single "Account" option: at most one
+ *  account, and that account's own splits (not its subtree); empty means the
+ *  whole book, as the report's unset option does.  `spec.lot_description_filter`
+ *  is its "Description Filter".  When the period holds no split the table
+ *  carries the report's "No data" explanation in `Table::warning` and no rows,
+ *  and the caller prints the warning page instead.
+ *
+ *  Where a transaction has more than one split in the same lot, the report
+ *  concatenates their formatted amounts into one cell; the table's cell is
+ *  their sum, because a typed cell holds one amount.  That is the one place the
+ *  two documents can differ, and only a book with such a transaction shows it. */
+Table lots_spec_table (Account* root, const TableSpec& spec);
 
 /** The account type names a spec may scope by, in display order: the engine's
  *  persistent names (xaccAccountTypeEnumAsString), without the hidden root. */

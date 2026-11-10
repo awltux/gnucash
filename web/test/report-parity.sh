@@ -691,6 +691,8 @@ PY
                         (loop (gnc-account-get-descendants-sorted
                                (gnc-get-current-root-account)))))"
                             continue ;;
+                        description-filter)
+                            page="General"; name="Description Filter" ;;
                         *) fail "no Scheme mapping for option '$key' on $REPORT" ;;
                     esac ;;
                 "IFRS weighted-average cost basis report")

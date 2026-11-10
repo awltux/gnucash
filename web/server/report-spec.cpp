@@ -158,6 +158,54 @@ lookup_currency (Account* root, const std::string& mnemonic,
     return true;
 }
 
+/* The columns of a source whose table is the report's own: omit them, or give
+ * exactly the report's, in the report's order.  A caller asking for another
+ * column or another order is asking for a different report, which is what
+ * `refusal` says in the source's own words. */
+bool
+fixed_columns (const json::Value* columns,
+               const std::vector<std::string>& expected,
+               const std::string& refusal, std::vector<std::string>& out,
+               std::string& error)
+{
+    out.clear ();
+    if (columns != nullptr && !columns->is_null ())
+    {
+        if (!columns->is_array ())
+            return fail (error, "'columns' must be an array of column names");
+        for (const json::Value& entry : columns->array)
+        {
+            if (!entry.is_string ())
+                return fail (error, "'columns' entries must be strings");
+            out.push_back (entry.string);
+        }
+    }
+    if (out.empty ())
+        out = expected;
+    else if (out != expected)
+        return fail (error, refusal);
+    return true;
+}
+
+/* Why a source whose table is the report's own has no chart series: each
+ * source's sentence, so a 400 names the report's reason and not a generic
+ * one.  The account sources have a chart, so they never reach here. */
+std::string
+chart_series_refusal (const std::string& source)
+{
+    if (source == "invoices")
+        return "an invoices spec has no 'chart_series': the aging report prints "
+               "a table of buckets, not a chart";
+    if (source == "balance-sheet")
+        return "a balance-sheet spec has no 'chart_series': the report always "
+               "prints its own chart of the three section totals";
+    if (source == "lots")
+        return "a lots spec has no 'chart_series': the Lot Viewer prints its "
+               "transaction table, not a chart";
+    return "a split listing has no chart_series: a chart plots account or "
+           "period amounts";
+}
+
 bool
 parse_spec_value (const json::Value& value, Account* root, bool check_book,
                   ReportSpec& spec, std::string& error)
@@ -168,8 +216,8 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     static const std::set<std::string> allowed = {
         "id", "name", "title", "description", "tags", "source", "columns",
         "split_grouping", "invoice_grouping", "invoice_owner", "bucket_basis",
-        "grouping", "period_unit", "period_mode", "start", "end",
-        "date_preset", "currency", "accounts", "account_types", "chart",
+        "description_filter", "grouping", "period_unit", "period_mode", "start",
+        "end", "date_preset", "currency", "accounts", "account_types", "chart",
         "chart_series", "builtin"};
     for (const auto& entry : value.object)
     {
@@ -240,11 +288,12 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     const bool split_source = spec.source == "splits";
     const bool balance_sheet_source = spec.source == "balance-sheet";
     const bool invoice_source = spec.source == "invoices";
+    const bool lots_source = spec.source == "lots";
     if (!split_source && !balance_sheet_source && !invoice_source &&
-        spec.source != "accounts")
+        !lots_source && spec.source != "accounts")
         return fail (error, "unknown source '" + spec.source +
-                             "' (expected accounts, splits, balance-sheet or "
-                             "invoices)");
+                             "' (expected accounts, splits, balance-sheet, "
+                             "invoices or lots)");
 
     /* The invoice source's three settings are read before the columns: which
      * row set the spec has decides which columns it may name.  A field on a
@@ -286,6 +335,19 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "unknown bucket_basis '" + spec.bucket_basis +
                              "' (expected due or posted)");
 
+    /* The Lot Viewer's Description Filter: it changes which transactions the
+     * report lists, so a spec carries it as a field of its own. */
+    spec.description_filter.clear ();
+    if (!optional_string (value, "description_filter", spec.description_filter,
+                          present, error))
+        return false;
+    if (!lots_source && !spec.description_filter.empty ())
+        return fail (error, "'description_filter' is for a spec with source "
+                             "'lots': it is the Lot Viewer's Description Filter");
+    if (spec.description_filter.size () > 200)
+        return fail (error, "'description_filter' is longer than 200 "
+                             "characters");
+
     const json::Value* columns = value.find ("columns");
     if (balance_sheet_source)
     {
@@ -293,26 +355,13 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
          * columns are not a choice: omit them, or give exactly the report's
          * two in the report's order.  A caller asking for a third column (or
          * another order) is asking for a different report, not a setting. */
-        spec.columns.clear ();
-        if (columns != nullptr && !columns->is_null ())
-        {
-            if (!columns->is_array ())
-                return fail (error,
-                             "'columns' must be an array of column names");
-            for (const json::Value& entry : columns->array)
-            {
-                if (!entry.is_string ())
-                    return fail (error, "'columns' entries must be strings");
-                spec.columns.push_back (entry.string);
-            }
-        }
-        if (spec.columns.empty ())
-            spec.columns = balance_sheet_columns ();
-        else if (spec.columns != balance_sheet_columns ())
-            return fail (error, "'columns' is fixed on a balance-sheet spec: "
-                                 "the report prints exactly 'account-name' and "
-                                 "'balance', in that order, so the columns are "
-                                 "not a choice");
+        if (!fixed_columns (
+                columns, balance_sheet_columns (),
+                "'columns' is fixed on a balance-sheet spec: the report prints "
+                "exactly 'account-name' and 'balance', in that order, so the "
+                "columns are not a choice",
+                spec.columns, error))
+            return false;
     }
     else if (invoice_source)
     {
@@ -360,6 +409,24 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                                      "' appears more than once");
             spec.columns.push_back (entry.string);
         }
+    }
+    else if (lots_source)
+    {
+        /* The Lot Viewer's table has one column per lot its transactions
+         * touch.  That column list is the book's, not the spec's, so the spec
+         * carries the report's columns as a fixed list -- the three row
+         * labels, the "lots" placeholder and "other-account" -- and the
+         * producer writes the lot columns in its place.  A caller asking for
+         * another column, or another order, is asking for a different report. */
+        if (!fixed_columns (
+                columns, lots_columns (),
+                "'columns' is fixed on a lots spec: the Lot Viewer prints "
+                "'date', 'description', 'type', one column per lot the "
+                "transactions touch (the 'lots' placeholder) and "
+                "'other-account', in that order, so the columns are not a "
+                "choice",
+                spec.columns, error))
+            return false;
     }
     else
     {
@@ -422,6 +489,10 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                              "are the report's own, one heading per A/Receivable "
                              "or A/Payable account; 'invoice_grouping' chooses "
                              "the rows (owner or document)");
+    if (lots_source && spec.grouping != "none")
+        return fail (error, "a lots spec has no 'grouping': the Lot Viewer's "
+                             "rows are one per transaction in date order, split "
+                             "into its own lot columns");
 
     spec.split_grouping = "none";
     if (!optional_string (value, "split_grouping", spec.split_grouping, present,
@@ -454,6 +525,9 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (invoice_source && spec.period_unit != "year")
         return fail (error, "an invoices spec has no 'period_unit': it is "
                              "drawn as of one date, not over periods");
+    if (lots_source && spec.period_unit != "year")
+        return fail (error, "a lots spec has no 'period_unit': its rows are "
+                             "transactions in the report's period, not periods");
 
     spec.period_mode = "activity";
     if (!optional_string (value, "period_mode", spec.period_mode, present,
@@ -471,6 +545,9 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (invoice_source && spec.period_mode != "activity")
         return fail (error, "an invoices spec has no 'period_mode': it is "
                              "drawn as of one date, not over periods");
+    if (lots_source && spec.period_mode != "activity")
+        return fail (error, "a lots spec has no 'period_mode': its rows are "
+                             "transactions, not period balances");
     if (spec.period_mode == "cumulative" && spec.grouping != "period")
         return fail (error, "period_mode 'cumulative' needs grouping "
                              "'period'");
@@ -515,6 +592,19 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "an invoices spec has no 'currency': the report "
                              "does not convert, it prints each aging account's "
                              "amounts in that account's own commodity");
+
+    /* The Lot Viewer takes a literal start and end date -- its own two date
+     * options -- and no preset resolves to them; and it has no commodity
+     * option: the amounts print in the selected account's commodity (or, with
+     * no account, in the default monetary format). */
+    if (lots_source && !spec.query.date_preset.empty ())
+        return fail (error, "a lots spec has no 'date_preset': the report's "
+                             "dates are its Start Date and End Date options, and "
+                             "no preset resolves to them");
+    if (lots_source && !spec.query.currency.empty ())
+        return fail (error, "a lots spec has no 'currency': the Lot Viewer "
+                             "prints its amounts in the selected account's "
+                             "commodity, and does not convert");
 
     if (!spec.query.date_preset.empty () &&
         (!spec.query.start.empty () || !spec.query.end.empty ()))
@@ -659,6 +749,20 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                                  "so it has no date range");
     }
 
+    /* The Lot Viewer's Account option holds one account, not a selection of
+     * them and not a subtree: the report lists the lots its splits belong to.
+     * An empty list is the report's unset option -- the whole book. */
+    if (lots_source && spec.query.accounts.size () > 1)
+        return fail (error, "'accounts' names " +
+                             std::to_string (spec.query.accounts.size ()) +
+                             " accounts: the Lot Viewer's Account option holds a "
+                             "single account, and an empty 'accounts' is its "
+                             "unset value (the whole book)");
+    if (lots_source && !spec.account_types.empty ())
+        return fail (error, "a lots spec names its one account in 'accounts', "
+                             "not by account type, so it has no "
+                             "'account_types'");
+
     spec.chart.clear ();
     if (!optional_string (value, "chart", spec.chart, present, error))
         return false;
@@ -675,25 +779,17 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (invoice_source && !spec.chart.empty ())
         return fail (error, "an invoices spec has no 'chart': the aging report "
                              "prints a table of buckets, not a chart");
+    if (lots_source && !spec.chart.empty ())
+        return fail (error, "a lots spec has no 'chart': the Lot Viewer prints "
+                             "its transaction table, not a chart");
 
     spec.chart_series.clear ();
-    if (split_source || balance_sheet_source || invoice_source)
+    if (split_source || balance_sheet_source || invoice_source || lots_source)
     {
         const json::Value* series = value.find ("chart_series");
         if (series != nullptr && !series->is_null () && series->is_array () &&
             !series->array.empty ())
-            return fail (error, invoice_source
-                                      ? "an invoices spec has no "
-                                        "'chart_series': the aging report "
-                                        "prints a table of buckets, not a chart"
-                                      : balance_sheet_source
-                                            ? "a balance-sheet spec has no "
-                                              "'chart_series': the report "
-                                              "always prints its own chart of "
-                                              "the three section totals"
-                                            : "a split listing has no "
-                                              "chart_series: a chart plots "
-                                              "account or period amounts");
+            return fail (error, chart_series_refusal (spec.source));
     }
     const json::Value* series = value.find ("chart_series");
     if (series != nullptr && !series->is_null ())
@@ -843,6 +939,18 @@ invoice_document_columns ()
 {
     static const std::vector<std::string> columns =
         gnc::report::invoice_document_column_names ();
+    return columns;
+}
+
+const std::vector<std::string>&
+lots_columns ()
+{
+    /* "lots" is not a column the report prints: it is where the producer puts
+     * one column per lot the period's transactions touch.  Naming it in the
+     * list is what lets a spec say "the report's columns" without inventing a
+     * column name no report has. */
+    static const std::vector<std::string> columns = {
+        "date", "description", "type", "lots", "other-account"};
     return columns;
 }
 
@@ -1004,6 +1112,8 @@ spec_to_json (const ReportSpec& spec, bool builtin)
         out << json_field ("invoice_owner", spec.invoice_owner) << ",";
         out << json_field ("bucket_basis", spec.bucket_basis) << ",";
     }
+    if (spec.source == "lots")
+        out << json_field ("description_filter", spec.description_filter) << ",";
     out << json_field ("grouping", spec.grouping) << ",";
     out << json_field ("period_unit", spec.period_unit) << ",";
     out << json_field ("period_mode", spec.period_mode) << ",";
@@ -1354,13 +1464,38 @@ no_spec_note (const std::string& name)
                "no status section and no calculated column, so it cannot "
                "describe the report.";
     }
-    if (one_of (name, {"Investment Lots", "Investment Portfolio",
-                       "Advanced Portfolio", "Lot Viewer",
-                       "IFRS weighted-average cost basis report"}))
+    if (one_of (name, {"Investment Lots"}))
     {
-        return "Its rows and amounts come from lots, holdings, prices and "
-               "their gains.  A spec has no lot, price or gain column, so it "
-               "cannot describe the report.";
+        return "Its rows are lots, but its columns are the gains analysis: "
+               "bought, sold and end amounts and bases, the short- and "
+               "long-term realised and unrealised gains, the rates and the "
+               "warnings, per lot per account.  The 'lots' source is the Lot "
+               "Viewer's table -- one row per transaction and one column per "
+               "lot -- which prints none of those figures, so it cannot "
+               "describe this report; a source for it would need that column "
+               "vocabulary, not this one.";
+    }
+    if (one_of (name, {"Investment Portfolio", "Advanced Portfolio"}))
+    {
+        return "Its rows are the stock and mutual fund accounts, not lots: one "
+               "row per account with its units as of the valuation date, the "
+               "price the price source gives them, their value, and -- in the "
+               "Advanced Portfolio -- the basis, the money in and out, the "
+               "realised and unrealised gains, the income, the fees and the "
+               "rates and total return.  Neither the 'lots' source nor the "
+               "account source has a units, price or gain column: a spec row "
+               "is one account's balance over a date range, so neither can "
+               "describe these reports.  Expressing them would be a holdings "
+               "source -- account rows with priced values -- not a setting on "
+               "this one.";
+    }
+    if (one_of (name, {"IFRS weighted-average cost basis report"}))
+    {
+        return "Its rows are the security's transactions with a running "
+               "average cost basis, the basis and gain of each sale, the gain "
+               "the register recorded and the variance between the two.  A "
+               "spec has no basis, gain or variance column and no running "
+               "average, so it cannot describe the report.";
     }
     if (name == "Balance Sheet (Multicolumn)")
     {
@@ -1524,6 +1659,49 @@ native_designer_info (const std::string& report, NativeDesignerInfo& info)
             "scope or chart option, and the report's chart of the three "
             "section totals is always printed.  The copy has its own name and "
             "title; its cells are the report's cells.";
+        return true;
+    }
+
+    if (report == "Lot Viewer")
+    {
+        /* The source is the report's own table: its rows are one per
+         * transaction, its columns are Date, Desc, Type, one per lot the
+         * transactions touch and Other Account, and its heading, document and
+         * balance rows are the report's.  The lot columns are the book's, so
+         * the copy carries the report's fixed column list and the producer
+         * writes the lot columns in its place.  The copy gets its own name and
+         * title. */
+        ReportSpec spec;
+        spec.name = report + " (copy)";
+        spec.title = spec.name;
+        spec.source = "lots";
+        spec.columns = lots_columns ();
+        spec.query.start = option_default (options, "start");
+        spec.query.end = option_default (options, "end");
+        info.spec = std::move (spec);
+        info.has_spec = true;
+        info.equivalence = "exact";
+        info.note =
+            "Its cells are the report's own: the Date, Desc and Type of every "
+            "transaction of the account in the period, one column per lot those "
+            "transactions touch holding the transaction's amount in that lot, "
+            "the Other Account column for the transaction's remaining splits, "
+            "the lot titles and their short GUIDs above them, the Document row "
+            "and the Balance row.  The period is the report's Start Date and "
+            "End Date, 'description_filter' is its Description Filter, and "
+            "'accounts' is its single Account option: one account, whose own "
+            "splits are listed, and an empty list is the option's unset value "
+            "-- the whole book's transactions and every lot they touch, which "
+            "is the report's default page.  The amounts print in the selected "
+            "account's commodity (or, with no account, in the default monetary "
+            "format), which is why a lots spec has no 'currency'.  The lot "
+            "columns are the book's and not a choice: a spec carries the "
+            "report's column list and the producer writes one column per lot. "
+            "Where a transaction has more than one split in the same lot the "
+            "report prints their amounts one after another in one cell and the "
+            "spec's cell holds their sum, which is the one place the two "
+            "documents can differ.  The copy has its own name and title; its "
+            "cells are the report's cells.";
         return true;
     }
 
@@ -1758,6 +1936,15 @@ render_spec_html (const ReportSpec& spec, Account* root, std::string& html,
         table.invoice_bucket_basis = spec.bucket_basis == "posted"
                                          ? gnc::report::AgingDate::Posted
                                          : gnc::report::AgingDate::Due;
+    }
+    else if (spec.source == "lots")
+    {
+        /* The Lot Viewer's own table.  The columns are the report's fixed
+         * list, and the lot columns are the book's: the producer computes
+         * them, so nothing here copies spec.columns into the table -- a spec
+         * cannot ask for a column the report does not print. */
+        table.source = gnc::report::SpecSource::Lots;
+        table.lot_description_filter = spec.description_filter;
     }
     else
     {

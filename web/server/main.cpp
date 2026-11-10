@@ -418,7 +418,9 @@ spec_options_json ()
             "{\"name\":\"balance-sheet\",\"label\":\"Balance sheet (the "
             "report's fixed sections)\"},"
             "{\"name\":\"invoices\",\"label\":\"Invoices and bills (the aging "
-            "reports)\"}],"
+            "reports)\"},"
+            "{\"name\":\"lots\",\"label\":\"Lots (the Lot Viewer's transaction "
+            "table)\"}],"
             "\"balance_sheet\":{\"columns\":[";
     first = true;
     for (const std::string& column : web::balance_sheet_columns ())
@@ -490,6 +492,37 @@ spec_options_json ()
             "currency, no start date or preset, no chart and no grouping: a "
             "request that sets one is refused by name rather than "
             "ignored.\"},"
+            "\"lots\":{\"columns\":[";
+    first = true;
+    for (const std::string& column : web::lots_columns ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "\"";
+        body += json_escape (column.c_str ());
+        body += "\"";
+    }
+    body += "],\"options\":[\"start\",\"end\",\"accounts\","
+            "\"description_filter\"],"
+            "\"note\":\"A lots spec is the Lot Viewer's own table: one row per "
+            "transaction of the selected account in the period, in the "
+            "report's order, with the transaction's date, description and "
+            "type, one column per lot those transactions touch (the lot "
+            "columns are the book's, not a choice: 'lots' in the column list "
+            "stands for them), an Other Account column for the transaction's "
+            "remaining splits, and the report's own lot titles, short GUIDs, "
+            "Document row and Balance row.  The amounts are transaction "
+            "amounts in each lot, printed in the selected account's commodity. "
+            "'start' and 'end' are the report's two dates, 'accounts' is its "
+            "single Account option -- one account, whose own splits are "
+            "listed, and empty for the option's unset value, the whole book -- "
+            "and 'description_filter' is its Description Filter.  The report "
+            "does not convert currencies and has no account type, grouping, "
+            "period, chart or preset option, so a request that sets one is "
+            "refused by name rather than ignored.  The two portfolio reports "
+            "are not this source: their rows are accounts with priced values, "
+            "not lots.\"},"
             "\"split_columns\":[";
     first = true;
     for (const gnc::report::SplitColumn column :

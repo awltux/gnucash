@@ -1257,6 +1257,23 @@ render_table_spec (const TableSpec& requested, Account* root, std::string& html,
         return true;
     }
 
+    if (requested.source == SpecSource::Lots)
+    {
+        /* The Lot Viewer's own table: its rows, its lot columns (which are the
+         * book's, computed by the producer from the data), and its "No data"
+         * page when the period holds no split. */
+        const Table table = lots_spec_table (root, requested);
+        if (table.warning.empty ())
+            html = render_html (table, requested.title.empty ()
+                                          ? "Custom Report"
+                                          : requested.title);
+        else
+            html = render_warning (requested.title.empty () ? "Custom Report"
+                                                            : requested.title,
+                                   "No data", table.warning);
+        return true;
+    }
+
     if (requested.source == SpecSource::Splits)
     {
         if (requested.split_columns.empty ())
@@ -7351,22 +7368,38 @@ investment_portfolio (Account* root, const PortfolioOptions& options,
 
 /* ------------------------------------------------------------- lot viewer */
 
-LotViewerReport
-lot_viewer (const LotViewerOptions& options)
+namespace
 {
-    LotViewerReport report;
-    report.title = "Lot Viewer";
 
-    /* The Scheme option's unset value is a null account, and
-     * xaccQueryAddSingleAccountMatch() with a null account adds no term at
-     * all: the query then matches every non-voided split in the book and the
-     * report lists every lot it can reach, with the amounts printed in the
-     * default currency (xaccAccountGetCommodity(null) is null, and
-     * gnc_commodity_print_info(null) is the default print info).  That is the
-     * report's default page, so the native report reproduces it rather than
-     * requiring an account. */
+/* The Lot Viewer's rows before they are cells: the period's splits, the lots
+ * those splits touch (in the order the report's date-ordered split list first
+ * shows them), each lot's own splits, and the transactions the splits belong
+ * to.  The report's cell table and a lots spec's typed table are both built
+ * from this, so the two cannot disagree about which rows there are or about
+ * the lot columns, which are the rows' own. */
+struct LotViewerRows
+{
+    std::vector<Split*> splits;
+    std::vector<GNCLot*> lots;
+    std::vector<std::vector<Split*>> lot_splits;
+    std::vector<Transaction*> transactions;
+    /** The account's commodity, or null for the report's no-account page. */
+    gnc_commodity* currency = nullptr;
+};
+
+/* Collect the rows.  The Scheme option's unset value is a null account, and
+ * xaccQueryAddSingleAccountMatch() with a null account adds no term at all:
+ * the query then matches every non-voided split in the book and the report
+ * lists every lot it can reach, with the amounts printed in the default
+ * currency (xaccAccountGetCommodity(null) is null, and
+ * gnc_commodity_print_info(null) is the default print info).  That is the
+ * report's default page, so the native report reproduces it rather than
+ * requiring an account. */
+void
+lot_viewer_rows (const LotViewerOptions& options, LotViewerRows& rows)
+{
     Account* account = options.account;
-    gnc_commodity* currency =
+    rows.currency =
         account != nullptr ? xaccAccountGetCommodity (account) : nullptr;
 
     /* xaccQueryAddClearedMatch (CLEARED-ALL & ~CLEARED-VOIDED) plus the date
@@ -7375,7 +7408,6 @@ lot_viewer (const LotViewerOptions& options)
     const time64 start = gnc_time64_get_day_start (options.start);
     const time64 end = gnc_time64_get_day_end (options.end);
 
-    std::vector<Split*> splits;
     std::vector<Account*> sources;
     if (account != nullptr)
         sources.push_back (account);
@@ -7407,13 +7439,13 @@ lot_viewer (const LotViewerOptions& options)
                             options.description_filter.c_str ()) == nullptr)
                     continue;
             }
-            splits.push_back (split);
+            rows.splits.push_back (split);
         }
     }
 
     /* qof-query-run() answers in date order, and the report takes its lot
      * columns in the order the lots first appear in that list. */
-    std::stable_sort (splits.begin (), splits.end (),
+    std::stable_sort (rows.splits.begin (), rows.splits.end (),
                       [] (Split* left, Split* right)
                       {
                           Transaction* left_txn = xaccSplitGetParent (left);
@@ -7425,41 +7457,58 @@ lot_viewer (const LotViewerOptions& options)
                           return xaccTransOrder (left_txn, right_txn) < 0;
                       });
 
-    if (splits.empty ())
+    if (rows.splits.empty ())
+        return;
+
+    std::set<GNCLot*> seen;
+    for (Split* split : rows.splits)
+    {
+        GNCLot* lot = xaccSplitGetLot (split);
+        if (lot == nullptr || !seen.insert (lot).second)
+            continue;
+        rows.lots.push_back (lot);
+        std::vector<Split*> members;
+        for (GList* node = gnc_lot_get_split_list (lot); node != nullptr;
+             node = node->next)
+            members.push_back (static_cast<Split*> (node->data));
+        rows.lot_splits.push_back (std::move (members));
+    }
+
+    /* The transactions are the splits' parents, unique, in the engine's
+     * transaction order. */
+    for (Split* split : rows.splits)
+    {
+        Transaction* txn = xaccSplitGetParent (split);
+        if (std::find (rows.transactions.begin (), rows.transactions.end (),
+                       txn) == rows.transactions.end ())
+            rows.transactions.push_back (txn);
+    }
+    std::stable_sort (rows.transactions.begin (), rows.transactions.end (),
+                      [] (Transaction* left, Transaction* right) {
+                          return xaccTransOrder (left, right) < 0;
+                      });
+}
+
+} // namespace
+
+LotViewerReport
+lot_viewer (const LotViewerOptions& options)
+{
+    LotViewerReport report;
+    report.title = "Lot Viewer";
+
+    LotViewerRows rows;
+    lot_viewer_rows (options, rows);
+    if (rows.splits.empty ())
     {
         report.warning = "no-data";
         return report;
     }
 
-    std::vector<GNCLot*> lots;
-    std::vector<std::vector<Split*>> lot_splits;
-    std::set<GNCLot*> seen;
-    for (Split* split : splits)
-    {
-        GNCLot* lot = xaccSplitGetLot (split);
-        if (lot == nullptr || !seen.insert (lot).second)
-            continue;
-        lots.push_back (lot);
-        std::vector<Split*> members;
-        for (GList* node = gnc_lot_get_split_list (lot); node != nullptr;
-             node = node->next)
-            members.push_back (static_cast<Split*> (node->data));
-        lot_splits.push_back (std::move (members));
-    }
-
-    /* The transactions are the splits' parents, unique, in the engine's
-     * transaction order. */
-    std::vector<Transaction*> transactions;
-    for (Split* split : splits)
-    {
-        Transaction* txn = xaccSplitGetParent (split);
-        if (std::find (transactions.begin (), transactions.end (), txn) ==
-            transactions.end ())
-            transactions.push_back (txn);
-    }
-    std::stable_sort (transactions.begin (), transactions.end (),
-                      [] (Transaction* left, Transaction* right)
-                      { return xaccTransOrder (left, right) < 0; });
+    gnc_commodity* currency = rows.currency;
+    const std::vector<GNCLot*>& lots = rows.lots;
+    const std::vector<std::vector<Split*>>& lot_splits = rows.lot_splits;
+    const std::vector<Transaction*>& transactions = rows.transactions;
 
     CellTable& table = report.table;
 
@@ -7562,6 +7611,235 @@ lot_viewer (const LotViewerOptions& options)
     balances.push_back (label_cell ("", ""));
     table.rows.push_back (std::move (balances));
     return report;
+}
+
+namespace
+{
+
+/* A lot column's heading text: the lot's title, or "None" for an untitled
+ * lot, which is what the report prints. */
+std::string
+lot_title_text (GNCLot* lot)
+{
+    const char* title = gnc_lot_get_title (lot);
+    return title != nullptr && title[0] != '\0' ? std::string (title)
+                                                : std::string ("None");
+}
+
+/* A lot column's second heading: the first eight characters of the lot's
+ * GUID, as the report prints them under the title. */
+std::string
+lot_short_guid (GNCLot* lot)
+{
+    gchar* guid = guid_to_string (gnc_lot_get_guid (lot));
+    std::string text = guid != nullptr ? guid : "";
+    g_free (guid);
+    if (text.size () > 8)
+        text.resize (8);
+    return text;
+}
+
+/* A transaction's splits sorted into the lot columns and the ones no column
+ * holds: a split goes to the lot it belongs to, and the rest are the "Other
+ * Account" column's.  The report's own loop does the same thing with its
+ * `remaining` list -- the lots' split lists are disjoint, so passing the rest
+ * on and looking each lot up give the same answer. */
+void
+classify_transaction_splits (Transaction* txn,
+                             const std::vector<std::vector<Split*>>& lot_splits,
+                             std::vector<std::vector<Split*>>& in_lots,
+                             std::vector<Split*>& other)
+{
+    in_lots.assign (lot_splits.size (), {});
+    for (GList* node = xaccTransGetSplitList (txn); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*> (node->data);
+        size_t index = 0;
+        for (; index < lot_splits.size (); ++index)
+        {
+            if (std::find (lot_splits[index].begin (), lot_splits[index].end (),
+                           split) != lot_splits[index].end ())
+                break;
+        }
+        if (index < lot_splits.size ())
+            in_lots[index].push_back (split);
+        else
+            other.push_back (split);
+    }
+}
+
+/* A lot column's amount: the splits' amounts added exactly.  The report prints
+ * their formatted amounts one after another in the same cell, which a typed
+ * cell cannot hold; the sum is one amount per cell, and with one split in the
+ * cell -- the ordinary case -- the two print the same. */
+gnc_numeric
+split_amount_sum (const std::vector<Split*>& splits)
+{
+    gnc_numeric total = gnc_numeric_zero ();
+    for (Split* split : splits)
+        total = gnc_numeric_add (xaccSplitGetAmount (split), total,
+                                 GNC_DENOM_AUTO,
+                                 GNC_HOW_DENOM_REDUCE | GNC_HOW_RND_NEVER);
+    return total;
+}
+
+} // namespace
+
+namespace
+{
+
+/* The explanation the report prints when the period holds no split.  One text
+ * for the report route and for a lots spec, so the two pages cannot drift. */
+const char*
+lot_viewer_no_data ()
+{
+    return "The selected accounts contain no data/transactions (or only "
+           "zeroes) for the selected time period";
+}
+
+/* One typed row of a lots table.  The columns are the book's -- the lot
+ * columns have no names -- so a cell is set by its position, where the split
+ * and invoice rows set theirs by column enum. */
+struct LotRow
+{
+    explicit LotRow (size_t columns) { row.cells.resize (columns); }
+
+    void text (size_t column, const std::string& value)
+    {
+        row.cells[column].type = CellType::Text;
+        row.cells[column].text = value;
+        row.cells[column].blank = false;
+    }
+
+    void amount (size_t column, gnc_numeric value)
+    {
+        row.cells[column].type = CellType::Amount;
+        row.cells[column].amount = value;
+        row.cells[column].blank = false;
+    }
+
+    Row row;
+};
+
+} // namespace
+
+Table
+lots_spec_table (Account* root, const TableSpec& spec)
+{
+    Table table;
+
+    LotViewerOptions options;
+    /* The report's own date defaults: its options are relative dates, and the
+     * route resolves them from the same two helpers. */
+    options.start = spec.start.value_or (default_start_date ());
+    options.end = spec.end.value_or (default_end_date ());
+    options.account = spec.accounts.empty () ? nullptr : spec.accounts.front ();
+    options.root = root;
+    options.description_filter = spec.lot_description_filter;
+
+    LotViewerRows rows;
+    lot_viewer_rows (options, rows);
+
+    /* The amounts print in the selected account's commodity, and with no
+     * account in the default monetary format; the report chooses both, so the
+     * table takes them from the walk rather than from the spec. */
+    table.currency = rows.currency;
+    table.amounts_without_commodity = true;
+
+    if (rows.splits.empty ())
+    {
+        /* The report prints its explanation instead of a table; the spec
+         * prints the same explanation, under its own title. */
+        table.warning = lot_viewer_no_data ();
+        return table;
+    }
+
+    /* The columns are the report's: three row labels, one per lot the
+     * transactions touch -- the book's, computed from the rows -- and the
+     * transaction's remaining splits.  Empty headings: the report's heading is
+     * a body row (the lot titles and GUIDs), not a column legend. */
+    auto add_column = [&table] (const std::string& name, CellType type,
+                                CellAlign align)
+    {
+        ColumnDef def;
+        def.name = name;
+        def.type = type;
+        def.align = align;
+        table.column_defs.push_back (def);
+    };
+    add_column ("date", CellType::Date, CellAlign::Left);
+    add_column ("description", CellType::Text, CellAlign::Left);
+    add_column ("type", CellType::Text, CellAlign::Left);
+    for (size_t index = 0; index < rows.lots.size (); ++index)
+        add_column ("lot-" + std::to_string (index + 1), CellType::Amount,
+                    CellAlign::Right);
+    add_column ("other-account", CellType::Amount, CellAlign::Right);
+
+    const size_t lot_column = 3;
+    const size_t other_column = table.column_defs.size () - 1;
+    const size_t columns = table.column_defs.size ();
+
+    /* The report's three label rows: the lot titles, their short GUIDs, and
+     * the document each lot came from. */
+    LotRow titles (columns);
+    titles.row.type = RowType::Section;
+    titles.text (0, "Date");
+    titles.text (1, "Desc");
+    titles.text (2, "Type");
+    for (size_t index = 0; index < rows.lots.size (); ++index)
+        titles.text (lot_column + index, lot_title_text (rows.lots[index]));
+    titles.text (other_column, "Other Account");
+    table.rows.push_back (std::move (titles.row));
+
+    LotRow guids (columns);
+    guids.row.type = RowType::Section;
+    for (size_t index = 0; index < rows.lots.size (); ++index)
+        guids.text (lot_column + index, lot_short_guid (rows.lots[index]));
+    table.rows.push_back (std::move (guids.row));
+
+    LotRow documents (columns);
+    documents.row.type = RowType::Section;
+    documents.text (1, "Document");
+    for (size_t index = 0; index < rows.lots.size (); ++index)
+    {
+        GncInvoice* invoice = gncInvoiceGetInvoiceFromLot (rows.lots[index]);
+        if (invoice != nullptr)
+            documents.text (lot_column + index,
+                            text_or_empty (gncInvoiceGetID (invoice)));
+    }
+    table.rows.push_back (std::move (documents.row));
+
+    /* One row per transaction: the transaction's own date, description and
+     * type, then each lot column's amount and the remaining splits'. */
+    std::vector<std::vector<Split*>> in_lots;
+    for (Transaction* txn : rows.transactions)
+    {
+        LotRow row (columns);
+        row.row.type = RowType::Split;
+        row.row.cells[0].type = CellType::Date;
+        row.row.cells[0].text = printed_date (xaccTransGetDate (txn));
+        row.text (1, text_or_empty (xaccTransGetDescription (txn)));
+        row.text (2, transaction_type_name (txn));
+
+        std::vector<Split*> other;
+        classify_transaction_splits (txn, rows.lot_splits, in_lots, other);
+        for (size_t index = 0; index < rows.lots.size (); ++index)
+            row.amount (lot_column + index, split_amount_sum (in_lots[index]));
+        row.amount (other_column, split_amount_sum (other));
+        table.rows.push_back (std::move (row.row));
+    }
+
+    /* The balance row: each lot's balance, in the account's commodity. */
+    LotRow balances (columns);
+    balances.row.type = RowType::Total;
+    balances.text (1, "Balance");
+    for (size_t index = 0; index < rows.lots.size (); ++index)
+        balances.amount (lot_column + index,
+                         gnc_lot_get_balance (rows.lots[index]));
+    table.rows.push_back (std::move (balances.row));
+
+    return table;
 }
 
 /* ------------------------------------------------- advanced portfolio basis */
@@ -9753,18 +10031,37 @@ close_document (std::ostringstream& out)
 void
 render_typed_rows (std::ostringstream& out, const Table& table)
 {
-    out << "<table cellspacing='0' cellpadding='4' border='0'><thead><tr>";
+    /* A table whose columns have no headings prints no heading row: the Lot
+     * Viewer heads its columns inside its body (the lot titles and their
+     * GUIDs), and an empty legend row above them would be the renderer's
+     * invention.  The render_cell_table path makes the same choice. */
+    bool have_headings = false;
     for (const ColumnDef& column : table.column_defs)
+        have_headings = have_headings || !column.heading.empty ();
+
+    out << "<table cellspacing='0' cellpadding='4' border='0'>";
+    if (have_headings)
     {
-        /* The stylesheet left-aligns every heading, so a heading over a
-         * right-aligned column names its alignment the way the Scheme
-         * renderer's headings do. */
-        out << "<th";
-        if (column.align == CellAlign::Right)
-            out << " class='column-heading-right'";
-        out << ">" << html_escape (column.heading) << "</th>";
+        out << "<thead><tr>";
+        for (const ColumnDef& column : table.column_defs)
+        {
+            /* The stylesheet left-aligns every heading, so a heading over a
+             * right-aligned column names its alignment the way the Scheme
+             * renderer's headings do. */
+            out << "<th";
+            if (column.align == CellAlign::Right)
+                out << " class='column-heading-right'";
+            out << ">" << html_escape (column.heading) << "</th>";
+        }
+        out << "</tr></thead>";
     }
-    out << "</tr></thead><tbody>\n";
+    out << "<tbody>\n";
+
+    /* An amount with no commodity prints in the default monetary format, the
+     * way the Scheme engine renders a null-commodity monetary; a table with a
+     * currency prints every amount in it. */
+    const bool no_commodity =
+        table.currency == nullptr && table.amounts_without_commodity;
 
     for (const Row& row : table.rows)
     {
@@ -9784,6 +10081,9 @@ render_typed_rows (std::ostringstream& out, const Table& table)
                 << "'>";
             if (blank)
                 out << " ";
+            else if (number && no_commodity)
+                out << html_escape (xaccPrintAmount (
+                    cell->amount, gnc_default_print_info (TRUE)));
             else if (number)
                 out << html_escape (
                     format_amount (cell->amount, table.currency));
@@ -12405,10 +12705,8 @@ render_report (const std::string& name, Account* root,
             request.text_option ("description-filter", "");
         LotViewerReport report = lot_viewer (options);
         if (report.warning == "no-data")
-            html = render_warning (
-                "Lot Viewer", "No data",
-                "The selected accounts contain no data/transactions (or only "
-                "zeroes) for the selected time period");
+            html = render_warning ("Lot Viewer", "No data",
+                                   lot_viewer_no_data ());
         else
             html = render_cell_table (report.table, report.title);
         return true;
