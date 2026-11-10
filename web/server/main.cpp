@@ -1796,28 +1796,52 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     }
     else if (route.compare (0, 11, "api/report/") == 0)
     {
-        /* /api/report/<name>/options -- the option descriptors as JSON.  A
-         * native report always answers; a name the native layer does not
-         * know is a 404, because there is no descriptor to invent. */
+        /* /api/report/<name>/options -- the option descriptors as JSON.
+         * /api/report/<name>/designer -- where the C++ implementation lives,
+         * and the starting-point spec when the designer can honestly offer
+         * one.  A native report always answers; a name the native layer does
+         * not know is a 404, because there is nothing to invent. */
         const std::string rest = route.substr (11);
-        const std::string suffix = "/options";
-        if (rest.size () <= suffix.size () ||
-            rest.compare (rest.size () - suffix.size (), suffix.size (),
-                          suffix) != 0)
+        const std::string options_suffix = "/options";
+        const std::string designer_suffix = "/designer";
+        const bool has_options =
+            rest.size () > options_suffix.size () &&
+            rest.compare (rest.size () - options_suffix.size (),
+                          options_suffix.size (), options_suffix) == 0;
+        const bool has_designer =
+            rest.size () > designer_suffix.size () &&
+            rest.compare (rest.size () - designer_suffix.size (),
+                          designer_suffix.size (), designer_suffix) == 0;
+        if (!has_options && !has_designer)
         {
             send_response (connection, "404 Not Found", "text/plain",
                            "not found\n");
         }
         else
         {
+            const std::string suffix =
+                has_options ? options_suffix : designer_suffix;
             const std::string name =
                 url_decode (rest.substr (0, rest.size () - suffix.size ()));
             if (gnc::report::report_options (name).empty ())
                 send_response (connection, "404 Not Found", "text/plain",
-                               "no options for '" + name + "'\n");
-            else
+                               (has_options ? "no options for '"
+                                            : "no native report '") +
+                                   name + "'\n");
+            else if (has_options)
                 send_response (connection, "200 OK", "application/json",
                                report_options_json (name));
+            else
+            {
+                web::NativeDesignerInfo info;
+                if (!web::native_designer_info (name, info))
+                    send_response (connection, "404 Not Found", "text/plain",
+                                   "no designer description for '" + name +
+                                       "'\n");
+                else
+                    send_response (connection, "200 OK", "application/json",
+                                   web::native_designer_json (info));
+            }
         }
     }
     else if (route.compare (0, 7, "report/") == 0)

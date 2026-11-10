@@ -107,6 +107,38 @@ const std::vector<ReportSpec>& builtin_specs ();
 std::vector<std::string> builtin_spec_names ();
 bool builtin_spec_by_id (const std::string& id, ReportSpec& spec);
 
+/** What the designer can honestly say about a native (C++) report.
+ *
+ *  A native report has no spec: its query and columns are written in C++.
+ *  This describes where that implementation lives, whether a spec can stand in
+ *  for the report, and the starting-point spec when one can.  It never invents
+ *  a definition: `note` says plainly why there is no spec when there is none,
+ *  and when a starting point exists `equivalence` says whether its cells match
+ *  the report or only approximate it. */
+struct NativeDesignerInfo
+{
+    std::string report;
+    /** The C++ source file and the function that builds the report. */
+    std::string source_file;
+    std::string source_symbol;
+    /** "exact", "approximate" or "none".  "exact" is only used where the
+     *  starting spec renders the report's own cells; "approximate" always
+     *  comes with a note saying how it differs. */
+    std::string equivalence;
+    /** What the implementation is, or why a spec cannot stand in for it. */
+    std::string note;
+    /** True when `spec` below is a starting point the designer may populate. */
+    bool has_spec = false;
+    ReportSpec spec;
+};
+
+/** Describe a native report for the designer.  False when the native layer
+ *  does not know the report (there is nothing honest to say about it). */
+bool native_designer_info (const std::string& report, NativeDesignerInfo& info);
+
+/** The JSON body of /api/report/<name>/designer. */
+std::string native_designer_json (const NativeDesignerInfo& info);
+
 /** Render a validated spec through the native report layer. */
 bool render_spec_html (const ReportSpec& spec, Account* root,
                        std::string& html, std::string& error);

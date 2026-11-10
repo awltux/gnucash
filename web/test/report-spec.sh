@@ -113,6 +113,57 @@ print("%s|%s|%s" % (data["type"], "|".join(data["labels"]), series))
 PY
 }
 
+# The table as one "cell | cell" string per row, so two documents can be
+# compared cell for cell without depending on the markup's quote style.
+table_cells() { # html-file -> stdout
+    python3 - "$1" <<'PY'
+import sys
+from html.parser import HTMLParser
+
+class Cells(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+        self.row = None
+        self.cell = None
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self.row = []
+        elif tag in ("td", "th") and self.row is not None:
+            self.cell = []
+    def handle_endtag(self, tag):
+        if tag == "tr" and self.row is not None:
+            self.rows.append([" ".join("".join(c).split()) for c in self.row])
+            self.row = None
+        elif tag in ("td", "th") and self.cell is not None:
+            self.row.append(self.cell)
+            self.cell = None
+    def handle_data(self, data):
+        if self.cell is not None:
+            self.cell.append(data)
+
+parser = Cells()
+parser.feed(open(sys.argv[1], encoding="utf-8").read())
+for row in parser.rows:
+    print(" | ".join(row))
+PY
+}
+
+compare_cells() { # description native-html preview-html
+    local native preview
+    native=$(mktemp)
+    preview=$(mktemp)
+    table_cells "$2" > "$native"
+    table_cells "$3" > "$preview"
+    if cmp -s "$native" "$preview"; then
+        ok "$1"
+    else
+        bad "$1"
+        diff -u "$native" "$preview" | head -20 >&2
+    fi
+    rm -f "$native" "$preview"
+}
+
 echo "== the built-in specs are served"
 expect_status 200 "spec list" "/api/specs"
 cp "$TMP/body" "$TMP/specs.json"
@@ -265,6 +316,124 @@ do
         bad "$name preview and saved render differ"
     fi
 done
+
+echo "== the designer describes native reports honestly"
+
+# A native report is C++.  The designer route must name the implementation,
+# and it may only offer a starting point it can back up with cells.  Trial
+# Balance is the report whose C++ table is exactly a spec, so its starting
+# point must render the native report's cells; the income statements are
+# labelled approximate; a listing report gets no fields at all.
+expect_status 200 "Trial Balance designer" \
+    "/api/report/Trial%20Balance/designer"
+cp "$TMP/body" "$TMP/tb-designer.json"
+expect_body "Trial Balance designer names the implementation" \
+    '"file":"libgnucash/reports/gnc-report.cpp"'
+expect_body "Trial Balance designer names the function" \
+    '"symbol":"trial_balance()"'
+expect_body "Trial Balance starting point is exact" '"equivalence":"exact"'
+
+python3 - "$TMP/tb-designer.json" "$TMP/tb-start.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    info = json.load(handle)
+assert info["equivalence"] == "exact", info["equivalence"]
+assert info["spec"]["grouping"] == "none", info["spec"]
+assert info["spec"]["columns"] == ["account-name", "debit", "credit"]
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump(info["spec"], handle)
+PY
+curl -sS -o "$TMP/tb-native.html" "${URL%/}/report/Trial%20Balance"
+code=$(post_spec "$TMP/tb-start.json")
+if [ "$code" = "200" ]; then
+    cp "$TMP/body" "$TMP/tb-start.html"
+    compare_cells "the Trial Balance starting point renders the native cells" \
+        "$TMP/tb-native.html" "$TMP/tb-start.html"
+else
+    bad "Trial Balance starting point preview answered $code: $(head -c 200 "$TMP/body")"
+fi
+
+# The income statements have no exact spec, so their starting point must be
+# labelled approximate and must say how it differs: the account set and the
+# period are the report's, the columns, signs and totals are not.
+for pair in "Income%20Statement|Income Statement" "Profit%20%26%20Loss|Profit & Loss"; do
+    enc=${pair%%|*}
+    name=${pair#*|}
+    expect_status 200 "$name designer" "/api/report/$enc/designer"
+    cp "$TMP/body" "$TMP/is-designer.json"
+    expect_body "$name starting point is approximate" \
+        '"equivalence":"approximate"'
+    expect_body "$name says how it is approximate" \
+        "sign-reversed Balance column"
+    python3 - "$TMP/is-designer.json" "$TMP/is-start.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    info = json.load(handle)
+assert info["equivalence"] == "approximate", info["equivalence"]
+assert info["spec"]["account_types"] == ["INCOME", "EXPENSE"], info["spec"]
+assert sorted(info["spec"]["columns"]) == ["account-name", "credit", "debit"]
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump(info["spec"], handle)
+PY
+    code=$(post_spec "$TMP/is-start.json")
+    title_ok=$(python3 - "$TMP/body" "$name (starting point)" <<'PY'
+import html, re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+match = re.search(r"<title>(.*?)</title>", text, re.S)
+print("yes" if match and html.unescape(match.group(1)) == sys.argv[2]
+      else "no")
+PY
+)
+    if [ "$code" = "200" ] && [ "$title_ok" = "yes" ]; then
+        ok "$name approximate starting point previews"
+    else
+        bad "$name approximate preview answered $code: $(head -c 200 "$TMP/body")"
+    fi
+done
+
+# A listing report has no equivalent: no spec and a note saying what the
+# designer's account-row vocabulary cannot express.
+expect_status 200 "Transaction Report designer" \
+    "/api/report/Transaction%20Report/designer"
+expect_body "Transaction Report has no equivalent" '"equivalence":"none"'
+expect_body "Transaction Report has no starting spec" '"spec":null'
+expect_body "Transaction Report says why" "lists transactions and splits"
+
+# Every native report answers, so no report can silently lack a description
+# (an unknown name is a 404, checked below).
+expect_status 200 "native report list with options" "/api/reports?options=1"
+cp "$TMP/body" "$TMP/native-options.json"
+NATIVE_NAMES=$(python3 - "$TMP/native-options.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+print("\n".join(entry["report"] for entry in data))
+PY
+)
+DESIGNER_MISSING=0
+DESIGNER_TOTAL=0
+while IFS= read -r native; do
+    [ -n "$native" ] || continue
+    DESIGNER_TOTAL=$((DESIGNER_TOTAL + 1))
+    encoded=$(python3 -c \
+        'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' \
+        "$native")
+    code=$(fetch "/api/report/$encoded/designer")
+    if [ "$code" != "200" ]; then
+        bad "designer description for $native answered $code"
+        DESIGNER_MISSING=$((DESIGNER_MISSING + 1))
+    elif ! grep -qE '"equivalence":"(exact|approximate|none)"' "$TMP/body"; then
+        bad "designer description for $native has no equivalence"
+        DESIGNER_MISSING=$((DESIGNER_MISSING + 1))
+    fi
+done <<< "$NATIVE_NAMES"
+if [ "$DESIGNER_MISSING" -eq 0 ] && [ "$DESIGNER_TOTAL" -eq 39 ]; then
+    ok "all 39 native reports publish a designer description"
+else
+    bad "$DESIGNER_MISSING of $DESIGNER_TOTAL native reports lack one"
+fi
+expect_status 404 "designer description for an unknown report" \
+    "/api/report/No%20Such%20Report/designer"
 
 echo "== the chart consumes the spec's rows"
 fetch "/report/spec/builtin-income-expenses-month" > /dev/null

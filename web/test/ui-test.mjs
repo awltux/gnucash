@@ -68,6 +68,103 @@ function check(name, ok, detail = '') {
     if (!ok) failures++;
 }
 
+// The designer's controls as the form would send them.  This is the browser
+// half of "the field values equal the spec": every field, not just the name.
+const readDesignerFields = () => page.evaluate(() => ({
+    name: document.getElementById('spec-name').value,
+    title: document.getElementById('spec-title').value,
+    tags: document.getElementById('spec-tags').value
+        .split(/[\s,]+/).filter(Boolean),
+    columns: [...document.querySelectorAll('#spec-columns input:checked')]
+        .map((box) => box.value),
+    grouping: document.getElementById('spec-grouping').value,
+    period_unit: document.getElementById('spec-period-unit').value,
+    period_mode: document.getElementById('spec-period-mode').value,
+    accounts: [...document.querySelectorAll('#spec-accounts input:checked')]
+        .map((box) => box.value),
+    account_types: [...document.querySelectorAll(
+        '#spec-account-types input:checked')].map((box) => box.value),
+    chart: document.getElementById('spec-chart').value,
+    chart_series: [...document.querySelectorAll(
+        '#spec-chart-series input:checked')].map((box) => box.value),
+    start: document.getElementById('spec-opt-start').value,
+    end: document.getElementById('spec-opt-end').value,
+    date_preset: document.getElementById('spec-opt-date_preset').value,
+    currency: document.getElementById('spec-opt-currency').value,
+}));
+
+function expectedDesignerFields(spec) {
+    return {
+        name: spec.name,
+        title: spec.title || spec.name,
+        tags: Array.isArray(spec.tags) ? spec.tags : [],
+        columns: Array.isArray(spec.columns) ? spec.columns : [],
+        grouping: spec.grouping || 'none',
+        period_unit: spec.period_unit || 'year',
+        period_mode: spec.period_mode || 'activity',
+        accounts: Array.isArray(spec.accounts) ? spec.accounts : [],
+        account_types: Array.isArray(spec.account_types)
+            ? spec.account_types : [],
+        chart: spec.chart || '',
+        chart_series: Array.isArray(spec.chart_series) ? spec.chart_series : [],
+        start: spec.date_preset ? '' : (spec.start || ''),
+        end: spec.date_preset ? '' : (spec.end || ''),
+        date_preset: spec.date_preset || '',
+        currency: spec.currency || '',
+    };
+}
+
+// Compare the populated form with a served spec.  Accounts are a set (their
+// order does not reach the renderer), everything else must match exactly:
+// column and chart-series order changes the document.
+function designerEquals(expected, actual) {
+    const want = expectedDesignerFields(expected);
+    const got = { ...actual };
+    const setEqual = (left, right) =>
+        JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+    const accountsMatch = setEqual(got.accounts, want.accounts);
+    delete got.accounts;
+    delete want.accounts;
+    return accountsMatch && JSON.stringify(got) === JSON.stringify(want);
+}
+
+const tableRowsOfHtml = (html) => page.evaluate((text) => {
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    return [...doc.querySelectorAll('table tr')].map((row) =>
+        [...row.cells].map((cell) =>
+            cell.textContent.replace(/\s+/g, ' ').trim()).join(' | '));
+}, html);
+
+// Wait for the report frame to finish loading a report.  Switching reports
+// immediately after a click aborts the previous request; that is a browser
+// fact, not a server error, so the tests let each frame settle first.
+const waitForReportFrame = (name) => page.waitForFunction((reportName) => {
+    const frame = document.getElementById('view');
+    if (!frame || frame.hidden) return false;
+    let source = '';
+    try {
+        source = decodeURIComponent(frame.src || '');
+    } catch (err) {
+        return false;
+    }
+    const doc = frame.contentDocument;
+    return source.includes(`/report/${reportName}`) && doc && doc.body &&
+        (!doc.contentType || doc.contentType === 'text/html');
+}, name, { timeout: 15000 });
+
+const waitForSpecFrame = () => page.waitForFunction(() => {
+    const frame = document.getElementById('view');
+    const doc = frame && frame.contentDocument;
+    return frame && !frame.hidden && /\/report\/spec\//.test(frame.src) &&
+        doc && doc.body && (!doc.contentType || doc.contentType === 'text/html');
+}, null, { timeout: 15000 });
+
+const servedSpec = (id) => page.evaluate(async (specId) => {
+    const response = await fetch(
+        new URL('api/specs/' + encodeURIComponent(specId), location.href));
+    return response.ok ? response.json() : null;
+}, id);
+
 await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 await page.waitForFunction(
     () => document.getElementById('summary')?.textContent.includes('accounts'),
@@ -211,6 +308,106 @@ check('the built-in chart canvas drew content',
 check('the UI says the built-in is scoped',
       /scoped to Income and Expense accounts/.test(builtinChart.note),
       builtinChart.note);
+
+/* ------------------------------------- built-in definition in the designer */
+
+// Selecting a built-in must load its definition into the designer: every
+// field, compared with the document the server serves for that id.
+const incomeBuiltin = specList.builtin.find(
+    (spec) => spec.name === 'Income vs Expenses by Month');
+await page.waitForFunction(() => {
+    const name = document.getElementById('spec-name');
+    return name && name.value === 'Income vs Expenses by Month' &&
+        !document.getElementById('designer-banner').hidden;
+}, null, { timeout: 15000 });
+const servedIncome = await servedSpec(incomeBuiltin.id);
+const builtinFields = await readDesignerFields();
+check('selecting a built-in populates every designer field from its spec',
+      Boolean(servedIncome) && designerEquals(servedIncome, builtinFields),
+      JSON.stringify({ got: builtinFields, want: servedIncome }));
+
+const definitionBanner = await page.textContent('#designer-provenance');
+check('the built-in designer says it is the definition',
+      /definition/i.test(definitionBanner) &&
+      /built-in report/.test(definitionBanner) &&
+      /Save as/.test(definitionBanner),
+      definitionBanner);
+check('the built-in designer offers Save as…, not Save',
+      (await page.textContent('#spec-save')).trim() === 'Save as…');
+
+// Saving under the built-in's own name must be refused in the UI, not left
+// to the server's duplicate-name error.
+await page.click('#spec-save');
+await page.waitForSelector('#spec-error:not([hidden])', { timeout: 15000 });
+const sameNameError = (await page.textContent('#spec-error')).trim();
+check('Save as… refuses to reuse the built-in’s name',
+      /needs a new name for the copy/.test(sameNameError), sameNameError);
+
+// Fork it under a new name.  The title stays the built-in's, so the saved
+// copy must render exactly the document the built-in renders.
+await page.fill('#spec-name', 'Income vs Expenses (copy)');
+await page.click('#spec-save');
+await page.waitForFunction(() =>
+    [...document.querySelectorAll('#report-list a.saved-report-link')]
+        .some((node) => node.textContent === 'Income vs Expenses (copy)'),
+    null, { timeout: 15000 });
+await waitForSpecFrame();
+const copySpec = await page.evaluate(async (base) => {
+    const response = await fetch(new URL('api/specs', base));
+    const data = await response.json();
+    return data.specs.find((spec) => spec.name === 'Income vs Expenses (copy)');
+}, url);
+check('the fork is a new saved report with its own id',
+      Boolean(copySpec) && copySpec.id !== incomeBuiltin.id,
+      copySpec ? copySpec.id : 'not saved');
+
+const builtinHtml = await (await fetch(
+    new URL('report/spec/' + encodeURIComponent(incomeBuiltin.id), url))).text();
+const copyHtml = await (await fetch(
+    new URL('report/spec/' + encodeURIComponent(copySpec.id), url))).text();
+const builtinRows = await tableRowsOfHtml(builtinHtml);
+const copyRows = await tableRowsOfHtml(copyHtml);
+check('the fork’s preview is identical to the built-in’s render',
+      builtinHtml === copyHtml ||
+      JSON.stringify(builtinRows) === JSON.stringify(copyRows),
+      builtinHtml === copyHtml ? 'byte for byte'
+          : JSON.stringify(builtinRows) === JSON.stringify(copyRows)
+              ? 'cell for cell' : 'the documents differ');
+
+// The copy is a saved report, so it can be deleted again; the built-in must
+// still be there and untouched.
+await page.locator('#report-list li.saved-report',
+                  { hasText: 'Income vs Expenses (copy)' })
+    .locator('button.delete-spec').click();
+await page.waitForFunction(() =>
+    ![...document.querySelectorAll('#report-list a.saved-report-link')]
+        .some((node) => node.textContent === 'Income vs Expenses (copy)'),
+    null, { timeout: 15000 });
+const afterFork = await (await fetch(new URL('api/specs', url))).json();
+check('the built-in survives deleting the fork',
+      afterFork.specs.length === 0 &&
+      afterFork.builtin.some((spec) => spec.id === incomeBuiltin.id),
+      `${afterFork.specs.length} saved, ${afterFork.builtin.length} built-in`);
+
+// Switching from one built-in to another repopulates: different spec,
+// different fields, no leftovers.
+await page.locator('#report-list a.builtin-report-link',
+                  { hasText: 'Expenses by Account' }).first().click();
+await page.waitForFunction(() => {
+    const name = document.getElementById('spec-name');
+    return name && name.value === 'Expenses by Account';
+}, null, { timeout: 15000 });
+const expensesBuiltin = specList.builtin.find(
+    (spec) => spec.name === 'Expenses by Account');
+const switchedFields = await readDesignerFields();
+check('switching built-ins repopulates the designer rather than leaving stale values',
+      designerEquals(await servedSpec(expensesBuiltin.id), switchedFields) &&
+      switchedFields.chart === 'bar' &&
+      switchedFields.chart_series.join(',') === 'debit' &&
+      JSON.stringify(switchedFields.tags) ===
+          JSON.stringify(['spending', 'breakdown']),
+      JSON.stringify(switchedFields));
+await waitForSpecFrame();
 
 // The chart has to come from the spec's own rows, not a stored image: build
 // the same spec with an explicit period that moves the numbers, preview it
@@ -529,6 +726,10 @@ check('an account checkbox becomes an account GUID',
 
 /* ------------------------------------------------------ stage 5 designer */
 
+// The last report opened was a native one (Transaction Report), whose
+// designer has no honest equivalent and is therefore hidden.  Start a blank
+// report before building the explicit Trial Balance spec below.
+await page.click('#spec-new');
 // Build a spec equivalent to an explicit Trial Balance request, inside the
 // UI, and require the rendered table to be the same table: a designer that
 // silently produced different numbers would pass every weaker check.
@@ -680,6 +881,144 @@ const specsAfterDelete = await (await fetch(new URL('api/specs', url))).json();
 check('deleting a saved report removes it from the server',
       specsAfterDelete.specs.length === 0,
       `${specsAfterDelete.specs.length} left`);
+
+/* --------------------------------------- native reports in the designer */
+
+// A native report is C++: the implementation panel must name the file and
+// function, and the designer may only offer a starting point it labels.  The
+// Trial Balance starting point claims to be equivalent, so its preview is
+// compared with the native report cell for cell; the Income Statement's is
+// approximate and must say how; the Transaction Report has no equivalent and
+// must leave the designer empty.
+await page.locator('#report-list a', { hasText: /^Trial Balance$/ })
+    .first().click();
+await page.waitForFunction(() => {
+    const name = document.getElementById('spec-name');
+    return name && name.value === 'Trial Balance (copy)' &&
+        !document.getElementById('designer-banner').hidden;
+}, null, { timeout: 15000 });
+await waitForReportFrame('Trial Balance');
+const tbBanner = (await page.textContent('#designer-provenance')).replace(/\s+/g, ' ');
+check('the Trial Balance starting point is labelled, not called a definition',
+      /This report is implemented in C\+\+; this is an equivalent starting point, not its definition/.test(tbBanner),
+      tbBanner);
+const tbSource = (await page.textContent('#native-source-text')).replace(/\s+/g, ' ');
+check('the native implementation panel names the C++ file and function',
+      /gnc-report\.cpp/.test(tbSource) && /trial_balance\(\)/.test(tbSource),
+      tbSource);
+
+const tbFields = await readDesignerFields();
+check('the Trial Balance starting point is a flat debit/credit account list',
+      tbFields.grouping === 'none' &&
+      tbFields.columns.join(',') === 'account-name,debit,credit' &&
+      tbFields.account_types.length === 0 &&
+      tbFields.end !== '',
+      JSON.stringify({ columns: tbFields.columns, grouping: tbFields.grouping }));
+
+// Post the form's fields as a spec and compare the result with the native
+// report's own URL.  This is the proof of "equivalent": the label alone
+// would not be enough.
+const tbPayload = {
+    name: tbFields.name,
+    title: tbFields.title,
+    columns: tbFields.columns,
+    grouping: tbFields.grouping,
+    period_unit: tbFields.period_unit,
+    period_mode: tbFields.period_mode,
+    accounts: tbFields.accounts,
+    account_types: tbFields.account_types,
+    chart: tbFields.chart,
+    chart_series: tbFields.chart_series,
+};
+if (tbFields.date_preset !== '') tbPayload.date_preset = tbFields.date_preset;
+else {
+    if (tbFields.start !== '') tbPayload.start = tbFields.start;
+    if (tbFields.end !== '') tbPayload.end = tbFields.end;
+}
+if (tbFields.currency !== '') tbPayload.currency = tbFields.currency;
+const tbPreview = await page.evaluate(async (spec) => {
+    const response = await fetch(new URL('api/spec/preview', location.href), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spec),
+    });
+    return { status: response.status, text: await response.text() };
+}, tbPayload);
+const tbNativeHtml = await (await fetch(
+    new URL('report/Trial%20Balance', url))).text();
+const tbPreviewRows = await tableRowsOfHtml(tbPreview.text);
+const tbNativeRows = await tableRowsOfHtml(tbNativeHtml);
+check('the Trial Balance starting point renders the native report’s cells',
+      tbPreview.status === 200 && tbPreviewRows.length > 3 &&
+      JSON.stringify(tbPreviewRows) === JSON.stringify(tbNativeRows),
+      `HTTP ${tbPreview.status}, ${tbPreviewRows.length} vs ${tbNativeRows.length} rows`);
+
+await page.locator('#report-list a', { hasText: /^Income Statement$/ })
+    .first().click();
+await page.waitForFunction(() => {
+    const name = document.getElementById('spec-name');
+    return name && name.value === 'Income Statement (starting point)' &&
+        !document.getElementById('designer-banner').hidden;
+}, null, { timeout: 15000 });
+await waitForReportFrame('Income Statement');
+const isBanner = (await page.textContent('#designer-provenance')).replace(/\s+/g, ' ');
+check('the Income Statement starting point says it is approximate and how',
+      /this is an approximate starting point, not its definition/.test(isBanner) &&
+      /sign-reversed Balance column/.test(isBanner),
+      isBanner);
+const isFields = await readDesignerFields();
+check('the Income Statement starting point is income and expense activity',
+      isFields.grouping === 'none' &&
+      isFields.account_types.join(',') === 'INCOME,EXPENSE' &&
+      isFields.columns.join(',') === 'account-name,debit,credit',
+      JSON.stringify(isFields.account_types));
+
+await page.locator('#report-list a', { hasText: /^Transaction Report$/ })
+    .first().click();
+await page.waitForFunction(() => {
+    const banner = document.getElementById('designer-provenance');
+    return banner && /no designer equivalent/.test(banner.textContent) &&
+        !document.getElementById('designer-banner').hidden;
+}, null, { timeout: 15000 });
+await waitForReportFrame('Transaction Report');
+const noneBanner = (await page.textContent('#designer-provenance')).replace(/\s+/g, ' ');
+const noneSource = (await page.textContent('#native-source-text')).replace(/\s+/g, ' ');
+check('a report with no equivalent explains why and names its implementation',
+      /lists transactions and splits/.test(noneBanner) &&
+      /transaction_report\(\)/.test(noneSource),
+      noneBanner);
+check('a report with no equivalent leaves no designer fields invented',
+      await page.evaluate(() =>
+          document.getElementById('spec-form').hidden &&
+          document.getElementById('spec-name').value === ''),
+      'the form is hidden and empty');
+
+// Switching back to a spec-backed report fills the fields again.
+await page.locator('#report-list a.builtin-report-link',
+                  { hasText: 'Income by Account' }).first().click();
+await page.waitForFunction(() => {
+    const name = document.getElementById('spec-name');
+    return name && name.value === 'Income by Account';
+}, null, { timeout: 15000 });
+await waitForSpecFrame();
+const backFields = await readDesignerFields();
+const incomeByAccount = specList.builtin.find(
+    (spec) => spec.name === 'Income by Account');
+check('switching from a native report back to a built-in repopulates',
+      designerEquals(await servedSpec(incomeByAccount.id), backFields),
+      JSON.stringify(backFields));
+
+// New report is the way out of a hidden designer: blank fields and Save.
+await page.click('#spec-new');
+const newFields = await readDesignerFields();
+check('New report clears the designer and returns to Save',
+      newFields.name === '' && newFields.grouping === 'none' &&
+      newFields.columns.join(',') === 'account-name' &&
+      newFields.account_types.length === 0 &&
+      newFields.chart === '' &&
+      (await page.textContent('#spec-save')).trim() === 'Save report' &&
+      !(await page.evaluate(() => document.getElementById('spec-form').hidden)),
+      JSON.stringify({ name: newFields.name, columns: newFields.columns }));
 
 /* ------------------------------------------------- rejected options */
 

@@ -10,6 +10,7 @@
 #include <config.h>
 
 #include <algorithm>
+#include <initializer_list>
 #include <set>
 #include <sstream>
 #include <string>
@@ -839,6 +840,327 @@ builtin_spec_by_id (const std::string& id, ReportSpec& spec)
         }
     }
     return false;
+}
+
+/* ------------------------------------------- native reports and the designer */
+
+namespace
+{
+
+/* The value the native route would use for an option the caller leaves out.
+ * Dates arrive as ISO strings and the currency as a mnemonic, so this is
+ * exactly what a spec field would hold. */
+std::string
+option_default (const std::vector<gnc::report::OptionDescriptor>& options,
+                const char* name)
+{
+    for (const auto& option : options)
+    {
+        if (option.name == name)
+            return option.default_value;
+    }
+    return "";
+}
+
+/* A report family: the C++ file and entry point that build it. */
+struct NativeSource
+{
+    const char* file;
+    const char* symbol;
+};
+
+NativeSource
+native_source (const std::string& name)
+{
+    struct Entry
+    {
+        const char* report;
+        const char* file;
+        const char* symbol;
+    };
+    /* One row per native report, so the designer panel can name the code the
+     * report really is.  A name the native layer does not know never reaches
+     * here (native_designer_info() rejects it), but render_report() is the
+     * honest fallback for a report added without a row. */
+    static const Entry entries[] = {
+        {"Trial Balance", "libgnucash/reports/gnc-report.cpp",
+         "trial_balance()"},
+        {"Balance Sheet", "libgnucash/reports/gnc-report.cpp",
+         "balance_sheet()"},
+        {"Income Statement", "libgnucash/reports/gnc-report.cpp",
+         "income_statement()"},
+        {"Profit & Loss", "libgnucash/reports/gnc-report.cpp",
+         "income_statement()"},
+        {"Balance Sheet (Multicolumn)", "libgnucash/reports/gnc-report.cpp",
+         "balance_sheet_multicolumn()"},
+        {"Income Statement (Multicolumn)", "libgnucash/reports/gnc-report.cpp",
+         "income_statement_multicolumn()"},
+        {"Equity Statement", "libgnucash/reports/gnc-report.cpp",
+         "equity_statement()"},
+        {"Transaction Report", "libgnucash/reports/gnc-report.cpp",
+         "transaction_report()"},
+        {"General Ledger", "libgnucash/reports/gnc-report.cpp",
+         "general_ledger()"},
+        {"General Journal", "libgnucash/reports/gnc-report.cpp",
+         "general_journal()"},
+        {"Transaction Breakdown Report", "libgnucash/reports/gnc-report.cpp",
+         "transaction_breakdown()"},
+        {"Reconciliation Report", "libgnucash/reports/gnc-report.cpp",
+         "reconciliation_report()"},
+        {"Receivable Aging", "libgnucash/reports/gnc-report.cpp",
+         "receivable_aging()"},
+        {"Payable Aging", "libgnucash/reports/gnc-report.cpp",
+         "payable_aging()"},
+        {"Investment Lots", "libgnucash/reports/gnc-report.cpp",
+         "investment_lots()"},
+        {"Investment Portfolio", "libgnucash/reports/gnc-report.cpp",
+         "investment_portfolio()"},
+        {"Advanced Portfolio", "libgnucash/reports/gnc-report.cpp",
+         "advanced_portfolio()"},
+        {"Lot Viewer", "libgnucash/reports/gnc-report.cpp", "lot_viewer()"},
+        {"IFRS weighted-average cost basis report",
+         "libgnucash/reports/gnc-report.cpp", "ifrs_cost_basis()"},
+        {"Budget Report", "libgnucash/reports/gnc-report.cpp",
+         "budget_report()"},
+        {"Budget Income Statement", "libgnucash/reports/gnc-report.cpp",
+         "budget_income_statement()"},
+        {"Budget Profit & Loss", "libgnucash/reports/gnc-report.cpp",
+         "budget_income_statement()"},
+        {"Budget Balance Sheet", "libgnucash/reports/gnc-report.cpp",
+         "budget_balance_sheet()"},
+        {"Budget Flow", "libgnucash/reports/gnc-report.cpp", "budget_flow()"},
+        {"Printable Invoice", "libgnucash/reports/gnc-invoice-print.cpp",
+         "render_printable_invoice()"},
+        {"Easy Invoice", "libgnucash/reports/gnc-invoice-print.cpp",
+         "render_easy_invoice()"},
+        {"Fancy Invoice", "libgnucash/reports/gnc-invoice-print.cpp",
+         "render_fancy_invoice()"},
+        {"Receipt", "libgnucash/reports/gnc-invoice-receipt.cpp",
+         "render_receipt()"},
+        {"Tax Invoice", "libgnucash/reports/gnc-invoice-tax.cpp",
+         "render_tax_invoice()"},
+        {"Australian Tax Invoice", "libgnucash/reports/gnc-invoice-tax.cpp",
+         "render_tax_invoice()"},
+        {"Tax Schedule Report/TXF Export", "libgnucash/reports/gnc-report.cpp",
+         "tax_schedule(), render_tax_export()"},
+        {"Customer Report", "libgnucash/reports/gnc-owner.cpp",
+         "owner_report()"},
+        {"Vendor Report", "libgnucash/reports/gnc-owner.cpp",
+         "owner_report()"},
+        {"Employee Report", "libgnucash/reports/gnc-owner.cpp",
+         "owner_report()"},
+        {"Job Report", "libgnucash/reports/gnc-owner.cpp", "owner_report()"},
+        {"Customer Summary", "libgnucash/reports/gnc-owner.cpp",
+         "customer_summary()"},
+        {"Cash Flow", "libgnucash/reports/gnc-report.cpp", "cash_flow()"},
+        {"Cash Flow Barchart", "libgnucash/reports/gnc-report.cpp",
+         "cash_flow_barchart()"},
+        {"Income and GST Statement", "libgnucash/reports/gnc-report.cpp",
+         "gst_statement()"},
+    };
+    for (const Entry& entry : entries)
+    {
+        if (name == entry.report)
+            return {entry.file, entry.symbol};
+    }
+    return {"libgnucash/reports/gnc-report.cpp", "render_report()"};
+}
+
+bool
+one_of (const std::string& name, std::initializer_list<const char*> names)
+{
+    for (const char* candidate : names)
+    {
+        if (name == candidate)
+            return true;
+    }
+    return false;
+}
+
+/* Why the designer has nothing to populate.  Each family names the thing the
+ * report has that a spec row cannot hold; no family pretends a field is
+ * missing rather than a different report. */
+std::string
+no_spec_note (const std::string& name)
+{
+    if (one_of (name, {"Transaction Report", "General Ledger",
+                       "General Journal", "Transaction Breakdown Report",
+                       "Reconciliation Report"}))
+    {
+        return "It lists transactions and splits with columns that belong to "
+               "that listing (date, number, description, transfer, running "
+               "balance).  A spec's rows are accounts or periods and its "
+               "columns are debit/credit/balance, so it cannot describe the "
+               "listing.";
+    }
+    if (one_of (name, {"Receivable Aging", "Payable Aging"}))
+    {
+        return "It groups invoices and payments into aging buckets from their "
+               "due or post dates.  A spec's rows are accounts or periods, so "
+               "it cannot describe the buckets or the owner rows.";
+    }
+    if (one_of (name, {"Investment Lots", "Investment Portfolio",
+                       "Advanced Portfolio", "Lot Viewer",
+                       "IFRS weighted-average cost basis report"}))
+    {
+        return "Its rows and amounts come from lots, holdings, prices and "
+               "their gains.  A spec has no lot, price or gain column, so it "
+               "cannot describe the report.";
+    }
+    if (name == "Balance Sheet" || name == "Equity Statement" ||
+        name == "Balance Sheet (Multicolumn)" ||
+        name == "Income Statement (Multicolumn)")
+    {
+        return "It sign-reverses liabilities and equity, groups rows into "
+               "sections with their own totals, folds income and expense into "
+               "retained earnings and prints an as-of balance.  A spec row is "
+               "one account's own amount: it has no section, sign reversal or "
+               "retained-earnings row, so a flat or account-tree list would be "
+               "a different report.";
+    }
+    if (name == "Budget Report" || name == "Budget Income Statement" ||
+        name == "Budget Profit & Loss" || name == "Budget Balance Sheet" ||
+        name == "Budget Flow")
+    {
+        return "Its amounts come from the book's budget object and budget "
+               "periods, not from splits in a date range.  A spec queries "
+               "splits, so it cannot describe a budget value.";
+    }
+    if (one_of (name, {"Printable Invoice", "Easy Invoice", "Fancy Invoice",
+                       "Receipt", "Tax Invoice", "Australian Tax Invoice",
+                       "Customer Report", "Vendor Report", "Employee Report",
+                       "Job Report", "Customer Summary"}))
+    {
+        return "It prints a document built from an invoice or an owner "
+               "object, with the layout's own headings and totals.  A spec's "
+               "rows are account amounts, so it cannot describe the document.";
+    }
+    if (name == "Tax Schedule Report/TXF Export")
+    {
+        return "It reads the book's tax codes and can also emit a TXF file.  "
+               "A spec has no tax-code row or column and cannot produce the "
+               "export.";
+    }
+    if (name == "Cash Flow" || name == "Cash Flow Barchart")
+    {
+        return "It classifies splits into cash-flow categories and draws a "
+               "selected-account table.  A spec has no category column, so it "
+               "cannot describe the report.";
+    }
+    if (name == "Income and GST Statement")
+    {
+        return "It sums the book's tax codes into GST collected and paid.  A "
+               "spec has no tax-code column, so it cannot describe the "
+               "statement.";
+    }
+    return "Its query, columns and totals are written in C++; the designer's "
+           "vocabulary (account rows, debit/credit/balance columns and period "
+           "grouping) cannot describe them.";
+}
+
+/* Fill the starting point's dates and currency from the native descriptors,
+ * so it runs over the same period, in the same commodity, the report itself
+ * uses by default. */
+void
+apply_default_dates (ReportSpec& spec,
+                     const std::vector<gnc::report::OptionDescriptor>& options)
+{
+    spec.query.start = option_default (options, "start");
+    spec.query.end = option_default (options, "end");
+    spec.query.currency = option_default (options, "currency");
+}
+
+} // namespace
+
+bool
+native_designer_info (const std::string& report, NativeDesignerInfo& info)
+{
+    const auto options = gnc::report::report_options (report);
+    if (options.empty ())
+        return false;
+
+    info = NativeDesignerInfo{};
+    info.report = report;
+    const NativeSource source = native_source (report);
+    info.source_file = source.file;
+    info.source_symbol = source.symbol;
+    info.equivalence = "none";
+
+    if (report == "Trial Balance")
+    {
+        /* The one report whose C++ table is exactly a spec: a flat row per
+         * account over the same account types, Debit and Credit columns and
+         * the same as-of date.  The copy has its own name and title, but its
+         * cells are the report's cells. */
+        ReportSpec spec;
+        spec.name = report + " (copy)";
+        spec.title = spec.name;
+        spec.columns = {"account-name", "debit", "credit"};
+        spec.grouping = "none";
+        spec.period_unit = "year";
+        spec.period_mode = "activity";
+        apply_default_dates (spec, options);
+        /* The C++ trial balance ignores its start date and shows every
+         * account type below the root; clearing the start (which the
+         * descriptor defaults to today) is exactly that query. */
+        spec.query.start.clear ();
+        info.spec = std::move (spec);
+        info.has_spec = true;
+        info.equivalence = "exact";
+        info.note =
+            "A flat row per account with Debit and Credit columns over the "
+            "same as-of date, which is the C++ trial balance's own table.  The "
+            "copy has its own name and title; its cells are the report's "
+            "cells.";
+        return true;
+    }
+
+    if (report == "Income Statement" || report == "Profit & Loss")
+    {
+        /* Close, and labelled as approximate: the accounts and the period are
+         * the report's, but the columns and the row structure are not. */
+        ReportSpec spec;
+        spec.name = report + " (starting point)";
+        spec.title = spec.name;
+        spec.columns = {"account-name", "debit", "credit"};
+        spec.grouping = "none";
+        spec.period_unit = "year";
+        spec.period_mode = "activity";
+        spec.account_types = {"INCOME", "EXPENSE"};
+        apply_default_dates (spec, options);
+        info.spec = std::move (spec);
+        info.has_spec = true;
+        info.equivalence = "approximate";
+        info.note =
+            "It lists the same Income and Expense accounts over the report's "
+            "default period, but as a flat Debit/Credit list: the C++ report "
+            "prints one sign-reversed Balance column, groups the rows under "
+            "Revenues and Expenses, adds a subtotal for every parent and a Net "
+            "income line.  The accounts and period are the report's; the "
+            "columns, signs and totals are approximate.";
+        return true;
+    }
+
+    info.note = no_spec_note (report);
+    return true;
+}
+
+std::string
+native_designer_json (const NativeDesignerInfo& info)
+{
+    std::ostringstream out;
+    out << "{\"report\":" << json::quote (info.report);
+    out << ",\"equivalence\":" << json::quote (info.equivalence);
+    out << ",\"note\":" << json::quote (info.note);
+    out << ",\"source\":{\"file\":" << json::quote (info.source_file)
+        << ",\"symbol\":" << json::quote (info.source_symbol) << "}";
+    out << ",\"spec\":";
+    if (info.has_spec)
+        out << spec_to_json (info.spec);
+    else
+        out << "null";
+    out << "}";
+    return out.str ();
 }
 
 namespace

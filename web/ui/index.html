@@ -83,6 +83,25 @@
   button.tag-chip:hover { background: #dfe9f8; }
   button.tag-chip.selected { background: #0645ad; color: #fff;
                              border-color: #0645ad; }
+
+  /* Provenance of whatever the designer is showing: a saved spec is a
+     definition, a native report's C++ code is not, and a starting point is
+     labelled as one.  The banner is not decoration: it is the difference
+     between a definition and a reconstruction. */
+  #designer-banner { border-left: 4px solid #c9a227; background: #fffbe8;
+                     padding: .5rem .75rem; margin: .5rem 0 .75rem; }
+  #designer-banner p { margin: .25rem 0; }
+  #designer-banner.definition { border-left-color: #0645ad;
+                                background: #eef3fb; }
+  #designer-banner.starting { border-left-color: #b36b00;
+                              background: #fff4e5; }
+  #designer-banner.none { border-left-color: #999; background: #f4f4f4; }
+  #designer-provenance { font-weight: 600; }
+  #designer-source { color: #555; font-size: .85rem; }
+  #native-source { border: 1px solid #e3e3e3; background: #fafafa;
+                   padding: .4rem .6rem; margin: .5rem 0; }
+  #native-source h3 { font-size: .95rem; margin: .2rem 0; }
+  #native-source p { margin: .2rem 0; }
 </style>
 </head>
 <body>
@@ -105,6 +124,10 @@
   <section id="options" hidden>
     <h2 id="options-title">Options</h2>
     <p id="options-note" class="hint" hidden></p>
+    <div id="native-source" hidden>
+      <h3>Implementation (read-only)</h3>
+      <p id="native-source-text" class="hint"></p>
+    </div>
     <p id="report-error" class="error" role="alert" hidden></p>
     <form id="options-form" hidden></form>
     <div id="saved-views-wrap" hidden>
@@ -123,6 +146,13 @@
 
 <section id="designer">
   <h2>Report designer</h2>
+  <div id="designer-banner" role="status" hidden>
+    <p id="designer-provenance"></p>
+    <p id="designer-source" class="hint" hidden></p>
+  </div>
+  <p class="form-actions">
+    <button id="spec-new" type="button">New report</button>
+  </p>
   <p class="hint">
     Build a report from the same query, columns and options the native
     reports use. Preview it, then save it under a name: saved reports live on
@@ -247,6 +277,10 @@ let savedSpecs = [];       // designer reports, from /api/specs
 let builtinSpecs = [];     // built-in designer reports, from /api/specs
 let specFields = null;     // the designer vocabulary, from /api/spec/options
 let activeTag = "";        // the tag chip currently applied to the report list
+// The spec the populated designer was loaded from, when there is one.  A
+// built-in or saved report is its definition; a native report's starting
+// point is not, and designerBase stays null for it.
+let designerBase = null;
 
 const STORAGE_KEY = "gnucash-webui.saved-views.v1";
 
@@ -280,6 +314,13 @@ const specChart = document.getElementById("spec-chart");
 const specChartSeries = document.getElementById("spec-chart-series");
 const specChartSeriesRow = document.getElementById("spec-chart-series-row");
 const specError = document.getElementById("spec-error");
+const specSave = document.getElementById("spec-save");
+const specNew = document.getElementById("spec-new");
+const designerBanner = document.getElementById("designer-banner");
+const designerProvenance = document.getElementById("designer-provenance");
+const designerSource = document.getElementById("designer-source");
+const nativeSource = document.getElementById("native-source");
+const nativeSourceText = document.getElementById("native-source-text");
 
 /* ------------------------------------------------------------- the book */
 
@@ -783,6 +824,18 @@ async function selectReport(name) {
   savedWrap.hidden = true;
   savedList.replaceChildren();
 
+  // Nothing from the previous report may survive in the designer.  It is
+  // cleared now and filled only from this report's own description, once
+  // that arrives; a native report without an honest equivalent keeps the
+  // designer fields hidden instead of showing stale values.
+  nativeSource.hidden = true;
+  nativeSourceText.textContent = "";
+  designerBase = null;
+  setSaveAs(false);
+  hideDesignerBanner();
+  if (specFields) clearDesigner();
+  specForm.hidden = !specFields;
+
   // The frame loads straight away with the report's own defaults, as before;
   // the form appears when the descriptors arrive.
   view.removeAttribute("srcdoc");
@@ -794,8 +847,21 @@ async function selectReport(name) {
   if (descriptors !== null && descriptors.size > 0 &&
       !descriptors.has(name)) {
     note(NO_DESCRIPTORS);
+    // Not a native report: there is no C++ implementation to name and no
+    // starting point the designer can honestly offer.
+    specForm.hidden = true;
+    setDesignerBanner(
+      "none",
+      "This report is not one of the native C++ reports, so it has no C++ " +
+      "implementation source and the designer has no spec for it.  Its " +
+      "options, if any, are above.", "");
     return;
   }
+
+  // The C++ implementation panel and, where one exists, the starting point.
+  // This runs beside the options fetch and abandons its work if the user
+  // selects another report first.
+  loadNativeDesigner(name, generation);
 
   let response;
   try {
@@ -856,6 +922,205 @@ function hideSpecError() {
 function specField(name) {
   const node = document.getElementById(`spec-opt-${name}`);
   return node ? node.value : "";
+}
+
+function setSpecField(name, value) {
+  const node = document.getElementById(`spec-opt-${name}`);
+  if (node) node.value = value;
+}
+
+// Check exactly the boxes whose value is in `values`, and no others: a
+// populated form must not keep a leftover tick from the report before it.
+function setChecked(container, name, values) {
+  const wanted = new Set(Array.isArray(values) ? values : []);
+  for (const box of container.querySelectorAll(`input[name="${name}"]`))
+    box.checked = wanted.has(box.value);
+}
+
+// Order is part of a spec: columns print in their listed order and chart
+// series draw in theirs.  A checkbox group has a fixed vocabulary order, so
+// move the checked labels to the front in the spec's order and leave the rest
+// after them.  Reading the checked boxes back then reproduces the spec,
+// instead of silently sorting a chart's Credit before its Debit.
+function orderChecked(container, name, values) {
+  const labels = [...container.querySelectorAll(`:scope > label`)];
+  const byValue = new Map(
+    labels.map((label) => [label.querySelector("input").value, label]));
+  const ordered = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const label = byValue.get(value);
+    if (label) {
+      ordered.push(label);
+      byValue.delete(value);
+    }
+  }
+  for (const label of labels) {
+    if (byValue.has(label.querySelector("input").value)) ordered.push(label);
+  }
+  container.replaceChildren(...ordered);
+}
+
+function setSaveAs(saveAs) {
+  specSave.textContent = saveAs ? "Save as…" : "Save report";
+  specSave.title = saveAs
+    ? "Save a copy under a new name; the report you are looking at is not changed"
+    : "";
+}
+
+function setDesignerBanner(kind, text, source) {
+  designerProvenance.textContent = text;
+  if (source) {
+    designerSource.textContent = source;
+    designerSource.hidden = false;
+  } else {
+    designerSource.textContent = "";
+    designerSource.hidden = true;
+  }
+  designerBanner.className = kind;
+  designerBanner.hidden = false;
+}
+
+function hideDesignerBanner() {
+  designerBanner.hidden = true;
+  designerBanner.className = "";
+  designerProvenance.textContent = "";
+  designerSource.textContent = "";
+  designerSource.hidden = true;
+}
+
+async function ensureDesignerVocabulary() {
+  if (!specFields) await loadDesignerOptions();
+  return Boolean(specFields);
+}
+
+// Put a spec's values into every designer control.  The spec is the server's
+// own document (a built-in's, a saved report's, or a native report's
+// starting point), so its fields are the truth here: dates are set exactly,
+// a date preset clears them, and unlisted accounts/types/series are unticked.
+function applySpecToDesigner(spec) {
+  if (!specFields) return;
+  specName.value = typeof spec.name === "string" ? spec.name : "";
+  specTitle.value = typeof spec.title === "string" ? spec.title : "";
+  specTags.value = Array.isArray(spec.tags) ? spec.tags.join(", ") : "";
+  setChecked(specColumns, "spec-columns", spec.columns);
+  orderChecked(specColumns, "spec-columns", spec.columns);
+  setChecked(specAccounts, "spec-accounts", spec.accounts);
+  setChecked(specAccountTypes, "spec-account-types", spec.account_types);
+  orderChecked(specAccountTypes, "spec-account-types", spec.account_types);
+  setChecked(specChartSeries, "spec-chart-series", spec.chart_series);
+  orderChecked(specChartSeries, "spec-chart-series", spec.chart_series);
+  specGrouping.value = spec.grouping || "none";
+  specPeriodUnit.value = spec.period_unit || "year";
+  specPeriodMode.value = spec.period_mode || "activity";
+  specChart.value = spec.chart || "";
+  const preset = typeof spec.date_preset === "string" ? spec.date_preset : "";
+  setSpecField("date_preset", preset);
+  setSpecField("start", preset === "" && typeof spec.start === "string"
+                          ? spec.start : "");
+  setSpecField("end", preset === "" && typeof spec.end === "string"
+                        ? spec.end : "");
+  setSpecField("currency",
+               typeof spec.currency === "string" ? spec.currency : "");
+  syncDesignerState();
+}
+
+// A new report: the same controls the page builds for a blank spec.  This is
+// also what a report with no designer equivalent leaves behind, so switching
+// reports can never leave one report's values under another's name.
+function clearDesigner() {
+  if (!specFields) return;
+  specName.value = "";
+  specTitle.value = "";
+  specTags.value = "";
+  setChecked(specColumns, "spec-columns", ["account-name"]);
+  setChecked(specAccounts, "spec-accounts", []);
+  setChecked(specAccountTypes, "spec-account-types", []);
+  setChecked(specChartSeries, "spec-chart-series", []);
+  // Put the groups back in the vocabulary's order: a previous report's spec
+  // may have moved columns or series around, and the default must not inherit
+  // that order.
+  orderChecked(specColumns, "spec-columns",
+               (specFields.columns || []).map((column) => column.name));
+  orderChecked(specAccountTypes, "spec-account-types",
+               (specFields.account_types || []).map((type) => type.name));
+  orderChecked(specChartSeries, "spec-chart-series",
+               (specFields.chart_series || []).map((column) => column.name));
+  specGrouping.value = "none";
+  specPeriodUnit.value = "year";
+  specPeriodMode.value = "activity";
+  specChart.value = "";
+  setSpecField("date_preset", "");
+  for (const option of specFields.options || []) {
+    if (option.type === "date" || option.name === "currency")
+      setSpecField(option.name,
+                   typeof option.default === "string" ? option.default : "");
+  }
+  syncDesignerState();
+}
+
+function newDesignerReport() {
+  formGeneration++; // abandon any populate still in flight
+  designerBase = null;
+  setSaveAs(false);
+  hideDesignerBanner();
+  clearDesigner();
+  specForm.hidden = false;
+  hideSpecError();
+  specName.focus();
+}
+
+// The C++ report's implementation and, where it exists, its starting point.
+// Never a definition: `equivalence` says whether the starting point renders
+// the report's own cells or only approximates them, and the banner repeats
+// that in the UI.  A report with no equivalent gets no fields at all.
+async function loadNativeDesigner(name, generation) {
+  let info = null;
+  try {
+    const response = await fetch(
+      api(`api/report/${encodeURIComponent(name)}/designer`));
+    if (response.ok) info = await response.json();
+  } catch (err) {
+    info = null;
+  }
+  if (generation !== formGeneration) return;
+  if (!info) {
+    specForm.hidden = true;
+    setDesignerBanner(
+      "none",
+      "This report is not implemented in the C++ report layer, or the server " +
+      "did not publish its implementation description.  Its options are " +
+      "above; the designer has not been populated.", "");
+    return;
+  }
+
+  nativeSource.hidden = false;
+  nativeSourceText.textContent =
+    `${info.source.file} — ${info.source.symbol}.  ${info.note}`;
+
+  if (info.equivalence === "none" || !info.spec) {
+    clearDesigner();
+    specForm.hidden = true;
+    setDesignerBanner(
+      "none",
+      "This report is implemented in C++ and has no designer equivalent: " +
+      info.note +
+      "  The designer fields are hidden rather than filled with an invented " +
+      "definition; use New report to start a spec from scratch.", "");
+    return;
+  }
+
+  await ensureDesignerVocabulary();
+  if (generation !== formGeneration) return;
+  applySpecToDesigner(info.spec);
+  specForm.hidden = false;
+  setDesignerBanner(
+    "starting",
+    (info.equivalence === "exact"
+       ? "This report is implemented in C++; this is an equivalent starting " +
+         "point, not its definition."
+       : "This report is implemented in C++; this is an approximate starting " +
+         "point, not its definition.") +
+      "  " + info.note, "");
 }
 
 function fillSelect(select, entries) {
@@ -1069,6 +1334,17 @@ async function saveSpec(event) {
   event.preventDefault();
   const spec = readDesignerSpec();
   if (!spec) return;
+  // A built-in or saved report is a definition, never something Save edits.
+  // The button says Save as…, and saving under the same name is refused here
+  // with an explanation rather than left to the server's duplicate-name 400.
+  if (designerBase && spec.name === designerBase.name) {
+    showSpecError(
+      `“${spec.name}” is the ${designerBase.kind === "builtin"
+        ? "built-in" : "saved"} report you are looking at.  Save as… needs ` +
+      "a new name for the copy; the report itself is not changed.");
+    specName.focus();
+    return;
+  }
   hideSpecError();
   try {
     const response = await fetch(api("api/specs"), {
@@ -1082,32 +1358,33 @@ async function saveSpec(event) {
       return;
     }
     const saved = JSON.parse(text);
-    specName.value = "";
-    specTitle.value = "";
-    specTags.value = "";
     await loadSpecs();
-    selectSpec(saved);
+    await selectSpec(saved);
   } catch (err) {
     showSpecError(`Could not save the report: ${err.message}`);
   }
 }
 
-function selectSpec(spec, builtin = false) {
-  formGeneration++;
+async function selectSpec(spec, builtin = false) {
+  const generation = ++formGeneration;
   selectedReport = spec.name;
   selectedSpecId = spec.id;
   currentOptions = [];
   optionsSection.hidden = false;
+  nativeSource.hidden = true;
+  nativeSourceText.textContent = "";
   optionsTitle.textContent =
     `${builtin ? "Built-in report" : "Saved report"}: ${spec.name}`;
   if (builtin) {
     optionsNote.textContent = (spec.description ? spec.description + " " : "") +
-      "It is built into gnc-webd, not saved in your report store, so it " +
-      "cannot be deleted.";
+      "This is the built-in report's definition, loaded into the report " +
+      "designer below: Save as… forks a copy under a new name.  It is code, " +
+      "not a saved report, so it can neither be edited nor deleted.";
   } else {
     optionsNote.textContent =
-      "This report is saved on the server, outside the book. " +
-      "Use the Reports list to open or delete it.";
+      "This saved report's definition is loaded into the report designer " +
+      "below: Save as… forks a copy under a new name.  Use the Reports list " +
+      "to delete the original.";
   }
   optionsNote.hidden = false;
   hideError();
@@ -1118,6 +1395,44 @@ function selectSpec(spec, builtin = false) {
   view.removeAttribute("srcdoc");
   view.hidden = false;
   view.src = api("report/spec/" + encodeURIComponent(spec.id));
+
+  // The user is looking at this report's definition, so the designer is in
+  // Save-as mode: the form is populated with its spec and saving always
+  // makes a new report rather than pretending to edit this one.
+  designerBase = { kind: builtin ? "builtin" : "saved", name: spec.name,
+                   id: spec.id };
+  setSaveAs(true);
+  await ensureDesignerVocabulary();
+  if (generation !== formGeneration) return;
+
+  // Re-read the spec from its own route: the list entry and this document
+  // are meant to be the same spec, and the designer shows exactly what
+  // /api/specs/<id> serves, not a cached summary.
+  let full = spec;
+  try {
+    const response =
+      await fetch(api("api/specs/" + encodeURIComponent(spec.id)));
+    if (response.ok) full = await response.json();
+  } catch (err) {
+    full = spec; // the list entry is still the server's own document
+  }
+  if (generation !== formGeneration) return;
+
+  applySpecToDesigner(full);
+  specForm.hidden = false;
+  hideSpecError();
+  setDesignerBanner(
+    "definition",
+    builtin
+      ? `Definition: you are looking at the built-in report “${spec.name}”. ` +
+        "It is code, not a saved report.  Save as… forks a copy under a new " +
+        "name; the built-in itself is never edited."
+      : `Definition: you are looking at the saved report “${spec.name}”. ` +
+        "Save as… forks a copy under a new name; saving does not change the " +
+        "original.",
+    "This report's definition is a saved report spec, not C++ code: the " +
+    "fields below are exactly the query, columns and options the server " +
+    "stores for it.");
 }
 
 async function deleteSpec(spec) {
@@ -1136,6 +1451,15 @@ async function deleteSpec(spec) {
       view.hidden = true;
       optionsSection.hidden = true;
     }
+    if (designerBase && designerBase.id === spec.id) {
+      // The definition on screen has just been deleted; do not leave its
+      // fields behind under a report that no longer exists.
+      designerBase = null;
+      setSaveAs(false);
+      hideDesignerBanner();
+      clearDesigner();
+      specForm.hidden = false;
+    }
     await loadSpecs();
   } catch (err) {
     showSpecError(`Could not delete the report: ${err.message}`);
@@ -1145,6 +1469,7 @@ async function deleteSpec(spec) {
 specForm.addEventListener("submit", saveSpec);
 searchBox.addEventListener("input", applyReportFilter);
 document.getElementById("spec-preview").addEventListener("click", previewSpec);
+specNew.addEventListener("click", newDesignerReport);
 specGrouping.addEventListener("change", syncDesignerState);
 specChart.addEventListener("change", syncDesignerState);
 specOptions.addEventListener("change", syncDesignerState);

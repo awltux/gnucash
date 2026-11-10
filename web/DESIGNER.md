@@ -121,6 +121,52 @@ liability scope it is the Assets / Liabilities / Net Worth shape.  The series
 still carry the amount-column names ("Debit", "Credit", "Balance"), not the
 Scheme report's labels.
 
+## What the designer shows when a report is selected
+
+Selecting a report fills the designer with **what the report actually is**, and
+the banner above the form says which case is on screen:
+
+- **Built-in and saved specs are definitions.** Every designer field is
+  populated from the spec `GET /api/specs/<id>` serves (name, title, tags,
+  columns in their printed order, grouping, period unit and mode, accounts,
+  account types, chart and chart series in series order, dates or preset, and
+  currency). The button reads **Save as…** and the form refuses to save under
+  the selected report's own name: saving always forks a copy under a new name.
+  A built-in is code, so it can be neither edited nor deleted this way. The
+  copy is the same document as the original: `report-spec.sh` and
+  `ui-test.mjs` compare the fork's render with the built-in's byte for byte
+  (cell by cell as the UI harness's fallback).
+- **Native reports are C++ and are never presented as specs.** The panel above
+  the designer shows the implementation file and function, read-only, from
+  `GET /api/report/<name>/designer`. That route also says whether a spec can
+  stand in for the report:
+  - `equivalence: "exact"` — the starting point renders the report's own
+    cells. **Trial Balance** is the only one: a flat account list with Debit
+    and Credit columns over the same as-of date is exactly the C++ report's
+    table. The banner reads "This report is implemented in C++; this is an
+    equivalent starting point, not its definition", and the test posts the
+    populated fields and compares the preview with `/report/Trial Balance`
+    cell for cell.
+  - `equivalence: "approximate"` — a useful starting point whose differences
+    are named. **Income Statement** and **Profit & Loss** list the same Income
+    and Expense accounts over the report's default period, but as a flat
+    Debit/Credit list; the note says the C++ report prints one sign-reversed
+    Balance column, groups the rows under Revenues and Expenses, adds parent
+    subtotals and a Net income line.
+  - `equivalence: "none"` — no designer fields are populated and the form is
+    hidden, so nothing can be mistaken for a definition. The note names the
+    family's reason: listing reports (transactions, ledger, journal,
+    reconciliation), aging buckets, lots/prices/portfolios, budget objects,
+    invoices and owner documents, tax codes and cash-flow categories all have
+    rows or columns the spec vocabulary (account or period rows, and
+    debit/credit/balance columns) cannot express. **Balance Sheet** is in this
+    group too: its sections, sign reversals and retained-earnings row are not a
+    flat account list.
+
+Switching reports always clears the previous report's fields first; a report
+with no equivalent cannot leave stale values behind. **New report** clears the
+designer and returns it to a blank spec with the normal Save button.
+
 ## Built-in specs
 
 `gnc-webd` defines six report specs in code, so a fresh build — with or
@@ -221,6 +267,7 @@ Every route is under the server's random token, like the rest of the web UI.
 | `/api/specs` | POST | validate, assign an id and save; `400` names the invalid field, `201` returns the saved spec |
 | `/api/specs/<id>` | GET | one saved or built-in spec |
 | `/api/specs/<id>` | DELETE | delete a saved spec; a built-in is a `400` |
+| `/api/report/<name>/designer` | GET | a native report's implementation source and, only when it can be backed up, a starting-point spec with `equivalence` `exact`/`approximate`/`none` |
 | `/report/spec/<id>` | GET | render it through the native report layer |
 
 Creation validates every field against the open book: unknown columns,
@@ -243,7 +290,11 @@ is a 400 naming the field. The tag checks quote the filtered id lists: one
 tag selects exactly one built-in, a shared tag selects all of them, an
 unknown tag is the empty object, `?q=` matches a name and a tag, the two
 filters compose, an invalid tag is a 400 naming it, and a saved spec's
-trimmed tags come back after the store is re-read.
+trimmed tags come back after the store is re-read. Finally, it checks the
+native designer route: every one of the 39 native reports publishes an
+`equivalence`, Trial Balance's starting point previews the **native report's
+cells**, the two income statements say `approximate` and say how, a listing
+report has no spec at all, and an unknown report is a 404.
 
 `web/test/ui-test.mjs` builds a spec in the browser equivalent to an explicit
 `/report/Trial Balance?end=2018-12-31` request, previews it, saves it, reloads
@@ -251,7 +302,15 @@ the page and opens it again, and compares the rendered **table text cell by
 cell** with the explicit request. It opens a built-in chart spec, asserts the
 canvas has non-blank pixels and two series, then renders the same spec with a
 different period and requires both the chart data and the canvas pixels to
-change — a static chart image cannot pass.
+change — a static chart image cannot pass. It also selects a built-in and
+compares **every** populated field with `GET /api/specs/<id>`, refuses a
+same-name Save as, forks the built-in, and requires the fork's document to be
+identical to the built-in's render; it then switches built-ins and requires
+the fields to change rather than go stale. For a native report it checks the
+implementation panel and label, posts the Trial Balance starting point and
+compares the preview's cells with the native URL, checks the income
+statement's approximate label and note, and checks that a report with no
+equivalent hides the form and leaves it empty before New report restores it.
 
 ## Builds without Guile
 
