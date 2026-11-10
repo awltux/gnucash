@@ -536,7 +536,22 @@ await page.waitForFunction(() => {
 // Wait for the report's table: <body> exists before the document is parsed.
 const frame = page.frameLocator('#view');
 await frame.locator('tr').first().waitFor({ timeout: 15000 });
-const reportText = (await frame.locator('body').innerText()).replace(/\s+/g, ' ');
+// A <tr> appears while the document is still being parsed, so reading the
+// body now can return a fraction of it. Wait for the frame's document to
+// finish, then for two consecutive reads to agree before asserting a length.
+await page.waitForFunction(() => {
+    const view = document.getElementById('view');
+    return view && view.contentDocument &&
+           view.contentDocument.readyState === 'complete';
+}, null, { timeout: 15000 });
+const frameText = async () => (await frame.locator('body').innerText()).replace(/\s+/g, ' ');
+let reportText = await frameText();
+for (let attempt = 0; attempt < 100; attempt++) {
+    await page.waitForTimeout(20);
+    const again = await frameText();
+    if (again === reportText) break;
+    reportText = again;
+}
 check('report rendered in the frame', reportText.length > 1000, `${reportText.length} chars`);
 check('report has its table', /Balance|Debit|Credit/i.test(reportText),
       reportText.slice(0, 120));
