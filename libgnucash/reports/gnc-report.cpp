@@ -1030,12 +1030,54 @@ period_label (const GDate& date, PeriodUnit unit)
     return buffer;
 }
 
+/* add_months() was first needed by the multicolumn statements, so it is
+ * defined with that date axis further down; the period axis needs it too. */
+GDate add_months (const GDate& date, int months);
+
+/* gnc:make-date-list()'s step: `start`, the start stepped by whole months,
+ * ... while the result is before `end`, then `end` itself.  The month
+ * arithmetic is incdate-months(): a month-end start stays on month ends.
+ *
+ * This is the axis the Scheme net-worth charts plot.  A range that begins on
+ * a month end therefore lands on the same month ends a calendar period axis
+ * would -- the two conventions coincide there -- while a range that begins on
+ * any other day gets the Scheme chart's points: the from-date, the from-date
+ * stepped by the period delta, and the range end appended when the last step
+ * has passed it. */
+std::vector<GDate>
+period_axis_dates (const GDate& start, const GDate& end, int months)
+{
+    std::vector<GDate> dates;
+    if (months <= 0 || g_date_compare (&start, &end) >= 0)
+    {
+        dates.push_back (end);
+        return dates;
+    }
+
+    for (int index = 0; ; ++index)
+    {
+        GDate date = add_months (start, months * index);
+        if (g_date_compare (&date, &end) >= 0)
+        {
+            dates.push_back (end);
+            return dates;
+        }
+        dates.push_back (date);
+    }
+}
+
 /* One row per period, each the net of every account in scope over that
  * period.  The two sides are summed per account before they are netted, so a
  * period that contains both income and expenses keeps them apart: the Debit
  * column (and a chart's Debit series) is what the period debited, the Credit
  * column what it credited.  With `spec.cumulative` the row is instead the
- * balance as of the period's end. */
+ * balance as of the period's end.
+ *
+ * The period axis is the Scheme charts': gnc:make-date-list() from the
+ * from-date, not the calendar's month or year boundaries.  Cumulative rows
+ * are one per axis date (the balance at the end of that day), activity rows
+ * are one per interval between two axis dates, as
+ * gnc:make-date-interval-list() builds them. */
 bool
 spec_period_rows (const TableSpec& spec, const Query& base,
                   const std::vector<Account*>& accounts, Table& table,
@@ -1047,47 +1089,72 @@ spec_period_rows (const TableSpec& spec, const Query& base,
         return false;
     }
 
-    GDate cursor = time64_to_gdate (*spec.start);
+    GDate first = time64_to_gdate (*spec.start);
     GDate last = time64_to_gdate (*spec.end);
-    if (spec.period_unit == PeriodUnit::Month)
-    {
-        g_date_set_day (&cursor, 1);
-    }
-    else
-    {
-        g_date_set_day (&cursor, 1);
-        g_date_set_month (&cursor, G_DATE_JANUARY);
-    }
-    if (!g_date_valid (&cursor) || !g_date_valid (&last))
+    if (!g_date_valid (&first) || !g_date_valid (&last))
     {
         error = "cannot resolve the report's date range";
         return false;
     }
+    if (g_date_compare (&first, &last) > 0)
+    {
+        error = "the date range does not contain a period";
+        return false;
+    }
+
+    const int months = spec.period_unit == PeriodUnit::Month ? 1 : 12;
+    const std::vector<GDate> dates = period_axis_dates (first, last, months);
+
+    /* The axis as rows.  A cumulative report has one point per axis date --
+     * the balance at the end of that day.  An activity report has one
+     * interval per pair of dates: the last interval is clamped to the range
+     * end, and every earlier one ends the day before the next axis date,
+     * exactly as gnc:make-date-interval-list() ends its intervals.  The label
+     * is the interval's first date, which is how the Scheme income/expense
+     * chart labels the activity between two step dates. */
+    struct PeriodPoint
+    {
+        GDate label;
+        GDate start;
+        GDate end;
+    };
+    std::vector<PeriodPoint> points;
+    if (spec.cumulative)
+    {
+        for (const GDate& date : dates)
+            points.push_back ({date, date, date});
+    }
+    else if (dates.size () == 1)
+    {
+        /* A one-day range: the axis date is the whole period. */
+        points.push_back ({dates.front (), dates.front (), dates.front ()});
+    }
+    else
+    {
+        for (size_t index = 0; index + 1 < dates.size (); ++index)
+        {
+            GDate period_end = dates[index + 1];
+            if (index + 2 < dates.size ())
+                g_date_subtract_days (&period_end, 1);
+            points.push_back ({dates[index], dates[index], period_end});
+        }
+    }
 
     gnc_numeric total = gnc_numeric_zero ();
-    while (g_date_compare (&cursor, &last) <= 0)
+    for (const PeriodPoint& point : points)
     {
-        GDate next = cursor;
-        if (spec.period_unit == PeriodUnit::Month)
-            g_date_add_months (&next, 1);
-        else
-            g_date_add_years (&next, 1);
-        GDate period_last = next;
-        g_date_subtract_days (&period_last, 1);
-
         Query query = base;
         if (spec.cumulative)
         {
             /* A balance at a date is not the period's activity: accumulate
              * from the beginning of the book up to the period's end. */
             query.start.reset ();
-            query.end = gnc_time64_get_day_end_gdate (&period_last);
         }
         else
         {
-            query.start = gnc_time64_get_day_start_gdate (&cursor);
-            query.end = gnc_time64_get_day_end_gdate (&period_last);
+            query.start = gnc_time64_get_day_start_gdate (&point.start);
         }
+        query.end = gnc_time64_get_day_end_gdate (&point.end);
 
         gnc_numeric debit = gnc_numeric_zero ();
         gnc_numeric credit = gnc_numeric_zero ();
@@ -1100,24 +1167,15 @@ spec_period_rows (const TableSpec& spec, const Query& base,
                 credit = numeric_add (credit, gnc_numeric_neg (amount));
         }
 
-        const std::string label = period_label (cursor, spec.period_unit);
         Row row;
         row.type = RowType::Account;
-        row.label = label;
+        row.label = period_label (point.label, spec.period_unit);
         row.split_amounts = true;
         row.debit = debit;
         row.credit = credit;
         row.amount = numeric_add (debit, gnc_numeric_neg (credit));
-        table.rows.push_back (std::move (row));
         total = numeric_add (total, row.amount);
-
-        cursor = next;
-    }
-
-    if (table.rows.empty ())
-    {
-        error = "the date range does not contain a period";
-        return false;
+        table.rows.push_back (std::move (row));
     }
 
     Row row;

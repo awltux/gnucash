@@ -97,29 +97,61 @@ behaviour was changed by the measurement itself; the later stages edited
 > Advanced Portfolio prints its headings and its zero-valued Total row, and
 > Customer Summary prints "No valid customer found." instead of a zero total.
 >
-> **Open defect: the two net-worth built-ins do not match the Scheme chart
-> under an explicit date range.**  The comparison that exposes it is
+> **Fixed: the two net-worth built-ins now match the Scheme chart under an
+> explicit date range.**  The comparison that exposed the defect is
 > `report-parity.sh <qt> <build> <src> sample1.gnucash "Net Worth Barchart"
-> 2018-01-01 2018-12-31` (the Linechart fails the same way), on both
-> `ext4-web` and `ext4-noguile`: four differing rows every time.  The Scheme
-> document plots 13 points, `01/01/18` … `12/01/18` plus the range end
-> `12/31/18`, with `Assets [0,0,10000,…]`, `Liabilities [0,0,585,…]` and
-> `Net Worth [0,0,9415,…]`; the built-in plots 12 points, `January 2018` …
-> `December 2018`, with `Debit [0,10000,…]`, `Credit [0,585,…]` and
-> `Balance [0,9415,…]`.  The amounts are the same; the axes are one step
-> apart.  The cause is the step convention, not the range: `net-charts.scm`
-> builds its dates with `gnc:make-date-list (end-day-time from) (end-day-time
-> to) MonthDelta`, which steps from the from-date and appends the end date
-> when it is not a step (`bindings/guile/date-utilities.scm:356`), while a
-> period spec plots calendar month ends.  The two agree when the from-date is
-> itself a month end -- `2017-12-31 .. 2018-12-31` matches, 6 rows, which is
-> why the earlier measurement saw the same series -- and disagree by one step
-> when it is not.  Fixing it means teaching the period axis to step from the
-> from-date and append the end date (a change shared by every period report,
-> and a new spec field), not a one-line correction to these two reports.  It
-> is recorded as open; the matrix therefore reports **58/62** (29/31 per
-> build), not 62/62, until it is fixed.  It is independent of the budgets
-> work: the five budget reports pass the same matrix in both builds.
+> 2018-01-01 2018-12-31` (the Linechart failed the same way).  Before the fix
+> it differed by four rows: the Scheme document plotted 13 points,
+> `01/01/18` … `12/01/18` plus the range end `12/31/18`, with `Assets
+> [0,0,10000,…]`, `Liabilities [0,0,585,…]` and `Net Worth [0,0,9415,…]`,
+> while the built-in plotted 12 calendar month ends, `January 2018` …
+> `December 2018`, with `Debit [0,10000,…]`, `Credit [0,585,…]` and `Balance
+> [0,9415,…]`.  The amounts were the same money one step apart.  The cause was
+> the step convention: `net-charts.scm` builds its dates with
+> `gnc:make-date-list (end-day-time from) (end-day-time to) MonthDelta`
+> (`bindings/guile/date-utilities.scm:356`), which steps from the from-date
+> and appends the end date when it is off-step, while `spec_period_rows()`
+> (`libgnucash/reports/gnc-report.cpp`) truncated the start to the 1st of its
+> month.  The shared period axis is now `gnc:make-date-list()`'s: it starts at
+> the from-date (at the end of its day), steps by the period delta with
+> `incdate-months()`'s month arithmetic (a month-end start stays on month
+> ends), and appends the range end when the step passes it.  Cumulative rows
+> are one per axis date; activity rows are one per interval between two axis
+> dates, as `gnc:make-date-interval-list()` builds them.  Because every
+> period-grouped designer report uses the one axis, the fix is not specific to
+> the two charts.
+>
+> **Evidence.**  Both charts match in `ext4-web` and `ext4-noguile` under
+> `2018-01-01 .. 2018-12-31` (the case that exposed the defect) and under
+> `2017-12-31 .. 2018-12-31` (the case that always matched).  A range that
+> begins on a month end is unchanged point for point, because the Scheme step
+> lands on the same month ends a calendar axis used: the 13-point
+> `December 2017 … December 2018` series is byte-identical before and after.
+> The full matrix is back to **62 of 62** (31 cases in each build), with the
+> two net-worth cases in their original slots -- the matrix was not made green
+> by substituting easier cases: the restored `2018-01-01` cases now pass.
+> The 41-page rendering corpus (native reports and the designer sources the
+> typed renderer serves, on `sample1`, `taxreport.gnucash` and the generated
+> investment book, in both builds) is byte-identical before and after.  One
+> consequence is named rather than hidden: a period-grouped report whose range
+> starts mid-month now gets the Scheme axis too, so an *activity* series can
+> be one interval different from the old calendar-period shape (the first
+> point is the from-date and the last is clamped to the range end).  No such
+> range is in the corpus, and every month-start or month-end rendering is
+> unchanged; the one designer-suite assertion that pinned the old month-end
+> axis was updated to pin the new one.
+>
+> **Labels are not a parity failure.**  The harness's `chart` extractor
+> compares the chart type, the label *count* and every series' values; it does
+> not compare label text (`web/test/report-parity.sh`, `chart_extract`).  The
+> native labels therefore stay the presentation choice, "January 2018", while
+> the Scheme document prints "01/01/18"; matching the text was not necessary
+> for parity and was not done.
+>
+> **The budgets source is independent.**  The Budget Report's axis is the
+> book budget's own periods, built by `budget_spec_table()`, not this date
+> axis; a budgets spec refuses `period_unit`, `period_mode` and dates by name.
+> The five budget reports still pass the same matrix in both builds.
 
 > **What changed since the first measurement.**  The first version of this
 > document was measured at `a639555722`, when nine Scheme report names rendered
@@ -505,7 +537,7 @@ layout.
 
 | # | Report | Source | Spec recipe | What is lost |
 |---:|---|---|---|---|
-| 23 | Net Worth Barchart | `standard/net-charts.scm` | `grouping: "period"`, `period_unit: "month"`, columns `debit` + `credit` + `balance`, `period_mode: "cumulative"`, account types `BANK, CASH, ASSET, STOCK, MUTUAL, CURRENCY, CREDIT, LIABILITY, RECEIVABLE, PAYABLE`, `chart: "bar"`, series `debit`, `credit` + `balance`, `date_preset: "all"`. | The Scheme report's default step dates run from the from-date; the built-in uses calendar month ends over the book's transaction range.  `debit`/`credit` are the balance signs, not the account types: an overdrawn asset lands on the credit side where the Scheme report keeps it under Assets as a negative value.  Step sizes other than month/year, the table toggle, price source and plot geometry. |
+| 23 | Net Worth Barchart | `standard/net-charts.scm` | `grouping: "period"`, `period_unit: "month"`, columns `debit` + `credit` + `balance`, `period_mode: "cumulative"`, account types `BANK, CASH, ASSET, STOCK, MUTUAL, CURRENCY, CREDIT, LIABILITY, RECEIVABLE, PAYABLE`, `chart: "bar"`, series `debit`, `credit` + `balance`, `date_preset: "all"`. | The built-in covers the book's transaction range rather than the Scheme report's current-fiscal-year default.  Its period axis is the Scheme chart's (the from-date, stepped by the period, with the range end appended when it is off-step), so a range that begins on a month end is the same point for point.  `debit`/`credit` are the balance signs, not the account types: an overdrawn asset lands on the credit side where the Scheme report keeps it under Assets as a negative value.  Step sizes other than month/year, the table toggle, price source and plot geometry. |
 | 24 | Net Worth Linechart | `standard/net-charts.scm` | Same as 23 with `chart: "line"`. | Same as 23. |
 
 The two are shipped as the built-ins `builtin-net-worth-barchart` and
@@ -513,10 +545,15 @@ The two are shipped as the built-ins `builtin-net-worth-barchart` and
 over `2017-12-31..2018-12-31` the native chart's three 13-point series are
 `Debit [0,0,10000,...]`, `Credit [0,0,585,...]`, `Balance [0,0,9415,...]`;
 the Scheme chart's `Assets`, `Liabilities` and `Net Worth` are the same three
-lists (see `report-parity.sh`, which compares the chart data directly).  The
-series labels are the amount-column names ("Debit", "Credit", "Balance"), not
-the Scheme wording, and the built-in covers the book's data range rather than
-the Scheme report's current-fiscal-year default.
+lists (see `report-parity.sh`, which compares the chart data directly).  Over
+`2018-01-01..2018-12-31` both now plot 13 points as well -- the native
+`[0,0,10000,...]` for Debit against the Scheme `Assets [0,0,10000,...]`, and
+the same agreement for the other two series -- because the axis starts at the
+from-date rather than at the 1st of its month.  The series labels are the
+amount-column names ("Debit", "Credit", "Balance"), not the Scheme wording,
+the point labels stay "January 2018" rather than "01/01/18" (the parity
+extractor compares label count, not label text), and the built-in covers the
+book's data range rather than the Scheme report's current-fiscal-year default.
 
 The other three names this section used to claim are **closed** (section 3.5),
 not approximated:

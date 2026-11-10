@@ -177,8 +177,8 @@ without Guile — offers reports beyond the native reports:
 | `builtin-income-expenses-month` | Income vs Expenses by Month | `INCOME` + `EXPENSE`, one line point per month over the book's transaction range; two series, `credit` (income) and `debit` (expenses) |
 | `builtin-expenses-by-account` | Expenses by Account | `EXPENSE`, all dates, one bar per expense account with activity |
 | `builtin-income-by-account` | Income by Account | `INCOME`, all dates, one bar per income account with activity |
-| `builtin-net-worth-month` | Net Worth by Month | asset and liability account types, cumulative balance at each month's end (so the line is net worth, not the month's change) |
-| `builtin-net-worth-barchart` | Net Worth Barchart | asset and liability account types, cumulative balance at each month's end; three series, `debit` (the positive-balance side), `credit` (the negative-balance side) and `balance` (net worth) |
+| `builtin-net-worth-month` | Net Worth by Month | asset and liability account types, one point per month stepped from the book's first transaction date (the Scheme charts' date list, with the range end appended), each point the cumulative balance at that date's end (so the line is net worth, not the month's change) |
+| `builtin-net-worth-barchart` | Net Worth Barchart | asset and liability account types, the same points, cumulative balance; three series, `debit` (the positive-balance side), `credit` (the negative-balance side) and `balance` (net worth) |
 | `builtin-net-worth-linechart` | Net Worth Linechart | the same three series as a line |
 
 Their tags are defined in code too: `income`, `spending`, `trend`, `period`

@@ -536,7 +536,12 @@ else
     bad "assets-only preview answered $code: $(head -c 200 "$TMP/body")"
 fi
 
-# And a wider period changes the labels and the series length.
+# And a wider period changes the labels and the series length.  The axis is
+# the Scheme net-worth chart's: the from-date, then the from-date stepped by
+# the period, then the range end when the step does not land on it.  A 12/01
+# start is not a month end, so the first point is December 2017 itself and the
+# 12/31 end is appended after December 2018 -- two December 2018 labels, the
+# last one the range end.
 cat > "$TMP/nw-wide.json" <<'JSON'
 {"name":"Net worth over 2018","columns":["account-name","debit","credit","balance"],
  "grouping":"period","period_unit":"month","period_mode":"cumulative",
@@ -550,8 +555,8 @@ if [ "$code" = "200" ]; then
     cp "$TMP/body" "$TMP/nw-wide.html"
     WIDE=$(chart_summary "$TMP/nw-wide.html")
     case "$WIDE" in
-        bar\|December\ 2017\|*December\ 2018\|Debit:0,0,10000,*)
-            ok "an explicit period changes the net-worth chart's labels" ;;
+        bar\|December\ 2017\|January\ 2018\|*November\ 2018\|December\ 2018\|December\ 2018\|Debit:0,0,0,10000,*)
+            ok "an explicit mid-month period starts at the from-date and appends the range end" ;;
         *)
             bad "unexpected wider net-worth chart: $WIDE" ;;
     esac
