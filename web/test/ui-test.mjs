@@ -71,12 +71,23 @@ function check(name, ok, detail = '') {
 // The designer's controls as the form would send them.  This is the browser
 // half of "the field values equal the spec": every field, not just the name.
 const readDesignerFields = () => page.evaluate(() => ({
+    source: document.getElementById('spec-source').value,
     name: document.getElementById('spec-name').value,
     title: document.getElementById('spec-title').value,
     tags: document.getElementById('spec-tags').value
         .split(/[\s,]+/).filter(Boolean),
     columns: [...document.querySelectorAll('#spec-columns input:checked')]
         .map((box) => box.value),
+    split_columns: [...document.querySelectorAll(
+        '#spec-split-columns input:checked')].map((box) => box.value),
+    split_grouping: document.getElementById('spec-split-grouping').value,
+    invoice_owner: document.getElementById('spec-invoice-owner').value,
+    invoice_grouping: document.getElementById('spec-invoice-grouping').value,
+    bucket_basis: document.getElementById('spec-bucket-basis').value,
+    lot_account: document.getElementById('spec-lot-account').value,
+    description_filter: document.getElementById('spec-description-filter').value,
+    document: document.getElementById('spec-document').value,
+    invoice: document.getElementById('spec-invoice').value,
     grouping: document.getElementById('spec-grouping').value,
     period_unit: document.getElementById('spec-period-unit').value,
     period_mode: document.getElementById('spec-period-mode').value,
@@ -95,10 +106,23 @@ const readDesignerFields = () => page.evaluate(() => ({
 
 function expectedDesignerFields(spec) {
     return {
+        source: spec.source || 'accounts',
         name: spec.name,
         title: spec.title || spec.name,
         tags: Array.isArray(spec.tags) ? spec.tags : [],
-        columns: Array.isArray(spec.columns) ? spec.columns : [],
+        columns: spec.source === 'splits' ? [] : (Array.isArray(spec.columns)
+            ? spec.columns : []),
+        split_columns: spec.source === 'splits' && Array.isArray(spec.columns)
+            ? spec.columns : [],
+        split_grouping: spec.split_grouping || 'none',
+        invoice_owner: spec.invoice_owner || 'receivable',
+        invoice_grouping: spec.invoice_grouping || 'owner',
+        bucket_basis: spec.bucket_basis || 'due',
+        lot_account: spec.source === 'lots' && Array.isArray(spec.accounts) &&
+            spec.accounts.length === 1 ? spec.accounts[0] : '',
+        description_filter: spec.description_filter || '',
+        document: spec.document || '',
+        invoice: spec.invoice || '',
         grouping: spec.grouping || 'none',
         period_unit: spec.period_unit || 'year',
         period_mode: spec.period_mode || 'activity',
@@ -1077,6 +1101,413 @@ check('the rejected request does not leave a blank frame',
       await page.evaluate(() => document.getElementById('view').hidden),
       'frame hidden behind the message');
 expectedBadDate = false;
+
+/* --------------------------------- source-aware designer: every source */
+
+// The gate for the source-aware form: each source /api/spec/options publishes
+// must be selectable, must show only its own fields, must preview a document
+// (not a 400), must save, and must keep its tags and its source across a page
+// reload.  The list comes from the server, so a new source cannot be added
+// without this suite noticing.
+
+const optionsVocabulary =
+    await (await fetch(new URL('api/spec/options', url))).json();
+const declaredSources = optionsVocabulary.sources.map((entry) => entry.name);
+const offeredSources = await page.evaluate(() =>
+    [...document.querySelectorAll('#spec-source option')]
+        .map((option) =>
+            ({ name: option.value, label: option.textContent.trim() })));
+check('the designer lists every source /api/spec/options publishes',
+      JSON.stringify(offeredSources.map((entry) => entry.name)) ===
+          JSON.stringify(declaredSources) &&
+      declaredSources.length === 9 &&
+      offeredSources.every((entry) => entry.label !== ''),
+      offeredSources.map((entry) => `${entry.name}=${entry.label}`).join(' | '));
+
+// A preview replaces the frame with srcdoc.  Removing the old srcdoc starts a
+// navigation, so the frame's *document* is replaced; remembering the old
+// document (the WindowProxy itself is stable across navigations) is how the
+// wait below knows it is looking at the preview and not at the previous
+// source's still-complete document.  The predicate and the read of the text
+// happen in one page task for the same reason.
+async function previewSource(name) {
+    await page.evaluate(() => {
+        const frame = document.getElementById('view');
+        window.__previewDocument = frame.contentDocument;
+        frame.removeAttribute('srcdoc');
+    });
+    await page.click('#spec-preview');
+    const preview = await page.waitForFunction(() => {
+        const frame = document.getElementById('view');
+        const doc = frame && frame.contentDocument;
+        if (!frame || frame.hidden || !frame.hasAttribute('srcdoc') || !doc ||
+            doc === window.__previewDocument ||
+            doc.readyState !== 'complete' || !doc.body) return false;
+        const text = doc.body.innerText.replace(/\s+/g, ' ').trim();
+        if (text.length === 0) return false;
+        const error = document.getElementById('spec-error');
+        return {
+            rejected: !error.hidden,
+            error: error.textContent.trim(),
+            text,
+        };
+    }, null, { timeout: 15000 });
+    return preview.jsonValue();
+}
+
+// A render through /report/spec/<id> is done when its body has parsed and the
+// frame is visible.  Reloading or deleting before that aborts the request,
+// which the request log would honestly report as a failed request.
+async function waitForSpecFrameComplete() {
+    await page.waitForFunction(() => {
+        const frame = document.getElementById('view');
+        const doc = frame && frame.contentDocument;
+        return frame && !frame.hidden && /\/report\/spec\//.test(frame.src) &&
+            doc && doc.readyState === 'complete' && doc.body &&
+            doc.body.innerText.trim().length > 0;
+    }, null, { timeout: 15000 });
+}
+
+const savedSpecNamed = (name) => page.evaluate(async (wanted) => {
+    const response = await fetch(new URL('api/specs', location.href));
+    const data = await response.json();
+    return data.specs.find((spec) => spec.name === wanted) || null;
+}, name);
+
+// The vocabulary, not just the report list: selectSpec() and the page's own
+// loadDesignerOptions() would otherwise race to build the form.
+const waitForSourcePicker = () => page.waitForFunction(
+    () => document.querySelectorAll('#spec-source option').length >= 9,
+    null, { timeout: 15000 });
+
+// A populated designer: the named spec is in the form, its source is in the
+// picker, and (when asked) its provenance banner is showing.
+const waitForDesigner = (name, source, banner = true) =>
+    page.waitForFunction(({ wanted, wantedSource, wantedBanner }) => {
+        const form = document.getElementById('spec-form');
+        if (!form || form.hidden) return false;
+        if (document.getElementById('spec-name').value !== wanted ||
+            document.getElementById('spec-source').value !== wantedSource)
+            return false;
+        return !wantedBanner ||
+            !document.getElementById('designer-banner').hidden;
+    }, { wanted: name, wantedSource: source, wantedBanner: banner },
+    { timeout: 15000 });
+
+async function saveSource(name, source) {
+    await page.click('#spec-save');
+    await page.waitForFunction((wanted) =>
+        [...document.querySelectorAll('#report-list a.saved-report-link')]
+            .some((link) => link.textContent === wanted), name,
+        { timeout: 15000 });
+    // Save selects the new report; wait for its population so the frame and
+    // the form are settled before the reload.
+    await waitForDesigner(name, source, false);
+    await waitForSpecFrameComplete();
+    return savedSpecNamed(name);
+}
+
+async function reopenAfterReload(name, source) {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(
+        () => document.getElementById('summary')
+            ?.textContent.includes('accounts'), null, { timeout: 15000 });
+    await waitForSourcePicker();
+    await page.waitForFunction((wanted) =>
+        [...document.querySelectorAll('#report-list a.saved-report-link')]
+            .some((link) => link.textContent === wanted), name,
+        { timeout: 15000 });
+    await page.locator('#report-list a.saved-report-link', { hasText: name })
+        .first().click();
+    await waitForDesigner(name, source);
+    await waitForSpecFrameComplete();
+    return page.evaluate(() => ({
+        name: document.getElementById('spec-name').value,
+        source: document.getElementById('spec-source').value,
+        tags: document.getElementById('spec-tags').value
+            .split(/[\s,]+/).filter(Boolean),
+    }));
+}
+
+async function deleteSaved(name) {
+    await page.locator('#report-list li.saved-report', { hasText: name })
+        .locator('button.delete-spec').click();
+    await page.waitForFunction((wanted) =>
+        ![...document.querySelectorAll('#report-list a.saved-report-link')]
+            .some((link) => link.textContent === wanted), name,
+        { timeout: 15000 });
+}
+
+// Switching the picker must clear the fields the new source refuses.  Fill
+// account-only fields, switch to the invoice source (which accepts none of
+// them), and require them gone from the DOM and hidden — then preview the new
+// source to prove the stale values cannot cause a 400.
+await page.click('#spec-new');
+await page.selectOption('#spec-source', 'accounts');
+await page.fill('#spec-opt-currency', 'EUR');
+await page.fill('#spec-opt-start', '2018-01-01');
+await page.selectOption('#spec-grouping', 'period');
+await page.selectOption('#spec-source', 'invoices');
+const sourceSwitch = await page.evaluate(() => ({
+    source: document.getElementById('spec-source').value,
+    currency: document.getElementById('spec-opt-currency').value,
+    currencyHidden: document.getElementById('spec-opt-row-currency').hidden,
+    start: document.getElementById('spec-opt-start').value,
+    startHidden: document.getElementById('spec-opt-row-start').hidden,
+    datePresetHidden:
+        document.getElementById('spec-opt-row-date_preset').hidden,
+    grouping: document.getElementById('spec-grouping').value,
+    groupingHidden: document.getElementById('spec-grouping-row').hidden,
+    columnsHidden: document.getElementById('spec-columns-row').hidden,
+}));
+check('switching source clears and hides the fields the new source refuses',
+      sourceSwitch.source === 'invoices' && sourceSwitch.currency === '' &&
+      sourceSwitch.currencyHidden && sourceSwitch.start === '' &&
+      sourceSwitch.startHidden && sourceSwitch.datePresetHidden &&
+      sourceSwitch.grouping === 'none' && sourceSwitch.groupingHidden &&
+      sourceSwitch.columnsHidden,
+      JSON.stringify(sourceSwitch));
+await page.fill('#spec-name', 'Gate switched invoices');
+await page.fill('#spec-opt-end', '2018-12-31');
+await page.selectOption('#spec-invoice-owner', 'payable');
+const switchedPreview = await previewSource('Gate switched invoices');
+check('a source switched over a stale value previews without a rejection',
+      !switchedPreview.rejected && switchedPreview.text.length > 20 &&
+      switchedPreview.text.includes('Gate switched invoices'),
+      switchedPreview.rejected ? switchedPreview.error
+          : `${switchedPreview.text.length} characters`);
+
+const gateSources = [
+    {
+        source: 'accounts', name: 'Gate accounts',
+        fill: async () => {
+            await page.check('#spec-columns input[value="debit"]');
+            await page.check('#spec-columns input[value="credit"]');
+            await page.fill('#spec-opt-start', '2018-01-01');
+            await page.fill('#spec-opt-end', '2018-12-31');
+        },
+        shows: { columns: true, grouping: true, accounts: true },
+    },
+    {
+        source: 'splits', name: 'Gate splits',
+        fill: async () => {
+            await page.fill('#spec-opt-start', '2018-01-01');
+            await page.fill('#spec-opt-end', '2018-12-31');
+        },
+        shows: { splitColumns: true, accounts: true },
+    },
+    {
+        source: 'balance-sheet', name: 'Gate balance sheet',
+        fill: async () => {
+            await page.fill('#spec-opt-end', '2018-12-31');
+        },
+        shows: {},
+    },
+    {
+        source: 'invoices', name: 'Gate invoices',
+        fill: async () => {
+            await page.selectOption('#spec-invoice-owner', 'payable');
+            await page.fill('#spec-opt-end', '2018-12-31');
+        },
+        shows: { invoice: true },
+    },
+    {
+        source: 'lots', name: 'Gate lots',
+        fill: async () => {
+            await page.fill('#spec-opt-start', '2018-01-01');
+            await page.fill('#spec-opt-end', '2018-12-31');
+        },
+        shows: { lots: true },
+    },
+    {
+        source: 'budgets', name: 'Gate budgets',
+        fill: async () => {},
+        shows: { accounts: true },
+    },
+    {
+        source: 'tax-codes', name: 'Gate tax codes',
+        fill: async () => {
+            await page.fill('#spec-opt-start', '2018-01-01');
+            await page.fill('#spec-opt-end', '2018-12-31');
+        },
+        shows: { accounts: true },
+    },
+    {
+        source: 'cash-flow', name: 'Gate cash flow',
+        fill: async () => {
+            await page.fill('#spec-opt-start', '2018-01-01');
+            await page.fill('#spec-opt-end', '2018-12-31');
+        },
+        shows: { accounts: true },
+    },
+    {
+        source: 'document', name: 'Gate document',
+        fill: async () => {
+            await page.selectOption('#spec-document', 'Printable Invoice');
+            await page.fill('#spec-invoice', 'yoyo1');
+        },
+        marker: 'Bill #yoyo1',
+        shows: { document: true },
+    },
+];
+
+for (const gate of gateSources) {
+    const { source, name } = gate;
+    const tags = ['gate', source];
+    await page.click('#spec-new');
+    await page.selectOption('#spec-source', source);
+    await page.fill('#spec-name', name);
+    await page.fill('#spec-title', name);
+    await page.fill('#spec-tags', tags.join(', '));
+
+    // A cold form is the source with its own defaults and nothing else.  Every
+    // source must preview from there; a fixed-column source used to fail
+    // because the account column group had nothing ticked.
+    const cold = await previewSource(name);
+    check(`${source}: previews from a cold form with only the source's defaults`,
+          !cold.rejected && cold.text.length > 20,
+          cold.rejected ? cold.error : `${cold.text.length} characters`);
+
+    await gate.fill();
+
+    const shown = await page.evaluate(() => ({
+        columns: !document.getElementById('spec-columns-row').hidden,
+        splitColumns:
+            !document.getElementById('spec-split-columns-row').hidden,
+        grouping: !document.getElementById('spec-grouping-row').hidden,
+        accounts: !document.getElementById('spec-accounts-row').hidden,
+        invoice: !document.getElementById('spec-invoice-owner-row').hidden,
+        lots: !document.getElementById('spec-lot-account-row').hidden,
+        document: !document.getElementById('spec-document-row').hidden,
+    }));
+    const expectedShown = {
+        columns: false, splitColumns: false, grouping: false,
+        accounts: false, invoice: false, lots: false, document: false,
+        ...gate.shows,
+    };
+    check(`${source}: the form shows only the fields the source accepts`,
+          JSON.stringify(shown) === JSON.stringify(expectedShown),
+          JSON.stringify(shown));
+
+    const preview = await previewSource(name);
+    check(`${source}: preview renders a document, not a rejection`,
+          !preview.rejected && preview.text.length > 20 &&
+          preview.text.includes(gate.marker || name),
+          preview.rejected ? preview.error
+              : `${preview.text.length} characters`);
+
+    const saved = await saveSource(name, source);
+    check(`${source}: save keeps the source and the tags`,
+          Boolean(saved) && saved.source === source &&
+          JSON.stringify(saved.tags) === JSON.stringify(tags),
+          saved ? `source=${saved.source} tags=${JSON.stringify(saved.tags)}`
+              : 'not in /api/specs');
+
+    const reopened = await reopenAfterReload(name, source);
+    check(`${source}: reopening after a reload keeps the source and the tags`,
+          reopened.source === source &&
+          JSON.stringify(reopened.tags) === JSON.stringify(tags),
+          JSON.stringify(reopened));
+
+    await deleteSaved(name);
+}
+
+/* ---------------------- provenance: exact, approximate and no spec */
+
+// The banner is the difference between a definition and a reconstruction.
+// An exact report says its starting spec renders the report's own cells; an
+// approximate one says how it differs; a report the vocabulary cannot express
+// says it is C++ and names the source it would need.
+await page.locator('#report-list a', { hasText: /^Trial Balance$/ })
+    .first().click();
+await waitForDesigner('Trial Balance (copy)', 'accounts');
+await waitForReportFrame('Trial Balance');
+const exactBanner =
+    (await page.textContent('#designer-provenance')).replace(/\s+/g, ' ');
+check('an exact report says exact and that the starting spec is its cells',
+      /Exact equivalence: the starting spec renders the report's own cells/
+          .test(exactBanner) &&
+      /this is an equivalent starting point, not its definition/
+          .test(exactBanner),
+      exactBanner);
+check('the exact starting point keeps the accounts source in the picker',
+      await page.inputValue('#spec-source') === 'accounts',
+      await page.inputValue('#spec-source'));
+
+await page.locator('#report-list a', { hasText: /^Income Statement$/ })
+    .first().click();
+await waitForDesigner('Income Statement (starting point)', 'accounts');
+await waitForReportFrame('Income Statement');
+const approximateBanner =
+    (await page.textContent('#designer-provenance')).replace(/\s+/g, ' ');
+check('an approximate report says approximate and how it differs',
+      /Approximate equivalence:/.test(approximateBanner) &&
+      /this is an approximate starting point, not its definition/
+          .test(approximateBanner) &&
+      /sign-reversed Balance column/.test(approximateBanner) &&
+      /groups the rows under Revenues and Expenses/.test(approximateBanner),
+      approximateBanner);
+
+// Transaction Breakdown is the report whose table has a date's account
+// columns: a spec's fixed column list cannot describe it.  The notice must say
+// so in plain words and name the source it would need.
+await page.locator('#report-list a', { hasText: /^Transaction Breakdown Report$/ })
+    .first().click();
+await page.waitForFunction(() => {
+    const banner = document.getElementById('designer-provenance');
+    return banner && /No spec/.test(banner.textContent) &&
+        !document.getElementById('designer-banner').hidden;
+}, null, { timeout: 15000 });
+await waitForReportFrame('Transaction Breakdown Report');
+const noSpecBanner =
+    (await page.textContent('#designer-provenance')).replace(/\s+/g, ' ');
+check('a report with no spec says it is C++ and names the source it would need',
+      /No spec/.test(noSpecBanner) &&
+      /implemented in C\+\+/.test(noSpecBanner) &&
+      /no designer equivalent/.test(noSpecBanner) &&
+      /`transaction-breakdown` source would be needed/.test(noSpecBanner),
+      noSpecBanner);
+check('a report with no spec invents no starting point',
+      await page.evaluate(() =>
+          document.getElementById('spec-form').hidden &&
+          document.getElementById('spec-name').value === ''),
+      'the form is hidden and empty');
+
+// A starting point carries the source it was published with, so a fork keeps
+// it: the Balance Sheet's source is balance-sheet and its fork is served with
+// the same source.
+await page.locator('#report-list a', { hasText: /^Balance Sheet$/ })
+    .first().click();
+await waitForDesigner('Balance Sheet (copy)', 'balance-sheet');
+await waitForReportFrame('Balance Sheet');
+check('a balance-sheet starting point carries its source in the picker',
+      await page.inputValue('#spec-source') === 'balance-sheet',
+      await page.inputValue('#spec-source'));
+await page.fill('#spec-name', 'Gate forked balance sheet');
+await page.click('#spec-save');
+await page.waitForFunction(() =>
+    [...document.querySelectorAll('#report-list a.saved-report-link')]
+        .some((link) => link.textContent === 'Gate forked balance sheet'),
+    null, { timeout: 15000 });
+await waitForSpecFrameComplete();
+const fork = await savedSpecNamed('Gate forked balance sheet');
+check('a fork of a starting point keeps its source',
+      Boolean(fork) && fork.source === 'balance-sheet' &&
+      fork.columns.join(',') === 'account-name,balance',
+      fork ? `source=${fork.source} columns=${fork.columns.join(',')}`
+          : 'not saved');
+await deleteSaved('Gate forked balance sheet');
+
+// The document starting point carries its layout too.
+await page.locator('#report-list a', { hasText: /^Printable Invoice$/ })
+    .first().click();
+await waitForDesigner('Printable Invoice (copy)', 'document');
+await waitForReportFrame('Printable Invoice');
+check('a document starting point carries its source and its layout',
+      await page.inputValue('#spec-source') === 'document' &&
+      await page.inputValue('#spec-document') === 'Printable Invoice',
+      `${await page.inputValue('#spec-source')} / ` +
+      `${await page.inputValue('#spec-document')}`);
 
 if (screenshotPath) {
     await page.screenshot({ path: screenshotPath });

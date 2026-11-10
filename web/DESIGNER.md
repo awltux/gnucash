@@ -28,6 +28,7 @@ is never silently discarded.
       "name": "Expenses by month",
       "title": "Expenses by month",
       "description": "Scoped to Expense accounts; one bar per month.",
+      "source": "accounts",
       "columns": ["account-name", "debit"],
       "grouping": "period",
       "period_unit": "month",
@@ -65,6 +66,14 @@ is never silently discarded.
 | `chart` | `""`/absent, `bar` or `line`; the chart section is rendered below the table, and the data is embedded in the HTML |
 | `chart_series` | one or two of `debit`, `credit` and `balance`, in series order; each must also appear in `columns`. Absent means the columns decide: `debit` and `credit` when both are shown, otherwise `balance` or the one amount column. |
 
+That is the `accounts` source's field set.  `columns`, `grouping`,
+`period_unit`, `period_mode`, `account_types`, `chart` and `chart_series` are
+the account vocabulary; the other sources accept only the fields their row set
+has, and the form hides the rest instead of sending a field the server would
+refuse (see **The source-aware form** below).  A spec's `source` is part of its
+document: it is what makes a balance-sheet spec a balance sheet rather than an
+account list, and a fork keeps it.
+
 A `period`-grouped report needs concrete bounds: literal `start` and `end`,
 a preset that resolves to them (`this-year` or `last-year`), or
 `date_preset: "all"`. With `all` the renderer takes the range from the scoped
@@ -76,9 +85,11 @@ book.
 `source` says where a spec's rows come from. The default (`accounts`) is the
 account/period table the fields above describe; the other sources are the
 native reports whose own table a spec can be, so a spec can express a report
-the account vocabulary cannot. Each source has a fixed column list — served by
-`/api/spec/options` and enforced by the validator — because the columns are the
-report's fields, not a choice.
+the account vocabulary cannot. Each source publishes its own column vocabulary
+and option set from `/api/spec/options`, and the validator enforces the same
+lists: a fixed source's columns are the report's fields, not a choice, while a
+split listing chooses from the split vocabulary. A field of another source is
+refused by name.
 
 | source | rows | columns | options |
 |---|---|---|---|
@@ -119,6 +130,41 @@ uses — so the same invoice and options print the same bytes. A name the report
 does not publish, a value of the wrong type and an unknown invoice are 400s;
 `columns`, `grouping`, dates, `currency`, `accounts`, `account_types` and
 `chart` are refused by name.
+
+## The source-aware form
+
+The designer form begins with a **Source** picker built from the `sources` list
+in `/api/spec/options`.  Choosing a source shows only the controls that source
+accepts and clears the ones it does not, so a value from the previous source is
+never sent; the server's named 400 for a foreign field remains the backstop for
+a hand-written request.  A source whose columns are the report's own shows no
+column group at all: the spec omits `columns` and the validator fills in the
+report's list.
+
+| source | fields the form shows |
+|---|---|
+| `accounts` | name, title, tags, columns, grouping, period length/rows, accounts, account types, dates or preset, currency, chart and chart series |
+| `splits` | split columns, split grouping, accounts and the two dates; with a `transaction` grouping the listing is the General Journal's whole book, so the form also hides the dates and the account selection |
+| `balance-sheet` | end date and currency |
+| `invoices` | owner (receivable/payable), rows (owner/document), bucket basis and end date; the columns are the row set's own and the form supplies them because the server requires a non-empty list |
+| `lots` | one account (or none, the whole book), the two dates and the description filter |
+| `budgets` | accounts |
+| `tax-codes` | dates, accounts and currency |
+| `cash-flow` | dates, accounts and currency |
+| `document` | the layout, the invoice id or GUID and that report's own print options; a print option left at its descriptor's default is omitted, so the report's own default document prints |
+
+Every source brings its own defaults when it is chosen: the account source a
+flat `account-name` column, the split source Date/Description/Account/Amount,
+the invoice source the aging report's owner rows, the document source the first
+document layout and every print option at its default.  That is what makes
+Preview work from a cold form for every source, including the fixed-column
+sources the old form could not preview because no account column was ticked.
+
+A populated report moves the picker to the source its spec carries, then fills
+only that source's controls.  A fork therefore keeps the source, and a document
+fork keeps its layout, invoice and print options.  A `source` omitted from a
+document reads as `accounts`, which is what keeps a store written before this
+stage loadable.
 
 ## Tags and the list filters
 
@@ -172,19 +218,21 @@ Scheme report's labels.
 
 ## What the designer shows when a report is selected
 
-Selecting a report fills the designer with **what the report actually is**, and
-the banner above the form says which case is on screen:
+Selecting a report fills the designer with **what the report actually is**: the
+source picker moves to the spec's `source` and only that source's controls are
+populated, and the banner above the form says which case is on screen:
 
 - **Built-in and saved specs are definitions.** Every designer field is
   populated from the spec `GET /api/specs/<id>` serves (name, title, tags,
-  columns in their printed order, grouping, period unit and mode, accounts,
-  account types, chart and chart series in series order, dates or preset, and
-  currency). The button reads **Save as…** and the form refuses to save under
-  the selected report's own name: saving always forks a copy under a new name.
-  A built-in is code, so it can be neither edited nor deleted this way. The
-  copy is the same document as the original: `report-spec.sh` and
+  source, columns in their printed order, grouping, period unit and mode,
+  accounts, account types, chart and chart series in series order, dates or
+  preset, and currency). The button reads **Save as…** and the form refuses to
+  save under the selected report's own name: saving always forks a copy under a
+  new name. A built-in is code, so it can be neither edited nor deleted this
+  way. The copy is the same document as the original: `report-spec.sh` and
   `ui-test.mjs` compare the fork's render with the built-in's byte for byte
-  (cell by cell as the UI harness's fallback).
+  (cell by cell as the UI harness's fallback). The banner also carries the
+  second line `Source: <name> — <label>.`
 - **Native reports are C++ and are never presented as specs.** The panel above
   the designer shows the implementation file and function, read-only, from
   `GET /api/report/<name>/designer`. That route also says whether a spec can
@@ -197,10 +245,11 @@ the banner above the form says which case is on screen:
     (budgets source), the **Cash Flow** statement (cash-flow source) and all
     six **documents** (document source: the spec holds the document's name,
     invoice and print options and renders through the document renderer, so
-    the same invoice and options print the same bytes). The banner reads "This
+    the same invoice and options print the same bytes). The banner reads: "This
     report is implemented in C++; this is an equivalent starting point, not its
-    definition", and the gate harnesses post the populated fields and compare
-    the preview with the report's own document.
+    definition.  Exact equivalence: the starting spec renders the report's own
+    cells."  The gate harnesses post the populated fields and compare the
+    preview with the report's own document.
   - `equivalence: "approximate"` — a useful starting point whose differences
     are named. **Income Statement** and **Profit & Loss** list the same Income
     and Expense accounts over the report's default period, but as a flat
@@ -209,11 +258,22 @@ the banner above the form says which case is on screen:
     subtotals and a Net income line. The **Tax Schedule Report/TXF Export**
     (tax-codes source) lists the same tax codes over the report's period with
     the same per-code totals, but the report also prints one row per account
-    with that account's total, which the spec's code table does not.
+    with that account's total, which the spec's code table does not. The banner
+    reads "This report is implemented in C++; this is an approximate starting
+    point, not its definition.  Approximate equivalence: <how it differs>".
   - `equivalence: "none"` — no designer fields are populated and the form is
-    hidden, so nothing can be mistaken for a definition. The note names the
-    family's reason: listing reports (transactions, ledger, journal,
-    reconciliation), portfolios and gains analysis, budget statements, owner
+    hidden, so nothing can be mistaken for a definition. The banner says
+    plainly that there is no spec: "No spec: this report is implemented in C++
+    and has no designer equivalent; a `<source>` source would be needed, not a
+    field on an existing one."  The source name is derived from the report's
+    own name as a proposal (**Transaction Breakdown** therefore proposes
+    `transaction-breakdown`, whose dynamic account columns a fixed spec column
+    list cannot describe).  Where an existing source reproduces the cells but
+    has no portable starting point, the banner says that instead:
+    **Transaction Report**, **General Ledger** and **General Journal** are the
+    `splits` listing, but the designer cannot start one because the report's
+    account selection is this book's GUIDs.  The note then names the
+    family's reason: portfolios and gains analysis, budget statements, owner
     documents, the GST statement, the Cash Flow Barchart (its axis is a
     date-interval series, not the statement's account rows) and the two
     multicolumn statements (no period column axis) all have rows or columns the
@@ -221,9 +281,11 @@ the banner above the form says which case is on screen:
     **Income Statement (Multicolumn)** and the **Equity Statement** are in this
     group too: their column axis or roll-forward rows are not a table spec.
 
-Switching reports always clears the previous report's fields first; a report
-with no equivalent cannot leave stale values behind. **New report** clears the
-designer and returns it to a blank spec with the normal Save button.
+Switching reports always clears the previous report's fields first, and
+switching the source picker clears every field the new source does not accept;
+a report with no equivalent cannot leave stale values behind. **New report**
+clears the designer and returns it to a blank account-source spec with the
+normal Save button.
 
 ## Built-in specs
 
@@ -319,7 +381,7 @@ Every route is under the server's random token, like the rest of the web UI.
 
 | route | method | purpose |
 |---|---|---|
-| `/api/spec/options` | GET | columns, groupings, period units/modes, chart types, chart series, account types and the date/currency option descriptors the designer form is generated from |
+| `/api/spec/options` | GET | the `sources` list, the account columns/groupings/period units/modes/charts/chart series/account types and the date/currency descriptors, plus each source's own field list (`balance_sheet`, `invoices`, `lots`, `budgets`, `tax-codes`, `cash-flow`, `document`) and the split columns and groupings the designer form is generated from |
 | `/api/spec/preview` | POST | validate and render an unsaved spec; returns the same HTML a saved report produces |
 | `/api/specs` | GET | list saved specs under `specs`, and the built-ins under `builtin`; `?tag=` and `?q=` filter both lists |
 | `/api/specs` | POST | validate, assign an id and save; `400` names the invalid field, `201` returns the saved spec |
@@ -369,6 +431,22 @@ implementation panel and label, posts the Trial Balance starting point and
 compares the preview's cells with the native URL, checks the income
 statement's approximate label and note, and checks that a report with no
 equivalent hides the form and leaves it empty before New report restores it.
+
+Its final gate covers the source-aware form in the browser, not through the
+API: it reads the nine sources from `/api/spec/options`, requires the picker to
+list exactly them with their labels, and for **each** source selects it, fills
+the minimum fields, previews (requiring a document whose visible text contains
+that source's own title or invoice, and no error), saves, reloads the page,
+reopens the saved spec, and checks that its source and tags survived.  It also
+fills account-only fields and switches to the invoice source, requiring the
+currency, start date and grouping to be cleared and hidden and the switched
+form to preview without a rejection; and it checks the provenance banner's
+plain words for an exact report (**Trial Balance**), an approximate one
+(**Income Statement**, including how it differs) and an unexpressible one
+(**Transaction Breakdown Report**, naming the `transaction-breakdown` source it
+would need).  A fork of the **Balance Sheet** starting point is saved and
+required to carry `source: "balance-sheet"`, and the **Printable Invoice**
+starting point must carry its document layout.
 
 ## Builds without Guile
 

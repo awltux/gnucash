@@ -58,6 +58,9 @@
   .checks label { font-weight: normal; }
   #spec-form input[type="text"], #spec-form input[type="date"],
   #spec-form select { font: inherit; padding: .2rem .3rem; max-width: 20rem; }
+  #spec-form textarea { font: inherit; padding: .2rem .3rem; width: 100%;
+                        max-width: 40rem; min-height: 2.5rem; resize: vertical; }
+  #spec-source { max-width: 32rem; }
   #spec-form .accounts { max-height: 12rem; overflow: auto; border: 1px solid #e3e3e3;
                          padding: .25rem .5rem; background: #fafafa; }
   #spec-form ul.accounts { padding-left: 1.1rem; margin: 0; }
@@ -160,10 +163,19 @@
   </p>
   <p id="spec-error" class="error" role="alert" hidden></p>
   <form id="spec-form">
-    <!-- The source a populated spec came with.  The form has no source
-         picker: a report's starting point is the source it was published
-         with, and a new report is the account source. -->
-    <input id="spec-source" type="hidden" value="accounts">
+    <!-- What the report's rows come from.  The picker lists the sources
+         /api/spec/options publishes; choosing one shows only the fields that
+         source accepts, and the server still refuses a field of another
+         source by name rather than ignoring it. -->
+    <div class="option">
+      <label for="spec-source">Source</label>
+      <select id="spec-source"></select>
+      <p class="hint">
+        What the report's rows come from. Choosing a source shows only the
+        fields it accepts and clears the ones it does not: the server refuses
+        a field of another source by name, so the form never sends one.
+      </p>
+    </div>
     <div class="option">
       <label for="spec-name">Name</label>
       <input id="spec-name" type="text" maxlength="80" autocomplete="off"
@@ -187,11 +199,30 @@
         Reports list to filter by it.
       </p>
     </div>
-    <div class="option">
+    <div class="option" id="spec-columns-row">
       <label>Columns</label>
       <div id="spec-columns" class="checks"></div>
     </div>
-    <div class="option">
+    <div class="option" id="spec-split-columns-row" hidden>
+      <label>Split columns</label>
+      <div id="spec-split-columns" class="checks"></div>
+      <p class="hint">
+        The listing's columns, in print order. The flat split list and the
+        grouped listings (the Transaction Report, the General Ledger and the
+        General Journal) draw these from the same vocabulary.
+      </p>
+    </div>
+    <div class="option" id="spec-split-grouping-row" hidden>
+      <label for="spec-split-grouping">Split grouping</label>
+      <select id="spec-split-grouping"></select>
+      <p class="hint">
+        A flat list prints one row per split; by account, by account code and
+        by transaction add that listing's sections and headings. A
+        transaction-grouped listing is the General Journal's whole book, so it
+        has no dates and no account selection.
+      </p>
+    </div>
+    <div class="option" id="spec-grouping-row">
       <label for="spec-grouping">Grouping</label>
       <select id="spec-grouping"></select>
       <p class="hint">
@@ -213,7 +244,7 @@
         net-worth or balance-sheet trend needs.
       </p>
     </div>
-    <div class="option">
+    <div class="option" id="spec-accounts-row">
       <label>Accounts</label>
       <div id="spec-accounts" class="accounts"></div>
       <p class="hint">
@@ -221,7 +252,7 @@
         Nothing checked means every account in the book.
       </p>
     </div>
-    <div class="option">
+    <div class="option" id="spec-account-types-row">
       <label>Account types</label>
       <div id="spec-account-types" class="checks"></div>
       <p class="hint">
@@ -231,7 +262,76 @@
       </p>
     </div>
     <div id="spec-options"></div>
-    <div class="option">
+    <div class="option" id="spec-invoice-owner-row" hidden>
+      <label for="spec-invoice-owner">Owner</label>
+      <select id="spec-invoice-owner"></select>
+      <p class="hint">
+        Which aging report: every A/Receivable or every A/Payable account in
+        the book. The report ages every one of them, so it has no account
+        selection.
+      </p>
+    </div>
+    <div class="option" id="spec-invoice-grouping-row" hidden>
+      <label for="spec-invoice-grouping">Rows</label>
+      <select id="spec-invoice-grouping"></select>
+      <p class="hint">
+        One row per owner is the aging report's own table; one row per
+        document lists the invoices, credit notes, bills and payments whose
+        amounts make the buckets.
+      </p>
+    </div>
+    <div class="option" id="spec-bucket-basis-row" hidden>
+      <label for="spec-bucket-basis">Bucket basis</label>
+      <select id="spec-bucket-basis"></select>
+      <p class="hint">
+        The report's Due or Post Date option: which invoice date decides the
+        bucket a document falls into.
+      </p>
+    </div>
+    <div class="option" id="spec-lot-account-row" hidden>
+      <label for="spec-lot-account">Account</label>
+      <select id="spec-lot-account"></select>
+      <p class="hint">
+        The Lot Viewer's Account option: one account, whose own splits are
+        listed. No account is the report's unset value, the whole book.
+      </p>
+    </div>
+    <div class="option" id="spec-description-filter-row" hidden>
+      <label for="spec-description-filter">Description filter</label>
+      <input id="spec-description-filter" type="text" maxlength="200"
+             autocomplete="off" placeholder="e.g. dividend">
+      <p class="hint">
+        The Lot Viewer's Description Filter: only transactions whose
+        description contains this text. Empty lists every transaction in the
+        period.
+      </p>
+    </div>
+    <div class="option" id="spec-document-row" hidden>
+      <label for="spec-document">Document</label>
+      <select id="spec-document"></select>
+      <p class="hint">
+        The document report to print: a printable, easy or fancy invoice, a
+        receipt, or one of the two tax invoices.
+      </p>
+    </div>
+    <div class="option" id="spec-invoice-row" hidden>
+      <label for="spec-invoice">Invoice</label>
+      <input id="spec-invoice" type="text" maxlength="80" autocomplete="off"
+             spellcheck="false" placeholder="invoice id or GUID">
+      <p class="hint">
+        The invoice, bill or voucher to print, by id or GUID. Empty prints the
+        report's own 'no invoice selected' page.
+      </p>
+    </div>
+    <div id="spec-document-options-wrap" hidden>
+      <p class="hint">
+        The document report's own print options. A value left at its default
+        is not sent, so the report's own default document prints; a name the
+        report does not publish is refused by the server by name.
+      </p>
+      <div id="spec-document-options"></div>
+    </div>
+    <div class="option" id="spec-chart-row">
       <label for="spec-chart">Chart</label>
       <select id="spec-chart"></select>
     </div>
@@ -307,21 +407,53 @@ const specTitle = document.getElementById("spec-title");
 const specTags = document.getElementById("spec-tags");
 const tagSuggestions = document.getElementById("spec-tag-suggestions");
 const specColumns = document.getElementById("spec-columns");
-// The Columns row: a source whose table is the report's own (the balance
-// sheet, the aging reports, the Lot Viewer) prints the report's columns, and
-// the server refuses any other list, so the account-vocabulary checkboxes are
-// hidden and the spec's own list is what the form sends.
-const specColumnsRow = specColumns.closest(".option");
-let designerFixedColumns = null;
+// The Columns row is the account vocabulary.  A split listing has its own
+// group, and a source whose table is the report's own (the balance sheet, the
+// aging reports, the Lot Viewer, the Budget Report, the tax schedule, the Cash
+// Flow statement) prints the report's columns, so both checkbox groups are
+// hidden for those and the form sends no column list at all.
+const specColumnsRow = document.getElementById("spec-columns-row");
+const specSplitColumns = document.getElementById("spec-split-columns");
+const specSplitColumnsRow = document.getElementById("spec-split-columns-row");
+const specSplitGrouping = document.getElementById("spec-split-grouping");
+const specSplitGroupingRow = document.getElementById("spec-split-grouping-row");
+// The invoice source's column list is required by the server and decided by
+// its row set, so the form computes it (owner or document columns) rather
+// than showing a checkbox group.  A populated spec keeps its own list while
+// its row set is unchanged.
+let designerInvoiceColumns = null;
 const specGrouping = document.getElementById("spec-grouping");
+const specGroupingRow = document.getElementById("spec-grouping-row");
 const specPeriodUnit = document.getElementById("spec-period-unit");
 const specPeriodUnitRow = document.getElementById("spec-period-unit-row");
 const specPeriodMode = document.getElementById("spec-period-mode");
 const specPeriodModeRow = document.getElementById("spec-period-mode-row");
 const specAccounts = document.getElementById("spec-accounts");
+const specAccountsRow = document.getElementById("spec-accounts-row");
 const specAccountTypes = document.getElementById("spec-account-types");
+const specAccountTypesRow = document.getElementById("spec-account-types-row");
 const specOptions = document.getElementById("spec-options");
+const specInvoiceOwner = document.getElementById("spec-invoice-owner");
+const specInvoiceOwnerRow = document.getElementById("spec-invoice-owner-row");
+const specInvoiceGrouping = document.getElementById("spec-invoice-grouping");
+const specInvoiceGroupingRow =
+  document.getElementById("spec-invoice-grouping-row");
+const specBucketBasis = document.getElementById("spec-bucket-basis");
+const specBucketBasisRow = document.getElementById("spec-bucket-basis-row");
+const specLotAccount = document.getElementById("spec-lot-account");
+const specLotAccountRow = document.getElementById("spec-lot-account-row");
+const specDescriptionFilter = document.getElementById("spec-description-filter");
+const specDescriptionFilterRow =
+  document.getElementById("spec-description-filter-row");
+const specDocument = document.getElementById("spec-document");
+const specDocumentRow = document.getElementById("spec-document-row");
+const specInvoice = document.getElementById("spec-invoice");
+const specInvoiceRow = document.getElementById("spec-invoice-row");
+const specDocumentOptions = document.getElementById("spec-document-options");
+const specDocumentOptionsWrap =
+  document.getElementById("spec-document-options-wrap");
 const specChart = document.getElementById("spec-chart");
+const specChartRow = document.getElementById("spec-chart-row");
 const specChartSeries = document.getElementById("spec-chart-series");
 const specChartSeriesRow = document.getElementById("spec-chart-series-row");
 const specError = document.getElementById("spec-error");
@@ -931,12 +1063,12 @@ function hideSpecError() {
 }
 
 function specField(name) {
-  const node = document.getElementById(`spec-opt-${name}`);
+  const node = optionControl(name);
   return node ? node.value : "";
 }
 
 function setSpecField(name, value) {
-  const node = document.getElementById(`spec-opt-${name}`);
+  const node = optionControl(name);
   if (node) node.value = value;
 }
 
@@ -969,6 +1101,30 @@ function orderChecked(container, name, values) {
     if (byValue.has(label.querySelector("input").value)) ordered.push(label);
   }
   container.replaceChildren(...ordered);
+}
+
+// Populate a check group from a spec: exact ticks, then the checked labels
+// moved to the front so reading them back reproduces the spec's order.
+function populateCheckGroup(container, name, values) {
+  setChecked(container, name, values);
+  orderChecked(container, name, values);
+}
+
+// Empty a check group and put its labels back in the vocabulary's order, so a
+// default never inherits the previous spec's order.
+function resetCheckGroup(container, name, vocabulary) {
+  setChecked(container, name, []);
+  orderChecked(container, name, (vocabulary || []).map((entry) => entry.name));
+}
+
+// The option rows and controls are built from /api/spec/options; these keep
+// the id convention in one place for the show/hide and default logic.
+function optionRow(name) {
+  return document.getElementById(`spec-opt-row-${name}`);
+}
+
+function optionControl(name) {
+  return document.getElementById(`spec-opt-${name}`);
 }
 
 function setSaveAs(saveAs) {
@@ -1004,43 +1160,215 @@ async function ensureDesignerVocabulary() {
   return Boolean(specFields);
 }
 
-// Put a spec's values into every designer control.  The spec is the server's
+// What each source accepts.  This is the form's half of the server's
+// validation: the fields named for a source are the ones that source reads,
+// and every other control is hidden and cleared so the form never sends a
+// field the source would refuse.  The server's named 400 stays the backstop.
+const SOURCE_FIELDS = {
+  "accounts": {
+    optionRows: ["start", "end", "date_preset", "currency"],
+    columns: true, grouping: true, period: true, accounts: true,
+    accountTypes: true, chart: true,
+  },
+  "splits": {
+    optionRows: ["start", "end"],
+    splitColumns: true, splitGrouping: true, accounts: true,
+  },
+  "balance-sheet": { optionRows: ["end", "currency"] },
+  "invoices": { optionRows: ["end"], invoice: true },
+  "lots": {
+    optionRows: ["start", "end"],
+    lotAccount: true, descriptionFilter: true,
+  },
+  "budgets": { optionRows: [], accounts: true },
+  "tax-codes": { optionRows: ["start", "end", "currency"], accounts: true },
+  "cash-flow": { optionRows: ["start", "end", "currency"], accounts: true },
+  "document": { optionRows: [], document: true },
+};
+
+function sourceFields(name) {
+  return SOURCE_FIELDS[name] || SOURCE_FIELDS.accounts;
+}
+
+// The label the source picker shows, for the provenance line.
+function sourceLine(name) {
+  const entry = ((specFields && specFields.sources) || [])
+    .find((source) => source.name === name);
+  return entry ? `Source: ${name} — ${entry.label}.` : `Source: ${name}.`;
+}
+
+// The source a report with no equivalent would need, derived from its own
+// name as a proposal: the notice names what is missing instead of pretending
+// the existing vocabulary can express it.
+function neededSourceName(report) {
+  const slug = String(report || "")
+    .toLowerCase()
+    .replace(/\s+report$/, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "new";
+}
+
+function checkedValues(container, name) {
+  return [...container.querySelectorAll(`input[name="${name}"]:checked`)]
+    .map((box) => box.value);
+}
+
+// Show exactly the groups the source has.  syncDesignerState() refines the
+// conditional ones (period rows, chart series, the General Journal's dates).
+function showSourceFields(fields) {
+  specColumnsRow.hidden = !fields.columns;
+  specSplitColumnsRow.hidden = !fields.splitColumns;
+  specSplitGroupingRow.hidden = !fields.splitGrouping;
+  specGroupingRow.hidden = !fields.grouping;
+  specAccountsRow.hidden = !fields.accounts;
+  specAccountTypesRow.hidden = !fields.accountTypes;
+  specInvoiceOwnerRow.hidden = !fields.invoice;
+  specInvoiceGroupingRow.hidden = !fields.invoice;
+  specBucketBasisRow.hidden = !fields.invoice;
+  specLotAccountRow.hidden = !fields.lotAccount;
+  specDescriptionFilterRow.hidden = !fields.descriptionFilter;
+  specDocumentRow.hidden = !fields.document;
+  specInvoiceRow.hidden = !fields.document;
+  specDocumentOptionsWrap.hidden = !fields.document;
+  specChartRow.hidden = !fields.chart;
+  specChartSeriesRow.hidden = !fields.chart;
+  for (const option of specFields.options || []) {
+    const row = optionRow(option.name);
+    if (row) row.hidden = !fields.optionRows.includes(option.name);
+  }
+}
+
+// Clear every source-specific control, including the ones that are about to
+// be hidden: a value from the previous source must not come back when the
+// user switches back, and must not be sent by a source that refuses it.
+function resetDesignerFields() {
+  resetCheckGroup(specColumns, "spec-columns", specFields.columns);
+  resetCheckGroup(specSplitColumns, "spec-split-columns",
+                  specFields.split_columns);
+  setChecked(specAccounts, "spec-accounts", []);
+  resetCheckGroup(specAccountTypes, "spec-account-types",
+                  specFields.account_types);
+  resetCheckGroup(specChartSeries, "spec-chart-series",
+                  specFields.chart_series);
+  specGrouping.value = "none";
+  specSplitGrouping.value = "none";
+  specPeriodUnit.value = "year";
+  specPeriodMode.value = "activity";
+  specChart.value = "";
+  specInvoiceOwner.value = "receivable";
+  specInvoiceGrouping.value = "owner";
+  specBucketBasis.value = "due";
+  specLotAccount.value = "";
+  specDescriptionFilter.value = "";
+  specDocument.value = "";
+  specDocumentOptions.replaceChildren();
+  specInvoice.value = "";
+  designerInvoiceColumns = null;
+  for (const option of specFields.options || []) {
+    const control = optionControl(option.name);
+    if (control) control.value = "";
+  }
+}
+
+// Give the visible option rows the descriptor defaults, so the blank form
+// carries the report's own period and commodity rather than empty strings.
+function setSourceOptionDefaults(fields) {
+  for (const option of specFields.options || []) {
+    if (!fields.optionRows.includes(option.name)) continue;
+    const control = optionControl(option.name);
+    if (!control) continue;
+    control.value = option.type === "choice"
+      ? "" : (typeof option.default === "string" ? option.default : "");
+  }
+}
+
+// Switch the form to a source: show its fields, clear the ones it does not
+// have, and give its own fields the defaults that make a blank form
+// previewable.  A fixed-column source has no column group: its columns are
+// the report's, and the server fills them when the spec omits them.
+function setSource(name) {
+  if (!specFields) return;
+  const fields = sourceFields(name);
+  specSource.value = name;
+  resetDesignerFields();
+  showSourceFields(fields);
+  if (fields.columns) setChecked(specColumns, "spec-columns", ["account-name"]);
+  if (fields.splitColumns) {
+    setChecked(specSplitColumns, "spec-split-columns",
+               ["date", "description", "account", "amount"]);
+  }
+  setSourceOptionDefaults(fields);
+  if (fields.document) {
+    const documents = (specFields.document || {}).documents || [];
+    specDocument.value = documents.length > 0 ? documents[0].name : "";
+    buildDocumentOptions();
+  }
+  syncDesignerState();
+}
+
+// Put a spec's values into the designer controls.  The spec is the server's
 // own document (a built-in's, a saved report's, or a native report's
-// starting point), so its fields are the truth here: dates are set exactly,
-// a date preset clears them, and unlisted accounts/types/series are unticked.
+// starting point), so its source is the truth: the picker is moved there
+// first, then only that source's fields are filled.  A fork therefore keeps
+// the source it was published with.
 function applySpecToDesigner(spec) {
   if (!specFields) return;
   specName.value = typeof spec.name === "string" ? spec.name : "";
   specTitle.value = typeof spec.title === "string" ? spec.title : "";
   specTags.value = Array.isArray(spec.tags) ? spec.tags.join(", ") : "";
-  specSource.value = typeof spec.source === "string" && spec.source !== ""
+  const source = typeof spec.source === "string" && spec.source !== ""
     ? spec.source : "accounts";
-  // A source whose table is the report's own: its columns are the report's,
-  // not a choice, so the checkbox group steps aside and the spec's list is
-  // what the form sends back.  The account source keeps the group.
-  designerFixedColumns =
-    specSource.value !== "accounts" && Array.isArray(spec.columns) &&
-    spec.columns.length > 0 ? spec.columns.slice() : null;
-  specColumnsRow.hidden = designerFixedColumns !== null;
-  setChecked(specColumns, "spec-columns", spec.columns);
-  orderChecked(specColumns, "spec-columns", spec.columns);
-  setChecked(specAccounts, "spec-accounts", spec.accounts);
-  setChecked(specAccountTypes, "spec-account-types", spec.account_types);
-  orderChecked(specAccountTypes, "spec-account-types", spec.account_types);
-  setChecked(specChartSeries, "spec-chart-series", spec.chart_series);
-  orderChecked(specChartSeries, "spec-chart-series", spec.chart_series);
-  specGrouping.value = spec.grouping || "none";
-  specPeriodUnit.value = spec.period_unit || "year";
-  specPeriodMode.value = spec.period_mode || "activity";
-  specChart.value = spec.chart || "";
-  const preset = typeof spec.date_preset === "string" ? spec.date_preset : "";
+  setSource(source);
+  const fields = sourceFields(source);
+
+  if (source === "accounts") {
+    populateCheckGroup(specColumns, "spec-columns", spec.columns);
+    populateCheckGroup(specAccountTypes, "spec-account-types",
+                       spec.account_types);
+    populateCheckGroup(specChartSeries, "spec-chart-series",
+                       spec.chart_series);
+    specGrouping.value = spec.grouping || "none";
+    specPeriodUnit.value = spec.period_unit || "year";
+    specPeriodMode.value = spec.period_mode || "activity";
+    specChart.value = spec.chart || "";
+  } else if (source === "splits") {
+    populateCheckGroup(specSplitColumns, "spec-split-columns", spec.columns);
+    specSplitGrouping.value = spec.split_grouping || "none";
+  } else if (source === "invoices") {
+    specInvoiceOwner.value = spec.invoice_owner || "receivable";
+    specInvoiceGrouping.value = spec.invoice_grouping || "owner";
+    specBucketBasis.value = spec.bucket_basis || "due";
+    designerInvoiceColumns =
+      Array.isArray(spec.columns) && spec.columns.length > 0
+        ? spec.columns.slice() : null;
+  } else if (source === "lots") {
+    specLotAccount.value =
+      Array.isArray(spec.accounts) && spec.accounts.length === 1
+        ? spec.accounts[0] : "";
+    specDescriptionFilter.value =
+      typeof spec.description_filter === "string" ? spec.description_filter : "";
+  } else if (source === "document") {
+    const documents = (specFields.document || {}).documents || [];
+    specDocument.value = typeof spec.document === "string" && spec.document !== ""
+      ? spec.document : (documents.length > 0 ? documents[0].name : "");
+    buildDocumentOptions(spec.document_options);
+    specInvoice.value = typeof spec.invoice === "string" ? spec.invoice : "";
+  }
+  if (fields.accounts)
+    setChecked(specAccounts, "spec-accounts", spec.accounts);
+
+  // Dates, the preset and the commodity.  A preset replaces the two literal
+  // dates, and a source without a field leaves its hidden control empty.
+  const preset = fields.optionRows.includes("date_preset") &&
+      typeof spec.date_preset === "string" ? spec.date_preset : "";
   setSpecField("date_preset", preset);
-  setSpecField("start", preset === "" && typeof spec.start === "string"
-                          ? spec.start : "");
-  setSpecField("end", preset === "" && typeof spec.end === "string"
-                        ? spec.end : "");
-  setSpecField("currency",
-               typeof spec.currency === "string" ? spec.currency : "");
+  setSpecField("start", preset === "" && fields.optionRows.includes("start") &&
+                       typeof spec.start === "string" ? spec.start : "");
+  setSpecField("end", preset === "" && fields.optionRows.includes("end") &&
+                     typeof spec.end === "string" ? spec.end : "");
+  setSpecField("currency", fields.optionRows.includes("currency") &&
+                typeof spec.currency === "string" ? spec.currency : "");
   syncDesignerState();
 }
 
@@ -1052,33 +1380,7 @@ function clearDesigner() {
   specName.value = "";
   specTitle.value = "";
   specTags.value = "";
-  specSource.value = "accounts";
-  designerFixedColumns = null;
-  specColumnsRow.hidden = false;
-  setChecked(specColumns, "spec-columns", ["account-name"]);
-  setChecked(specAccounts, "spec-accounts", []);
-  setChecked(specAccountTypes, "spec-account-types", []);
-  setChecked(specChartSeries, "spec-chart-series", []);
-  // Put the groups back in the vocabulary's order: a previous report's spec
-  // may have moved columns or series around, and the default must not inherit
-  // that order.
-  orderChecked(specColumns, "spec-columns",
-               (specFields.columns || []).map((column) => column.name));
-  orderChecked(specAccountTypes, "spec-account-types",
-               (specFields.account_types || []).map((type) => type.name));
-  orderChecked(specChartSeries, "spec-chart-series",
-               (specFields.chart_series || []).map((column) => column.name));
-  specGrouping.value = "none";
-  specPeriodUnit.value = "year";
-  specPeriodMode.value = "activity";
-  specChart.value = "";
-  setSpecField("date_preset", "");
-  for (const option of specFields.options || []) {
-    if (option.type === "date" || option.name === "currency")
-      setSpecField(option.name,
-                   typeof option.default === "string" ? option.default : "");
-  }
-  syncDesignerState();
+  setSource("accounts");
 }
 
 function newDesignerReport() {
@@ -1123,10 +1425,21 @@ async function loadNativeDesigner(name, generation) {
   if (info.equivalence === "none" || !info.spec) {
     clearDesigner();
     specForm.hidden = true;
+    // The notice names what is missing: the report's own C++ table cannot be
+    // described by the spec vocabulary.  Where an existing source reproduces
+    // its cells the notice says so; otherwise it proposes the source the
+    // report would need instead of pretending a field is enough.
+    const splitsSource = /source 'splits'/.test(info.note) &&
+                         /can reproduce/.test(info.note);
+    const needs = splitsSource
+      ? "the 'splits' source reproduces its cells, but there is no portable " +
+        "starting point (an account selection is this book's GUIDs)"
+      : "a `" + neededSourceName(info.report) + "` source would be needed, " +
+        "not a field on an existing one";
     setDesignerBanner(
       "none",
-      "This report is implemented in C++ and has no designer equivalent: " +
-      info.note +
+      "No spec: this report is implemented in C++ and has no designer " +
+      "equivalent; " + needs + ".  " + info.note +
       "  The designer fields are hidden rather than filled with an invented " +
       "definition; use New report to start a spec from scratch.", "");
     return;
@@ -1136,14 +1449,20 @@ async function loadNativeDesigner(name, generation) {
   if (generation !== formGeneration) return;
   applySpecToDesigner(info.spec);
   specForm.hidden = false;
+  // Exact and approximate are not the same claim: an exact starting point
+  // renders the report's own cells, an approximate one is labelled with how
+  // it differs (the server's note says how).  A spec that came from a
+  // report's own document keeps that document's source in the picker.
+  const equivalence = info.equivalence === "exact"
+    ? "Exact equivalence: the starting spec renders the report's own cells."
+    : "Approximate equivalence: " + info.note;
   setDesignerBanner(
     "starting",
-    (info.equivalence === "exact"
-       ? "This report is implemented in C++; this is an equivalent starting " +
-         "point, not its definition."
-       : "This report is implemented in C++; this is an approximate starting " +
-         "point, not its definition.") +
-      "  " + info.note, "");
+    "This report is implemented in C++; this is an " +
+      (info.equivalence === "exact" ? "equivalent" : "approximate") +
+      " starting point, not its definition.  " + equivalence +
+      (info.equivalence === "exact" ? "  " + info.note : ""),
+    sourceLine(info.spec.source || "accounts"));
 }
 
 function fillSelect(select, entries) {
@@ -1167,59 +1486,68 @@ async function loadDesignerOptions() {
   buildDesigner();
 }
 
-function buildDesigner() {
-  if (!specFields) return;
+function flattenAccounts(accounts, depth = 0, out = []) {
+  for (const account of accounts) {
+    out.push({ guid: account.guid, name: account.name, depth });
+    if (Array.isArray(account.children) && account.children.length > 0)
+      flattenAccounts(account.children, depth + 1, out);
+  }
+  return out;
+}
 
-  specColumns.replaceChildren();
-  for (const column of specFields.columns || []) {
+// A checkbox group over one vocabulary from /api/spec/options.  The group's
+// name is the spec field, so setChecked()/orderChecked() can read it back.
+function buildCheckGroup(container, name, entries) {
+  container.replaceChildren();
+  for (const entry of entries || []) {
     const label = el("label");
     const box = el("input");
     box.type = "checkbox";
-    box.name = "spec-columns";
-    box.value = column.name;
-    box.checked = column.name === "account-name";
-    label.append(box, document.createTextNode(" " + (column.label || column.name)));
-    specColumns.append(label);
+    box.name = name;
+    box.value = entry.name;
+    label.append(box,
+                 document.createTextNode(" " + (entry.label || entry.name)));
+    container.append(label);
   }
+}
 
+function buildDesigner() {
+  if (!specFields) return;
+
+  fillSelect(specSource, specFields.sources);
+
+  buildCheckGroup(specColumns, "spec-columns", specFields.columns);
+  buildCheckGroup(specSplitColumns, "spec-split-columns",
+                  specFields.split_columns);
+
+  fillSelect(specSplitGrouping, specFields.split_groupings);
   fillSelect(specGrouping, specFields.groupings);
-  specGrouping.value = "none";
   fillSelect(specPeriodUnit, specFields.period_units);
-  specPeriodUnit.value = "year";
   fillSelect(specPeriodMode, specFields.period_modes);
-  specPeriodMode.value = "activity";
   fillSelect(specChart, specFields.charts);
-  specChart.value = "";
+  fillSelect(specInvoiceOwner, (specFields.invoices || {}).owners);
+  fillSelect(specInvoiceGrouping, (specFields.invoices || {}).groupings);
+  fillSelect(specBucketBasis, (specFields.invoices || {}).bucket_basis);
+  fillSelect(specDocument, (specFields.document || {}).documents || []);
+
+  specLotAccount.replaceChildren(new Option("Whole book (no account)", ""));
+  for (const account of flattenAccounts(accountRoot ? accountRoot.children : []))
+    specLotAccount.append(new Option(
+      "\u00a0\u00a0".repeat(account.depth) + account.name, account.guid));
 
   specAccounts.replaceChildren(
     accountChoiceList(accountRoot ? accountRoot.children : [], true,
                       "spec-accounts"));
 
-  specAccountTypes.replaceChildren();
-  for (const type of specFields.account_types || []) {
-    const label = el("label");
-    const box = el("input");
-    box.type = "checkbox";
-    box.name = "spec-account-types";
-    box.value = type.name;
-    label.append(box, document.createTextNode(" " + (type.label || type.name)));
-    specAccountTypes.append(label);
-  }
-
-  specChartSeries.replaceChildren();
-  for (const column of specFields.chart_series || []) {
-    const label = el("label");
-    const box = el("input");
-    box.type = "checkbox";
-    box.name = "spec-chart-series";
-    box.value = column.name;
-    label.append(box, document.createTextNode(" " + (column.label || column.name)));
-    specChartSeries.append(label);
-  }
+  buildCheckGroup(specAccountTypes, "spec-account-types",
+                  specFields.account_types);
+  buildCheckGroup(specChartSeries, "spec-chart-series",
+                  specFields.chart_series);
 
   specOptions.replaceChildren();
   for (const option of specFields.options || []) {
     const row = el("div", "option");
+    row.id = `spec-opt-row-${option.name}`;
     const id = `spec-opt-${option.name}`;
     const label = el("label", null, option.label || option.name);
     label.htmlFor = id;
@@ -1253,24 +1581,152 @@ function buildDesigner() {
     if (option.description) row.append(el("p", "hint", option.description));
     specOptions.append(row);
   }
-  syncDesignerState();
+  // Start on the account source with its default field set; this is also the
+  // blank form New report builds.
+  setSource("accounts");
+}
+
+// The document a document spec prints and the print options that document's
+// own descriptors publish.  The invoice is the spec's field, not a print
+// option, so it is not repeated here.
+function documentDescriptors() {
+  const documents = (specFields && specFields.document &&
+                     specFields.document.documents) || [];
+  return documents.find((entry) => entry.name === specDocument.value) ||
+         documents[0] || null;
+}
+
+function buildDocumentOptions(values) {
+  specDocumentOptions.replaceChildren();
+  const document = documentDescriptors();
+  if (!document) return;
+  for (const option of document.options || []) {
+    if (option.name === "invoice") continue;
+    if (!["bool", "number", "text", "choice", "date"].includes(option.type))
+      continue;
+    const row = el("div", "option");
+    const id = `spec-doc-opt-${option.name}`;
+    const label = el("label", null, option.label || option.name);
+    label.htmlFor = id;
+    row.append(label);
+
+    let control;
+    if (option.type === "bool") {
+      control = el("select");
+      control.append(new Option("Yes", "true"), new Option("No", "false"));
+      control.value = option.default === true ? "true" : "false";
+    } else if (option.type === "choice") {
+      control = el("select");
+      for (const choice of option.choices || [])
+        control.append(new Option(choice, choice));
+      control.value = typeof option.default === "string" ? option.default : "";
+    } else if (option.type === "number") {
+      control = el("input");
+      control.type = "number";
+      control.value = String(option.default ?? 0);
+    } else if (option.type === "date") {
+      control = el("input");
+      control.type = "date";
+      control.value = typeof option.default === "string" ? option.default : "";
+    } else if (String(option.default ?? "").length > 60) {
+      // The document reports' CSS option is a long stylesheet; a textarea
+      // holds it without turning the form into one line of 700 characters.
+      control = el("textarea");
+      control.rows = 3;
+      control.value = typeof option.default === "string" ? option.default : "";
+    } else {
+      control = el("input");
+      control.type = "text";
+      control.value = typeof option.default === "string" ? option.default : "";
+      control.autocomplete = "off";
+      control.spellcheck = false;
+    }
+    control.id = id;
+    control.dataset.option = option.name;
+    control.dataset.type = option.type;
+    control.dataset.default = JSON.stringify(option.default ?? "");
+    if (values && Object.prototype.hasOwnProperty.call(values, option.name))
+      control.value = String(values[option.name]);
+    row.append(control);
+    if (option.description) row.append(el("p", "hint", option.description));
+    specDocumentOptions.append(row);
+  }
+}
+
+// A print option at its own default is left out: the report then prints its
+// own default document, and the descriptor's huge CSS default does not have
+// to travel in every spec.
+function readDocumentOptions() {
+  const options = {};
+  for (const control of specDocumentOptions.querySelectorAll("[data-option]")) {
+    const fallback = JSON.parse(control.dataset.default || '""');
+    const value = control.value;
+    if (control.dataset.type === "bool") {
+      const normal = value === "true" ? "true" : "false";
+      const defaultValue = fallback === true ? "true" : "false";
+      if (normal !== defaultValue) options[control.dataset.option] = normal;
+    } else if (control.dataset.type === "number") {
+      const defaultValue = String(fallback ?? 0);
+      const trimmed = value.trim();
+      if (trimmed !== "" && trimmed !== defaultValue)
+        options[control.dataset.option] = trimmed;
+    } else {
+      const defaultValue = typeof fallback === "string" ? fallback : "";
+      if (value !== defaultValue)
+        options[control.dataset.option] = value;
+    }
+  }
+  return options;
+}
+
+// The invoice source's columns are the row set's own fields and are required
+// by the server, so the form computes them.  A populated spec keeps the list
+// it was saved with while its row set is unchanged.
+function invoiceColumnChoices() {
+  const invoices = (specFields && specFields.invoices) || {};
+  return (specInvoiceGrouping.value === "document"
+    ? invoices.document_columns : invoices.owner_columns) || [];
+}
+
+function invoiceColumns() {
+  const allowed = invoiceColumnChoices();
+  const chosen = Array.isArray(designerInvoiceColumns)
+    ? designerInvoiceColumns : [];
+  if (chosen.length > 0 && chosen.every((column) => allowed.includes(column)))
+    return chosen.slice();
+  return allowed.slice();
 }
 
 // "By period" needs the period length and the row mode; a date preset
 // replaces the two date fields, exactly as on the report option form.  The
-// chart series only make sense when a chart is chosen.
+// chart series only make sense when a chart is chosen, and a
+// transaction-grouped split listing is the General Journal's whole book, so
+// its dates and account selection are hidden rather than sent and refused.
 function syncDesignerState() {
-  specPeriodUnitRow.hidden = specGrouping.value !== "period";
-  specPeriodModeRow.hidden = specGrouping.value !== "period";
-  specChartSeriesRow.hidden = specChart.value === "";
-  const preset = specField("date_preset");
+  if (!specFields) return;
+  const fields = sourceFields(specSource.value);
+  const period = fields.period && specGrouping.value === "period";
+  specPeriodUnitRow.hidden = !period;
+  specPeriodModeRow.hidden = !period;
+  specChartSeriesRow.hidden = !fields.chart || specChart.value === "";
+
+  const wholeBook = fields.splitGrouping &&
+    specSplitGrouping.value === "transaction";
+  specAccountsRow.hidden = !fields.accounts || wholeBook;
+  for (const name of ["start", "end"]) {
+    const row = optionRow(name);
+    if (row) row.hidden = !fields.optionRows.includes(name) || wholeBook;
+  }
+  const preset = fields.optionRows.includes("date_preset")
+    ? specField("date_preset") : "";
   for (const input of specOptions.querySelectorAll('input[type="date"]'))
     input.disabled = preset !== "";
 }
 
-// The JSON the server validates and saves.  Blank dates and a blank currency
-// are left out rather than sent as empty strings; the server applies its own
-// defaults then.
+// The JSON the server validates and saves.  Only the current source's fields
+// are read, so a hidden control can never leak a value into another source's
+// spec; blank dates, a blank currency and a fixed column list are omitted and
+// the server applies the report's own defaults.
 function readDesignerSpec() {
   const name = specName.value.trim();
   if (name === "") {
@@ -1278,47 +1734,91 @@ function readDesignerSpec() {
     specName.focus();
     return null;
   }
-  // A fixed-column source keeps the report's own list; the other sources read
-  // the checkboxes, which are the account vocabulary.
-  const columns = designerFixedColumns !== null
-    ? designerFixedColumns.slice()
-    : [...specColumns.querySelectorAll("input:checked")].map((box) => box.value);
-  if (columns.length === 0) {
-    showSpecError("Choose at least one column.");
-    return null;
-  }
-  const grouping = specGrouping.value || "none";
+  const source = specSource.value || "accounts";
+  const fields = sourceFields(source);
+  const wholeBook = fields.splitGrouping &&
+    specSplitGrouping.value === "transaction";
   const spec = {
     name,
     title: specTitle.value.trim() || name,
-    columns,
-    grouping,
-    period_unit: specPeriodUnit.value || "year",
-    period_mode: grouping === "period"
-      ? (specPeriodMode.value || "activity") : "activity",
-    accounts: [...specAccounts.querySelectorAll("input:checked")]
-      .map((box) => box.value),
-    account_types: [...specAccountTypes.querySelectorAll("input:checked")]
-      .map((box) => box.value),
-    chart: specChart.value,
-    chart_series: [...specChartSeries.querySelectorAll("input:checked")]
-      .map((box) => box.value),
+    source,
   };
-  // The account source is the default, so it is left out; a populated
-  // balance-sheet spec must keep its source or the server would read it as an
-  // account list (and the report it came from would not be its cells).
-  if (specSource.value !== "accounts") spec.source = specSource.value;
-  const preset = specField("date_preset");
+
+  if (fields.columns) {
+    const columns = checkedValues(specColumns, "spec-columns");
+    if (columns.length === 0) {
+      showSpecError("Choose at least one column.");
+      return null;
+    }
+    spec.columns = columns;
+    spec.grouping = specGrouping.value || "none";
+    spec.period_unit = specPeriodUnit.value || "year";
+    spec.period_mode = spec.grouping === "period"
+      ? (specPeriodMode.value || "activity") : "activity";
+    const types = checkedValues(specAccountTypes, "spec-account-types");
+    if (types.length > 0) spec.account_types = types;
+    if (specChart.value !== "") spec.chart = specChart.value;
+    const series = checkedValues(specChartSeries, "spec-chart-series");
+    if (series.length > 0) spec.chart_series = series;
+  } else if (fields.splitColumns) {
+    const columns = checkedValues(specSplitColumns, "spec-split-columns");
+    if (columns.length === 0) {
+      showSpecError("Choose at least one split column.");
+      return null;
+    }
+    spec.columns = columns;
+    spec.split_grouping = specSplitGrouping.value || "none";
+  } else if (fields.invoice) {
+    // The server requires a non-empty column list for an invoices spec; its
+    // row set decides which columns those are, so the form supplies them.
+    spec.columns = invoiceColumns();
+    spec.invoice_owner = specInvoiceOwner.value || "receivable";
+    spec.invoice_grouping = specInvoiceGrouping.value || "owner";
+    spec.bucket_basis = specBucketBasis.value || "due";
+  }
+
+  if (fields.document) {
+    const document = specDocument.value;
+    if (document === "") {
+      showSpecError("Choose the document report to print.");
+      return null;
+    }
+    spec.document = document;
+    const invoice = specInvoice.value.trim();
+    if (invoice !== "") spec.invoice = invoice;
+    const documentOptions = readDocumentOptions();
+    if (Object.keys(documentOptions).length > 0)
+      spec.document_options = documentOptions;
+  }
+
+  if (fields.accounts && !wholeBook)
+    spec.accounts = checkedValues(specAccounts, "spec-accounts");
+  if (fields.lotAccount) {
+    spec.accounts = specLotAccount.value === "" ? [] : [specLotAccount.value];
+    const filter = specDescriptionFilter.value.trim();
+    if (filter !== "") spec.description_filter = filter;
+  }
+
+  // Dates, the preset and the commodity, only where the source has the field.
+  const preset = fields.optionRows.includes("date_preset")
+    ? specField("date_preset") : "";
   if (preset !== "") {
     spec.date_preset = preset;
-  } else {
-    const start = specField("start");
-    const end = specField("end");
-    if (start !== "") spec.start = start;
-    if (end !== "") spec.end = end;
+  } else if (!wholeBook) {
+    if (fields.optionRows.includes("start")) {
+      const start = specField("start");
+      if (start !== "") spec.start = start;
+    }
+    if (fields.optionRows.includes("end")) {
+      const end = specField("end");
+      if (end !== "") spec.end = end;
+    }
   }
-  const currency = specField("currency").trim();
-  if (currency !== "") spec.currency = currency;
+  if (fields.optionRows.includes("currency")) {
+    const currency = specField("currency").trim();
+    if (currency !== "") spec.currency = currency;
+  }
+
   // The field is comma or space separated.  Lower-case it here so a typed
   // "Spending" is a valid slug; the server still rejects anything that is not
   // [a-z0-9-], naming the tag, and does the trimming and deduplication.
@@ -1466,7 +1966,7 @@ async function selectSpec(spec, builtin = false) {
         "original.",
     "This report's definition is a saved report spec, not C++ code: the " +
     "fields below are exactly the query, columns and options the server " +
-    "stores for it.");
+    "stores for it.  " + sourceLine(full.source || "accounts"));
 }
 
 async function deleteSpec(spec) {
@@ -1511,8 +2011,31 @@ specForm.addEventListener("submit", saveSpec);
 searchBox.addEventListener("input", applyReportFilter);
 document.getElementById("spec-preview").addEventListener("click", previewSpec);
 specNew.addEventListener("click", newDesignerReport);
+// Changing the source switches the field set and clears the fields the new
+// source does not have, so a value from the previous source cannot be sent.
+specSource.addEventListener("change", () => {
+  setSource(specSource.value);
+  hideSpecError();
+});
 specGrouping.addEventListener("change", syncDesignerState);
 specChart.addEventListener("change", syncDesignerState);
+specSplitGrouping.addEventListener("change", () => {
+  // The General Journal's whole book has no dates and no account selection;
+  // clear them as well as hiding them, so switching back starts clean.
+  if (specSource.value === "splits" &&
+      specSplitGrouping.value === "transaction") {
+    setChecked(specAccounts, "spec-accounts", []);
+    setSpecField("start", "");
+    setSpecField("end", "");
+  }
+  syncDesignerState();
+});
+specInvoiceGrouping.addEventListener("change", () => {
+  // The row set decides the invoice columns; a list kept from the other row
+  // set would name a column the server refuses.
+  designerInvoiceColumns = null;
+});
+specDocument.addEventListener("change", () => buildDocumentOptions());
 specOptions.addEventListener("change", syncDesignerState);
 specOptions.addEventListener("input", syncDesignerState);
 
