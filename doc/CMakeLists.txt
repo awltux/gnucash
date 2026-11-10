@@ -11,7 +11,8 @@ set(doc_noinst_DATA
         adr/0012-single-threaded-local-server.md
         report-engine-migration.md
         eguile-decision.md
-        report-coverage.md)
+        report-coverage.md
+        web-ui-roadmap.md)
 
 install(FILES ${doc_DATA} DESTINATION  ${CMAKE_INSTALL_DOCDIR})
 
