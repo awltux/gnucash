@@ -81,6 +81,61 @@ std::vector<Column> column_vocabulary ();
  *  the vocabulary; the caller reports it as a bad spec. */
 bool column_from_name (const std::string& name, Column& column);
 
+/* -------------------------------------------------------------- typed cells */
+
+/** What a cell holds.  The account reports above need one kind of cell, an
+ *  amount; the entry listings, tax-code tables and documents print text,
+ *  dates and amounts side by side, so their cells say which they are. */
+enum class CellType
+{
+    Text,
+    /** A date, already printed in the report's own date format: the cell
+     *  carries the text the document shows. */
+    Date,
+    Amount,
+    /** A cell that prints nothing.  A table uses this for a column that has
+     *  no value in this row at all, rather than an amount of zero. */
+    Blank,
+};
+
+/** How a column's heading is set: over the text against the left edge, over
+ *  an amount against the right.  The cells follow what they hold -- an amount
+ *  is a number and right-aligned, text and dates read left to right. */
+enum class CellAlign
+{
+    Left,
+    Right,
+};
+
+/** A column of a table whose columns are not the account-report vocabulary:
+ *  `name` is the stable name a spec or a route uses, `heading` what the
+ *  document prints over the column, `type` the kind of cell the column holds
+ *  (and what a row that has no cell at this position prints). */
+struct ColumnDef
+{
+    std::string name;
+    std::string heading;
+    CellType type = CellType::Text;
+    CellAlign align = CellAlign::Left;
+};
+
+/** One typed cell.  A Text or Date cell carries `text`, an Amount cell carries
+ *  `amount`; `blank` overrides both and prints nothing, which is how a row
+ *  shows "not applicable" where its column would otherwise print its zero.
+ *  `type` is the cell's own kind, because a row carries its cells; a row with
+ *  no cell at this position prints ColumnDef::type instead.
+ *
+ *  It is deliberately not `Cell`: that name belongs to the entry listings'
+ *  renderer (below), whose cells carry markup rather than a value, and the
+ *  two must not be confused. */
+struct TypedCell
+{
+    CellType type = CellType::Text;
+    std::string text;
+    gnc_numeric amount = gnc_numeric_zero ();
+    bool blank = false;
+};
+
 /* -------------------------------------------------------------- table model */
 
 enum class RowType
@@ -112,6 +167,11 @@ struct Row
     gnc_numeric credit = gnc_numeric_zero ();
     /** Print a blank amount cell instead of the (zero) amount. */
     bool blank = false;
+    /** One typed cell per Table::column_defs entry, for a table that defines
+     *  its columns with ColumnDef instead of the account-report vocabulary.
+     *  Empty for every amounts-only table, whose only figure is the one
+     *  `amount` (or `values`) above. */
+    std::vector<TypedCell> cells;
 };
 
 /** A chart section attached to a table.  The renderer emits the data as JSON
@@ -145,6 +205,13 @@ struct Chart
 struct Table
 {
     std::vector<Column> columns;
+    /** Column definitions for a table whose columns are not the account-report
+     *  vocabulary: an entry listing's date, description and amount columns.
+     *  Empty for every table the reports build today, and the renderer then
+     *  uses `columns` (or `column_headings`, for a grouped axis) exactly as
+     *  before.  When set, the rows carry one Row::cells entry per definition
+     *  and the renderer uses that axis instead. */
+    std::vector<ColumnDef> column_defs;
     std::vector<Row> rows;
     gnc_commodity* currency = nullptr;
     bool has_totals = false;

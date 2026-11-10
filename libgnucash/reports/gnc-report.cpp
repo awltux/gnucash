@@ -8679,16 +8679,95 @@ render_chart (std::ostringstream& out, const Chart& chart,
         << "\n</section>\n";
 }
 
+/* The document shell a rendered table sits in: the title as both the document
+ * title and the page heading, and the stylesheet the Scheme reports emit too.
+ * A table document opens with open_document() and closes with
+ * close_document(). */
+void
+open_document (std::ostringstream& out, const std::string& title)
+{
+    out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
+        << html_escape (title) << "</title><style>" << report_stylesheet ()
+        << "</style></head><body><h3>" << html_escape (title) << "</h3>\n";
+}
+
+void
+close_document (std::ostringstream& out)
+{
+    out << "</body></html>\n";
+}
+
+/* The rows of a table that defines its own columns: the entry listings,
+ * tax-code tables and documents, whose columns mix text, dates and amounts.
+ * This is a second body rather than a generalisation of the account-report one
+ * below, because that one's markup (a blank Debit/Credit cell is an aligned
+ * empty cell, a blank Balance cell a "total-number-cell") is what the parity
+ * harness reads; keeping the two apart is what keeps those documents byte for
+ * byte what they were. */
+void
+render_typed_rows (std::ostringstream& out, const Table& table)
+{
+    out << "<table cellspacing='0' cellpadding='4' border='0'><thead><tr>";
+    for (const ColumnDef& column : table.column_defs)
+    {
+        /* The stylesheet left-aligns every heading, so a heading over a
+         * right-aligned column names its alignment the way the Scheme
+         * renderer's headings do. */
+        out << "<th";
+        if (column.align == CellAlign::Right)
+            out << " class='column-heading-right'";
+        out << ">" << html_escape (column.heading) << "</th>";
+    }
+    out << "</tr></thead><tbody>\n";
+
+    for (const Row& row : table.rows)
+    {
+        out << "<tr>";
+        for (size_t index = 0; index < table.column_defs.size (); ++index)
+        {
+            const ColumnDef& column = table.column_defs[index];
+            const TypedCell* cell =
+                index < row.cells.size () ? &row.cells[index] : nullptr;
+            /* A cell says what it is; the column is the default for a row
+             * that leaves the cell's type out. */
+            const CellType type = cell != nullptr ? cell->type : column.type;
+            const bool blank =
+                cell == nullptr || cell->blank || type == CellType::Blank;
+            const bool number = type == CellType::Amount;
+            out << "<td class='" << (number ? "number-cell" : "text-cell")
+                << "'>";
+            if (blank)
+                out << " ";
+            else if (number)
+                out << html_escape (
+                    format_amount (cell->amount, table.currency));
+            else
+                out << html_escape (cell->text);
+            out << "</td>";
+        }
+        out << "</tr>\n";
+    }
+
+    out << "</tbody></table>\n";
+}
+
 } // namespace
 
 std::string
 render_html (const Table& table, const std::string& title)
 {
     std::ostringstream out;
-    out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
-        << html_escape (title) << "</title><style>" << report_stylesheet ()
-        << "</style></head><body><h3>" << html_escape (title) << "</h3>\n"
-        << "<table cellspacing='0' cellpadding='4' border='0'><thead><tr>";
+    open_document (out, title);
+    if (!table.column_defs.empty ())
+    {
+        render_typed_rows (out, table);
+        if (table.chart.has_value ())
+            render_chart (out, *table.chart, table.currency);
+        close_document (out);
+        return out.str ();
+    }
+
+    out << "<table cellspacing='0' cellpadding='4' border='0'><thead><tr>";
 
     const bool grouped = !table.column_headings.empty ();
     if (grouped)
@@ -8861,7 +8940,7 @@ render_html (const Table& table, const std::string& title)
     if (table.chart.has_value ())
         render_chart (out, *table.chart, table.currency);
 
-    out << "</body></html>\n";
+    close_document (out);
     return out.str ();
 }
 
