@@ -416,7 +416,9 @@ spec_options_json ()
             "{\"name\":\"accounts\",\"label\":\"Accounts and periods\"},"
             "{\"name\":\"splits\",\"label\":\"Transactions' splits\"},"
             "{\"name\":\"balance-sheet\",\"label\":\"Balance sheet (the "
-            "report's fixed sections)\"}],"
+            "report's fixed sections)\"},"
+            "{\"name\":\"invoices\",\"label\":\"Invoices and bills (the aging "
+            "reports)\"}],"
             "\"balance_sheet\":{\"columns\":[";
     first = true;
     for (const std::string& column : web::balance_sheet_columns ())
@@ -437,6 +439,57 @@ spec_options_json ()
             "and a currency; it has no start date, date preset, grouping, "
             "column selection, account scope or chart option, and a request "
             "that sets one is refused by name rather than ignored.\"},"
+            "\"invoices\":{\"owner_columns\":[";
+    first = true;
+    for (const std::string& column : web::invoice_owner_columns ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "\"";
+        body += json_escape (column.c_str ());
+        body += "\"";
+    }
+    body += "],\"document_columns\":[";
+    first = true;
+    for (const std::string& column : web::invoice_document_columns ())
+    {
+        if (!first)
+            body += ",";
+        first = false;
+        body += "\"";
+        body += json_escape (column.c_str ());
+        body += "\"";
+    }
+    body += "],\"owners\":["
+            "{\"name\":\"receivable\",\"label\":\"Receivable Aging (every "
+            "A/Receivable account)\"},"
+            "{\"name\":\"payable\",\"label\":\"Payable Aging (every A/Payable "
+            "account)\"}],"
+            "\"groupings\":["
+            "{\"name\":\"owner\",\"label\":\"One row per owner (the aging "
+            "report's own table)\"},"
+            "{\"name\":\"document\",\"label\":\"One row per invoice, credit "
+            "note, bill or payment\"}],"
+            "\"bucket_basis\":["
+            "{\"name\":\"due\",\"label\":\"Due date (the report's default)\"},"
+            "{\"name\":\"posted\",\"label\":\"Post date\"}],"
+            "\"options\":[\"end\"],"
+            "\"note\":\"An invoices spec is the aging reports' own rows and "
+            "arithmetic: the owner rows of the Receivable Aging or the Payable "
+            "Aging as of 'end' ('To'), with the report's six buckets "
+            "(Pre-Payment, Current, 0-30, 31-60, 61-90 and 91+ days), its sort "
+            "by owner name and its Total row per account.  An invoice "
+            "contributes its remaining balance as of that date, so a partially "
+            "paid one shows only what is still owed, and a payment contributes "
+            "only its unapplied part, into Pre-Payment.  'invoice_owner' picks "
+            "the side of the ledger, 'bucket_basis' the report's Due or Post "
+            "Date option, and 'invoice_grouping' chooses the report's owner "
+            "rows or one row per document.  The report ages every aging account "
+            "and does not convert currencies, so there is no account scope, no "
+            "currency, no start date or preset, no chart and no grouping: a "
+            "request that sets one is refused by name rather than "
+            "ignored.\"},"
             "\"split_columns\":[";
     first = true;
     for (const gnc::report::SplitColumn column :

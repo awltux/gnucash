@@ -62,6 +62,20 @@ trimmed (const std::string& text)
     return text.substr (first, last - first);
 }
 
+/* A name list in a validation message: "a, b, c". */
+std::string
+joined (const std::vector<std::string>& names)
+{
+    std::string text;
+    for (size_t index = 0; index < names.size (); ++index)
+    {
+        if (index > 0)
+            text += ", ";
+        text += names[index];
+    }
+    return text;
+}
+
 bool
 valid_tag (const std::string& tag)
 {
@@ -153,8 +167,9 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
 
     static const std::set<std::string> allowed = {
         "id", "name", "title", "description", "tags", "source", "columns",
-        "split_grouping", "grouping", "period_unit", "period_mode", "start",
-        "end", "date_preset", "currency", "accounts", "account_types", "chart",
+        "split_grouping", "invoice_grouping", "invoice_owner", "bucket_basis",
+        "grouping", "period_unit", "period_mode", "start", "end",
+        "date_preset", "currency", "accounts", "account_types", "chart",
         "chart_series", "builtin"};
     for (const auto& entry : value.object)
     {
@@ -224,9 +239,52 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return false;
     const bool split_source = spec.source == "splits";
     const bool balance_sheet_source = spec.source == "balance-sheet";
-    if (!split_source && !balance_sheet_source && spec.source != "accounts")
+    const bool invoice_source = spec.source == "invoices";
+    if (!split_source && !balance_sheet_source && !invoice_source &&
+        spec.source != "accounts")
         return fail (error, "unknown source '" + spec.source +
-                             "' (expected accounts, splits or balance-sheet)");
+                             "' (expected accounts, splits, balance-sheet or "
+                             "invoices)");
+
+    /* The invoice source's three settings are read before the columns: which
+     * row set the spec has decides which columns it may name.  A field on a
+     * spec of another source is refused rather than ignored. */
+    spec.invoice_grouping = "owner";
+    if (!optional_string (value, "invoice_grouping", spec.invoice_grouping,
+                          present, error))
+        return false;
+    if (!invoice_source && spec.invoice_grouping != "owner")
+        return fail (error, "'invoice_grouping' is for a spec with source "
+                             "'invoices'");
+    if (invoice_source && spec.invoice_grouping != "owner" &&
+        spec.invoice_grouping != "document")
+        return fail (error, "unknown invoice_grouping '" +
+                             spec.invoice_grouping +
+                             "' (expected owner or document)");
+
+    spec.invoice_owner = "receivable";
+    if (!optional_string (value, "invoice_owner", spec.invoice_owner, present,
+                          error))
+        return false;
+    if (!invoice_source && spec.invoice_owner != "receivable")
+        return fail (error, "'invoice_owner' is for a spec with source "
+                             "'invoices'");
+    if (invoice_source && spec.invoice_owner != "receivable" &&
+        spec.invoice_owner != "payable")
+        return fail (error, "unknown invoice_owner '" + spec.invoice_owner +
+                             "' (expected receivable or payable)");
+
+    spec.bucket_basis = "due";
+    if (!optional_string (value, "bucket_basis", spec.bucket_basis, present,
+                          error))
+        return false;
+    if (!invoice_source && spec.bucket_basis != "due")
+        return fail (error, "'bucket_basis' is for a spec with source "
+                             "'invoices'");
+    if (invoice_source && spec.bucket_basis != "due" &&
+        spec.bucket_basis != "posted")
+        return fail (error, "unknown bucket_basis '" + spec.bucket_basis +
+                             "' (expected due or posted)");
 
     const json::Value* columns = value.find ("columns");
     if (balance_sheet_source)
@@ -255,6 +313,53 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                                  "the report prints exactly 'account-name' and "
                                  "'balance', in that order, so the columns are "
                                  "not a choice");
+    }
+    else if (invoice_source)
+    {
+        /* The row set decides the columns: the report's own owner rows, or one
+         * row per document.  A column of the other set is named as what it
+         * is, not reported as an unknown name. */
+        const bool owner_grouping = spec.invoice_grouping == "owner";
+        const std::vector<std::string>& allowed =
+            owner_grouping ? invoice_owner_columns ()
+                           : invoice_document_columns ();
+        spec.columns.clear ();
+        if (columns == nullptr || !columns->is_array () ||
+            columns->array.empty ())
+            return fail (
+                error, "'columns' must be a non-empty array of column names");
+        if (columns->array.size () > allowed.size ())
+            return fail (error, "'columns' has more than " +
+                                 std::to_string (allowed.size ()) +
+                                 " entries, which is every column an " +
+                                 spec.invoice_grouping +
+                                 "-grouped invoices spec has");
+        std::set<std::string> seen_columns;
+        for (const json::Value& entry : columns->array)
+        {
+            if (!entry.is_string ())
+                return fail (error, "'columns' entries must be strings");
+            gnc::report::InvoiceColumn column;
+            if (!gnc::report::invoice_column_from_name (entry.string, column))
+                return fail (error, "unknown invoice column '" + entry.string +
+                                     "' (expected " +
+                                     joined (invoice_document_columns ()) +
+                                     ")");
+            if (std::find (allowed.begin (), allowed.end (), entry.string) ==
+                allowed.end ())
+            {
+                /* Every invoice column is a document column, so the only
+                 * column this can be is one the owner rows do not print. */
+                return fail (error, "column '" + entry.string +
+                                     "' is a document column, which an owner-"
+                                     "grouped invoices spec does not print; its "
+                                     "columns are " + joined (allowed));
+            }
+            if (!seen_columns.insert (entry.string).second)
+                return fail (error, "column '" + entry.string +
+                                     "' appears more than once");
+            spec.columns.push_back (entry.string);
+        }
     }
     else
     {
@@ -312,6 +417,11 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "a balance-sheet spec has no 'grouping': the "
                              "report's sections are fixed (Assets, "
                              "Liabilities, Equity)");
+    if (invoice_source && spec.grouping != "none")
+        return fail (error, "an invoices spec has no 'grouping': its sections "
+                             "are the report's own, one heading per A/Receivable "
+                             "or A/Payable account; 'invoice_grouping' chooses "
+                             "the rows (owner or document)");
 
     spec.split_grouping = "none";
     if (!optional_string (value, "split_grouping", spec.split_grouping, present,
@@ -341,6 +451,9 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
     if (balance_sheet_source && spec.period_unit != "year")
         return fail (error, "a balance-sheet spec has no 'period_unit': it is "
                              "drawn as of one date, not over periods");
+    if (invoice_source && spec.period_unit != "year")
+        return fail (error, "an invoices spec has no 'period_unit': it is "
+                             "drawn as of one date, not over periods");
 
     spec.period_mode = "activity";
     if (!optional_string (value, "period_mode", spec.period_mode, present,
@@ -354,6 +467,9 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                              "are splits, not period balances");
     if (balance_sheet_source && spec.period_mode != "activity")
         return fail (error, "a balance-sheet spec has no 'period_mode': it is "
+                             "drawn as of one date, not over periods");
+    if (invoice_source && spec.period_mode != "activity")
+        return fail (error, "an invoices spec has no 'period_mode': it is "
                              "drawn as of one date, not over periods");
     if (spec.period_mode == "cumulative" && spec.grouping != "period")
         return fail (error, "period_mode 'cumulative' needs grouping "
@@ -382,6 +498,23 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "a balance-sheet spec has no 'date_preset': it "
                              "resolves to a range, and the report is drawn as "
                              "of one date, 'end'");
+
+    /* The aging reports take one date too: their "To" option, the day the
+     * buckets are measured from.  The spec calls it 'end'. */
+    if (invoice_source && !spec.query.start.empty ())
+        return fail (error, "an invoices spec has no 'start': the report is "
+                             "drawn at one date, 'end'");
+    if (invoice_source && !spec.query.date_preset.empty ())
+        return fail (error, "an invoices spec has no 'date_preset': it "
+                             "resolves to a range, and the report is drawn at "
+                             "one date, 'end'");
+    /* The aging report has no commodity option: it does not convert, it
+     * prints each A/Receivable (or A/Payable) account's amounts in that
+     * account's own commodity.  A 'currency' would be an invention. */
+    if (invoice_source && !spec.query.currency.empty ())
+        return fail (error, "an invoices spec has no 'currency': the report "
+                             "does not convert, it prints each aging account's "
+                             "amounts in that account's own commodity");
 
     if (!spec.query.date_preset.empty () &&
         (!spec.query.start.empty () || !spec.query.end.empty ()))
@@ -493,6 +626,19 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
                              "accounts, as the report does, so it has no "
                              "'account_types'");
 
+    /* The aging report ages every A/Receivable (or A/Payable) account in the
+     * book; 'invoice_owner' is the only scope it has. */
+    if (invoice_source && !spec.query.accounts.empty ())
+        return fail (error, "an invoices spec ages every A/Receivable or "
+                             "A/Payable account in the book, as the report "
+                             "does, so it has no 'accounts'; 'invoice_owner' "
+                             "chooses the side");
+    if (invoice_source && !spec.account_types.empty ())
+        return fail (error, "an invoices spec ages every A/Receivable or "
+                             "A/Payable account in the book, as the report "
+                             "does, so it has no 'account_types'; "
+                             "'invoice_owner' chooses the side");
+
     if (split_source && spec.split_grouping == "transaction")
     {
         /* The General Journal's layout is the whole book's journal: the
@@ -526,21 +672,28 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "a balance-sheet spec has no 'chart': the report "
                              "always prints its own chart of the three section "
                              "totals");
+    if (invoice_source && !spec.chart.empty ())
+        return fail (error, "an invoices spec has no 'chart': the aging report "
+                             "prints a table of buckets, not a chart");
 
     spec.chart_series.clear ();
-    if (split_source || balance_sheet_source)
+    if (split_source || balance_sheet_source || invoice_source)
     {
         const json::Value* series = value.find ("chart_series");
         if (series != nullptr && !series->is_null () && series->is_array () &&
             !series->array.empty ())
-            return fail (error, balance_sheet_source
-                                      ? "a balance-sheet spec has no "
-                                        "'chart_series': the report always "
-                                        "prints its own chart of the three "
-                                        "section totals"
-                                      : "a split listing has no chart_series: "
-                                        "a chart plots account or period "
-                                        "amounts");
+            return fail (error, invoice_source
+                                      ? "an invoices spec has no "
+                                        "'chart_series': the aging report "
+                                        "prints a table of buckets, not a chart"
+                                      : balance_sheet_source
+                                            ? "a balance-sheet spec has no "
+                                              "'chart_series': the report "
+                                              "always prints its own chart of "
+                                              "the three section totals"
+                                            : "a split listing has no "
+                                              "chart_series: a chart plots "
+                                              "account or period amounts");
     }
     const json::Value* series = value.find ("chart_series");
     if (series != nullptr && !series->is_null ())
@@ -672,6 +825,24 @@ balance_sheet_columns ()
 {
     static const std::vector<std::string> columns = {"account-name",
                                                      "balance"};
+    return columns;
+}
+
+const std::vector<std::string>&
+invoice_owner_columns ()
+{
+    /* The native vocabulary is the list; this reads it so validation,
+     * serialization and /api/spec/options cannot drift from it. */
+    static const std::vector<std::string> columns =
+        gnc::report::invoice_owner_column_names ();
+    return columns;
+}
+
+const std::vector<std::string>&
+invoice_document_columns ()
+{
+    static const std::vector<std::string> columns =
+        gnc::report::invoice_document_column_names ();
     return columns;
 }
 
@@ -827,6 +998,12 @@ spec_to_json (const ReportSpec& spec, bool builtin)
     out << "],";
     if (spec.source == "splits")
         out << json_field ("split_grouping", spec.split_grouping) << ",";
+    if (spec.source == "invoices")
+    {
+        out << json_field ("invoice_grouping", spec.invoice_grouping) << ",";
+        out << json_field ("invoice_owner", spec.invoice_owner) << ",";
+        out << json_field ("bucket_basis", spec.bucket_basis) << ",";
+    }
     out << json_field ("grouping", spec.grouping) << ",";
     out << json_field ("period_unit", spec.period_unit) << ",";
     out << json_field ("period_mode", spec.period_mode) << ",";
@@ -1177,12 +1354,6 @@ no_spec_note (const std::string& name)
                "no status section and no calculated column, so it cannot "
                "describe the report.";
     }
-    if (one_of (name, {"Receivable Aging", "Payable Aging"}))
-    {
-        return "It groups invoices and payments into aging buckets from their "
-               "due or post dates.  A spec's rows are accounts or periods, so "
-               "it cannot describe the buckets or the owner rows.";
-    }
     if (one_of (name, {"Investment Lots", "Investment Portfolio",
                        "Advanced Portfolio", "Lot Viewer",
                        "IFRS weighted-average cost basis report"}))
@@ -1356,6 +1527,44 @@ native_designer_info (const std::string& report, NativeDesignerInfo& info)
         return true;
     }
 
+    if (report == "Receivable Aging" || report == "Payable Aging")
+    {
+        /* The source is the report's own row set and its own bucket walk, so
+         * the only things that carry over are the report date ("To") and which
+         * side of the ledger it is.  The copy gets its own name and title. */
+        ReportSpec spec;
+        spec.name = report + " (copy)";
+        spec.title = spec.name;
+        spec.source = "invoices";
+        spec.invoice_owner = report == "Receivable Aging" ? "receivable"
+                                                          : "payable";
+        spec.columns = invoice_owner_columns ();
+        spec.query.end = option_default (options, "end");
+        info.spec = std::move (spec);
+        info.has_spec = true;
+        info.equivalence = "exact";
+        info.note =
+            "Its cells are the report's own: one row per owner under the "
+            "report's 'Company' heading, the six buckets from Pre-Payment to "
+            "91+ days with the report's boundaries, the row total, a heading "
+            "per A/Receivable (or A/Payable) account when there is more than "
+            "one, and the report's Total row per account.  The amounts are the "
+            "report's arithmetic: an invoice contributes its remaining balance "
+            "as of the report date, so a partially paid invoice shows only what "
+            "is still owed, and a payment contributes only the part no invoice "
+            "absorbed, into Pre-Payment.  'invoice_owner' chooses the side of "
+            "the ledger (receivable or payable), 'end' is the report's one date "
+            "('To'), and 'bucket_basis' is the report's Due or Post Date "
+            "option.  The report ages every aging account in the book and does "
+            "not convert currencies, so the spec has no account scope and no "
+            "currency.  'invoice_grouping' 'document' lists the documents the "
+            "buckets are made of -- the same amounts, one row per invoice, "
+            "credit note, bill or payment -- which is the report's arithmetic "
+            "rather than its owner table.  The copy has its own name and title; "
+            "its cells are the report's cells.";
+        return true;
+    }
+
     if (report == "Income Statement" || report == "Profit & Loss")
     {
         /* Close, and labelled as approximate: the accounts and the period are
@@ -1521,6 +1730,34 @@ render_spec_html (const ReportSpec& spec, Account* root, std::string& html,
          * from spec.columns here, so a spec cannot select a third column even
          * by posting one the validator would accept. */
         table.source = gnc::report::SpecSource::BalanceSheet;
+    }
+    else if (spec.source == "invoices")
+    {
+        /* The aging report's own rows and buckets, with the spec's date, owner
+         * side, row set and bucket basis.  The columns are the invoice
+         * vocabulary, which the validator has already checked against the row
+         * set; the buckets' boundaries and the amounts are the report's. */
+        table.source = gnc::report::SpecSource::Invoices;
+        for (const std::string& name : spec.columns)
+        {
+            gnc::report::InvoiceColumn column;
+            if (!gnc::report::invoice_column_from_name (name, column))
+                return fail (error, "unknown invoice column '" + name + "'");
+            table.invoice_columns.push_back (column);
+        }
+        if (table.invoice_columns.empty ())
+            return fail (error, "the spec has no columns");
+        table.invoice_owner =
+            spec.invoice_owner == "payable"
+                ? gnc::report::InvoiceOwner::Payable
+                : gnc::report::InvoiceOwner::Receivable;
+        table.invoice_grouping =
+            spec.invoice_grouping == "document"
+                ? gnc::report::InvoiceGrouping::Document
+                : gnc::report::InvoiceGrouping::Owner;
+        table.invoice_bucket_basis = spec.bucket_basis == "posted"
+                                         ? gnc::report::AgingDate::Posted
+                                         : gnc::report::AgingDate::Due;
     }
     else
     {

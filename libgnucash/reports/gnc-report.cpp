@@ -720,6 +720,124 @@ split_column_from_name (const std::string& name, SplitColumn& column)
     return false;
 }
 
+/* ------------------------------------------------------- invoice vocabulary */
+
+std::string
+invoice_column_name (InvoiceColumn column)
+{
+    switch (column)
+    {
+    case InvoiceColumn::DocumentType: return "document-type";
+    case InvoiceColumn::Number:       return "number";
+    case InvoiceColumn::Date:         return "date";
+    case InvoiceColumn::DueDate:      return "due-date";
+    case InvoiceColumn::Owner:        return "owner";
+    case InvoiceColumn::Total:        return "total";
+    case InvoiceColumn::Tax:          return "tax";
+    case InvoiceColumn::Balance:      return "balance";
+    case InvoiceColumn::PrePayment:   return "pre-payment";
+    case InvoiceColumn::Current:      return "current";
+    case InvoiceColumn::Days0To30:    return "0-30-days";
+    case InvoiceColumn::Days31To60:   return "31-60-days";
+    case InvoiceColumn::Days61To90:   return "61-90-days";
+    case InvoiceColumn::Days91Plus:   return "91-plus-days";
+    }
+    return "";
+}
+
+std::string
+invoice_column_heading (InvoiceColumn column)
+{
+    switch (column)
+    {
+    case InvoiceColumn::DocumentType: return "Type";
+    case InvoiceColumn::Number:       return "Number";
+    case InvoiceColumn::Date:         return "Date";
+    case InvoiceColumn::DueDate:      return "Due Date";
+    /* The aging report's own heading for the owner column, so a spec that
+     * prints the report's rows prints its headings too. */
+    case InvoiceColumn::Owner:        return "Company";
+    case InvoiceColumn::Total:        return "Total";
+    case InvoiceColumn::Tax:          return "Tax";
+    case InvoiceColumn::Balance:      return "Balance";
+    /* aging_bucket_headings() is the report's list; the two must agree. */
+    case InvoiceColumn::PrePayment:   return "Pre-Payment";
+    case InvoiceColumn::Current:      return "Current";
+    case InvoiceColumn::Days0To30:    return "0-30 days";
+    case InvoiceColumn::Days31To60:   return "31-60 days";
+    case InvoiceColumn::Days61To90:   return "61-90 days";
+    case InvoiceColumn::Days91Plus:   return "91+ days";
+    }
+    return "";
+}
+
+std::vector<InvoiceColumn>
+invoice_column_vocabulary ()
+{
+    return {InvoiceColumn::DocumentType, InvoiceColumn::Number,
+            InvoiceColumn::Date,         InvoiceColumn::DueDate,
+            InvoiceColumn::Owner,        InvoiceColumn::Total,
+            InvoiceColumn::Tax,          InvoiceColumn::Balance,
+            InvoiceColumn::PrePayment,   InvoiceColumn::Current,
+            InvoiceColumn::Days0To30,    InvoiceColumn::Days31To60,
+            InvoiceColumn::Days61To90,   InvoiceColumn::Days91Plus};
+}
+
+bool
+invoice_column_from_name (const std::string& name, InvoiceColumn& column)
+{
+    for (const InvoiceColumn candidate : invoice_column_vocabulary ())
+    {
+        if (name == invoice_column_name (candidate))
+        {
+            column = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+namespace
+{
+
+/* The invoice columns in the order the report prints them: the owner under the
+ * report's "Company" heading, the six buckets from Pre-Payment to 91+ days,
+ * then the row total.  This is the report's table order, not the vocabulary's:
+ * the vocabulary lists the document columns first, and a spec that prints the
+ * report's rows has to print its columns in its order. */
+std::vector<std::string>
+owner_column_names ()
+{
+    return {invoice_column_name (InvoiceColumn::Owner),
+            invoice_column_name (InvoiceColumn::PrePayment),
+            invoice_column_name (InvoiceColumn::Current),
+            invoice_column_name (InvoiceColumn::Days0To30),
+            invoice_column_name (InvoiceColumn::Days31To60),
+            invoice_column_name (InvoiceColumn::Days61To90),
+            invoice_column_name (InvoiceColumn::Days91Plus),
+            invoice_column_name (InvoiceColumn::Total)};
+}
+
+} // namespace
+
+std::vector<std::string>
+invoice_owner_column_names ()
+{
+    return owner_column_names ();
+}
+
+std::vector<std::string>
+invoice_document_column_names ()
+{
+    /* Every column: the document's fields plus the buckets.  A document row
+     * puts its amount in exactly one bucket, so the six columns are one
+     * amount's decomposition, not six independent figures. */
+    std::vector<std::string> names;
+    for (const InvoiceColumn column : invoice_column_vocabulary ())
+        names.push_back (invoice_column_name (column));
+    return names;
+}
+
 std::vector<std::string>
 account_type_vocabulary ()
 {
@@ -1093,12 +1211,51 @@ row_series_amount (const Row& row, Column column)
 
 } // namespace
 
+namespace
+{
+
+/* The page the aging reports print when there is nothing to age: the title,
+ * then the report's explanation as document text.  Shared by render_aging()
+ * (the report route) and render_table_spec() (a spec), so the spec's empty
+ * page is the report's, apart from the title a spec always has of its own. */
+std::string
+render_aging_warning (const std::string& title, const std::string& warning)
+{
+    std::ostringstream out;
+    out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
+        << html_escape (title) << "</title><style>"
+        << report_stylesheet () << "</style></head><body><h3>"
+        << html_escape (title) << "</h3>\n<p class='text-cell'>"
+        << html_escape (warning) << "</p>\n</body></html>\n";
+    return out.str ();
+}
+
+} // namespace
+
 bool
 render_table_spec (const TableSpec& requested, Account* root, std::string& html,
                    std::string* error)
 {
     if (root == nullptr)
         return false;
+
+    if (requested.source == SpecSource::Invoices)
+    {
+        /* The aging report's own rows and amounts, with the spec's date and
+         * owner side.  When there is nothing to age the report prints its
+         * explanation instead of a table, so the spec does too. */
+        const Table table = invoices_table (root, requested);
+        if (table.warning.empty ())
+            html = render_html (table, requested.title.empty ()
+                                          ? "Custom Report"
+                                          : requested.title);
+        else
+            html = render_aging_warning (requested.title.empty ()
+                                             ? "Custom Report"
+                                             : requested.title,
+                                         table.warning);
+        return true;
+    }
 
     if (requested.source == SpecSource::Splits)
     {
@@ -2097,48 +2254,71 @@ transaction_breakdown (Account* root, const BreakdownOptions& options)
 namespace
 {
 
-/* The cells of one row of a split listing, in the spec's own column order.  A
- * cell the row does not set stays an empty text cell, which the renderer
- * prints as a space: the listings' own blank cells are not zeros. */
-struct RowCells
+/* The cells of one row of a table whose columns are not the account-report
+ * vocabulary, in the spec's own column order: a cell per column, set by
+ * column, and a column the row never sets prints nothing.  `blank_by_default`
+ * says what an unset cell is: a blank cell (printed as a space) or an empty
+ * text cell.  The split listings' unset cells are the former -- their blank
+ * cells are not zeros -- and an invoices row's unset bucket is the latter.
+ *
+ * One type for both, so the two listings cannot grow different rules for what
+ * "the row does not set this column" means. */
+template <typename Column>
+struct TypedCells
 {
-    explicit RowCells (const std::vector<SplitColumn>& columns)
+    TypedCells (const std::vector<Column>& columns, bool blank_by_default)
         : columns (columns), cells (columns.size ())
     {
+        if (blank_by_default)
+        {
+            for (TypedCell& cell : cells)
+                cell.blank = true;
+        }
     }
 
-    bool has (SplitColumn column) const
+    bool has (Column column) const
     {
         return std::find (columns.begin (), columns.end (), column) !=
                columns.end ();
     }
 
-    void text (SplitColumn column, const std::string& value)
+    void text (Column column, const std::string& value)
     {
         if (!has (column))
             return;
         TypedCell& cell = cell_for (column);
         cell.type = CellType::Text;
         cell.text = value;
+        cell.blank = false;
     }
 
-    void amount (SplitColumn column, gnc_numeric value)
+    void amount (Column column, gnc_numeric value)
     {
         if (!has (column))
             return;
         TypedCell& cell = cell_for (column);
         cell.type = CellType::Amount;
         cell.amount = value;
+        cell.blank = false;
     }
 
-    const std::vector<SplitColumn>& columns;
+    const std::vector<Column>& columns;
     std::vector<TypedCell> cells;
 
 private:
-    TypedCell& cell_for (SplitColumn column)
+    TypedCell& cell_for (Column column)
     {
         const auto found = std::find (columns.begin (), columns.end (), column);
         return cells[static_cast<size_t> (found - columns.begin ())];
+    }
+};
+
+/* A split listing's row: an unset column is an empty text cell. */
+struct RowCells : TypedCells<SplitColumn>
+{
+    explicit RowCells (const std::vector<SplitColumn>& columns)
+        : TypedCells<SplitColumn> (columns, false)
+    {
     }
 };
 
@@ -5155,11 +5335,29 @@ payment_overpayment (Transaction* txn)
     return overpayment;
 }
 
+/* One document's contribution to its owner's aging: the invoice or payment the
+ * bucket walk accounted for, the bucket it landed in and the amount that
+ * bucket received, in the report's sign convention.  The document listing is
+ * this detail and the owner rows are its sums, so the two cannot disagree. */
+struct AgingDocument
+{
+    Transaction* txn;
+    /* The document's invoice, or null for a payment (whose only bucket
+     * contribution is its unapplied part). */
+    GncInvoice* invoice;
+    int bucket;
+    gnc_numeric amount;
+};
+
 /* One owner's aging vector, in the Scheme report's bucket order:
- * 0 = 91+, 1 = 61-90, 2 = 31-60, 3 = 0-30, 4 = Current, 5 = Pre-Payment. */
+ * 0 = 91+, 1 = 61-90, 2 = 31-60, 3 = 0-30, 4 = Current, 5 = Pre-Payment.
+ * When `documents` is given, every amount the vector receives is also
+ * recorded there as the document that put it in the bucket, in the order the
+ * walk accounted for them. */
 std::vector<gnc_numeric>
 owner_aging (const std::vector<Split*>& splits, const AgingOptions& options,
-             const std::vector<time64>& boundaries, bool receivable)
+             const std::vector<time64>& boundaries, bool receivable,
+             std::vector<AgingDocument>* documents = nullptr)
 {
     std::vector<gnc_numeric> buckets (aging_bucket_count, gnc_numeric_zero ());
     std::vector<Split*> remaining = splits;
@@ -5202,6 +5400,8 @@ owner_aging (const std::vector<Split*>& splits, const AgingOptions& options,
                         : gncInvoiceGetDateDue (invoice);
                 const int bucket = aging_bucket_for (boundaries, when);
                 buckets[bucket] = numeric_add (buckets[bucket], balance);
+                if (documents != nullptr)
+                    documents->push_back ({txn, invoice, bucket, balance});
             }
             ++index;
         }
@@ -5212,6 +5412,12 @@ owner_aging (const std::vector<Split*>& splits, const AgingOptions& options,
                 overpayment = gnc_numeric_neg (overpayment);
             buckets[aging_prepayment_bucket] = numeric_add (
                 buckets[aging_prepayment_bucket], overpayment);
+            /* A payment that is fully applied contributes nothing; only the
+             * unapplied part is a bucket amount, so only it is a document row
+             * worth listing. */
+            if (documents != nullptr && !gnc_numeric_zero_p (overpayment))
+                documents->push_back ({txn, nullptr, aging_prepayment_bucket,
+                                       overpayment});
             /* The payment has been accounted for in full, so its transaction
              * leaves the list, exactly as the Scheme walk drops it. */
             std::vector<Split*> rest;
@@ -5253,6 +5459,9 @@ struct AgingOwnerRow
     GncOwner owner;
     std::vector<gnc_numeric> buckets;
     gnc_numeric total;
+    /* The documents whose amounts made `buckets`, in the walk's order.  The
+     * owner row is their sum; the document listing prints them. */
+    std::vector<AgingDocument> documents;
 };
 
 struct AgingAccountRows
@@ -5369,8 +5578,13 @@ collect_aging (Account* root, const AgingOptions& options, bool receivable,
                     others.push_back (candidate);
             }
 
-            std::vector<gnc_numeric> buckets =
-                owner_aging (mine, options, boundaries, receivable);
+            std::vector<gnc_numeric> buckets;
+            /* The document detail is collected with the buckets themselves,
+             * so a document row can never carry an amount the owner row does
+             * not. */
+            std::vector<AgingDocument> documents;
+            buckets = owner_aging (mine, options, boundaries, receivable,
+                                   &documents);
             gnc_numeric total = gnc_numeric_zero ();
             bool any = false;
             for (const gnc_numeric& amount : buckets)
@@ -5384,6 +5598,7 @@ collect_aging (Account* root, const AgingOptions& options, bool receivable,
                 row.owner = owner;
                 row.buckets = std::move (buckets);
                 row.total = total;
+                row.documents = std::move (documents);
                 for (int bucket = 0; bucket < aging_bucket_count; ++bucket)
                     rows.totals[bucket] = numeric_add (rows.totals[bucket],
                                                        row.buckets[bucket]);
@@ -5412,6 +5627,19 @@ collect_aging (Account* root, const AgingOptions& options, bool receivable,
     return accounts;
 }
 
+/* The Scheme report's two explanations for an empty aging: no A/Payable or
+ * A/Receivable account at all, or such accounts with nothing in them to age.
+ * The report route and the spec both print these, so they are one string. */
+const char*
+aging_empty_warning (bool have_accounts)
+{
+    return have_accounts
+        ? "A/Payable or A/Receivable accounts exist but have no suitable "
+          "transactions."
+        : "No valid A/Payable or A/Receivable account found. Please ensure "
+          "valid AP/AR account exists.";
+}
+
 AgingReport
 aging_report (Account* root, const AgingOptions& options, bool receivable)
 {
@@ -5427,14 +5655,7 @@ aging_report (Account* root, const AgingOptions& options, bool receivable)
         collect_aging (root, options, receivable, have_accounts);
     if (accounts.empty ())
     {
-        /* The Scheme report's two explanations for an empty aging: no
-         * A/Payable or A/Receivable account at all, or such accounts with
-         * nothing in them to age. */
-        report.warning = have_accounts
-            ? "A/Payable or A/Receivable accounts exist but have no suitable "
-              "transactions."
-            : "No valid A/Payable or A/Receivable account found. Please "
-              "ensure valid AP/AR account exists.";
+        report.warning = aging_empty_warning (have_accounts);
         return report;
     }
 
@@ -6380,6 +6601,269 @@ payable_aging (Account* root, const AgingOptions& options)
     return aging_report (root, options, false);
 }
 
+namespace
+{
+
+/* A typed invoice row's column: what the column holds, and how a row that
+ * leaves the cell out prints it.  The headings are the report's own, so an
+ * owner-grouped spec prints the report's heading row exactly. */
+ColumnDef
+invoice_column_def (InvoiceColumn column)
+{
+    ColumnDef def;
+    def.name = invoice_column_name (column);
+    def.heading = invoice_column_heading (column);
+    switch (column)
+    {
+    case InvoiceColumn::Date:
+    case InvoiceColumn::DueDate:
+        def.type = CellType::Date;
+        break;
+    case InvoiceColumn::Total:
+    case InvoiceColumn::Tax:
+    case InvoiceColumn::Balance:
+    case InvoiceColumn::PrePayment:
+    case InvoiceColumn::Current:
+    case InvoiceColumn::Days0To30:
+    case InvoiceColumn::Days31To60:
+    case InvoiceColumn::Days61To90:
+    case InvoiceColumn::Days91Plus:
+        def.type = CellType::Amount;
+        def.align = CellAlign::Right;
+        break;
+    default:
+        def.type = CellType::Text;
+        break;
+    }
+    return def;
+}
+
+/* The column an internal bucket index prints in: 0 = 91+ ... 5 =
+ * Pre-Payment, the order owner_aging() fills. */
+InvoiceColumn
+bucket_column (int bucket)
+{
+    switch (bucket)
+    {
+    case 0:  return InvoiceColumn::Days91Plus;
+    case 1:  return InvoiceColumn::Days61To90;
+    case 2:  return InvoiceColumn::Days31To60;
+    case 3:  return InvoiceColumn::Days0To30;
+    case 4:  return InvoiceColumn::Current;
+    default: return InvoiceColumn::PrePayment;
+    }
+}
+
+/* One row of an invoices table, one typed cell per column.  A cell the row
+ * does not set stays blank: the document listing prints the bucket a document
+ * landed in, not six zeros, and the renderer prints a blank cell as nothing. */
+struct InvoiceCells : TypedCells<InvoiceColumn>
+{
+    explicit InvoiceCells (const std::vector<InvoiceColumn>& columns)
+        : TypedCells<InvoiceColumn> (columns, true)
+    {
+    }
+};
+
+std::string
+invoice_date (time64 when)
+{
+    char date[32] = {0};
+    qof_print_date_buff (date, sizeof date, when);
+    return date;
+}
+
+/* The posted date a document's row prints: the invoice's own, else the
+ * payment transaction's. */
+time64
+document_date (const AgingDocument& document)
+{
+    return document.invoice != nullptr
+               ? gncInvoiceGetDatePosted (document.invoice)
+               : xaccTransGetDate (document.txn);
+}
+
+std::string
+document_number (const AgingDocument& document)
+{
+    return document.invoice != nullptr
+               ? text_or_empty (gncInvoiceGetID (document.invoice))
+               : text_or_empty (xaccTransGetNum (document.txn));
+}
+
+} // namespace
+
+Table
+invoices_table (Account* root, const TableSpec& spec)
+{
+    Table table;
+    table.currency = report_currency (root, spec.currency);
+    for (const InvoiceColumn column : spec.invoice_columns)
+        table.column_defs.push_back (invoice_column_def (column));
+    if (root == nullptr || spec.invoice_columns.empty ())
+        return table;
+
+    AgingOptions options;
+    /* The report's "To" date; the report defaults it to the end of today, and
+     * so does a spec that leaves it out. */
+    options.as_of = spec.end.value_or (default_aging_date ());
+    options.date_driver = spec.invoice_bucket_basis;
+    const bool receivable = spec.invoice_owner == InvoiceOwner::Receivable;
+
+    bool have_accounts = false;
+    const std::vector<AgingAccountRows> accounts =
+        collect_aging (root, options, receivable, have_accounts);
+    if (accounts.empty ())
+    {
+        /* The report prints its explanation instead of a table; the spec
+         * prints the same explanation, under its own title. */
+        table.warning = aging_empty_warning (have_accounts);
+        return table;
+    }
+
+    const std::vector<InvoiceColumn>& columns = spec.invoice_columns;
+    /* An account heading and a Total row put their label where a reader looks
+     * for a name: the owner column, else the document's type or number, else
+     * the first column the spec prints. */
+    InvoiceColumn label_column = columns.front ();
+    for (const InvoiceColumn candidate : columns)
+    {
+        if (candidate == InvoiceColumn::Owner ||
+            candidate == InvoiceColumn::DocumentType ||
+            candidate == InvoiceColumn::Number)
+        {
+            label_column = candidate;
+            break;
+        }
+    }
+
+    auto add_row = [&table] (InvoiceCells& cells, RowType type)
+    {
+        Row row;
+        row.type = type;
+        row.cells = std::move (cells.cells);
+        table.rows.push_back (std::move (row));
+    };
+    auto add_buckets = [] (InvoiceCells& cells,
+                           const std::vector<gnc_numeric>& buckets)
+    {
+        for (int bucket = 0; bucket < aging_bucket_count; ++bucket)
+            cells.amount (bucket_column (bucket), buckets[bucket]);
+    };
+
+    /* With more than one account of the type the report puts the account's
+     * name on a heading row of its own, and the spec does the same. */
+    const bool multiple = accounts.size () > 1;
+
+    for (const AgingAccountRows& account : accounts)
+    {
+        if (multiple)
+        {
+            InvoiceCells heading (columns);
+            heading.text (label_column, account_name (account.account));
+            add_row (heading, RowType::Section);
+        }
+
+        gnc_numeric document_total = gnc_numeric_zero ();
+        gnc_numeric document_tax = gnc_numeric_zero ();
+        gnc_numeric document_balance = gnc_numeric_zero ();
+
+        for (const AgingOwnerRow& owner : account.owners)
+        {
+            const char* name = gncOwnerGetName (&owner.owner);
+            const std::string owner_name = name != nullptr ? name : "";
+
+            if (spec.invoice_grouping == InvoiceGrouping::Owner)
+            {
+                InvoiceCells cells (columns);
+                cells.text (InvoiceColumn::Owner, owner_name);
+                add_buckets (cells, owner.buckets);
+                cells.amount (InvoiceColumn::Total, owner.total);
+                add_row (cells, RowType::Account);
+                continue;
+            }
+
+            /* One row per document.  The report's owner order first, then the
+             * document's posted date and number, so the rows are stable and
+             * one owner's documents stay together under it. */
+            std::vector<const AgingDocument*> documents;
+            documents.reserve (owner.documents.size ());
+            for (const AgingDocument& document : owner.documents)
+                documents.push_back (&document);
+            std::stable_sort (
+                documents.begin (), documents.end (),
+                [] (const AgingDocument* left, const AgingDocument* right)
+                {
+                    const time64 left_date = document_date (*left);
+                    const time64 right_date = document_date (*right);
+                    if (left_date != right_date)
+                        return left_date < right_date;
+                    return document_number (*left) < document_number (*right);
+                });
+
+            for (const AgingDocument* document : documents)
+            {
+                const GncInvoice* invoice = document->invoice;
+                InvoiceCells cells (columns);
+                cells.text (InvoiceColumn::DocumentType,
+                            invoice != nullptr
+                                ? text_or_empty (
+                                      gncInvoiceGetTypeString (invoice))
+                                : "Payment");
+                cells.text (InvoiceColumn::Number,
+                            document_number (*document));
+                cells.text (InvoiceColumn::Date,
+                            invoice_date (document_date (*document)));
+                if (invoice != nullptr)
+                    cells.text (InvoiceColumn::DueDate,
+                                invoice_date (gncInvoiceGetDateDue (invoice)));
+                cells.text (InvoiceColumn::Owner, owner_name);
+                if (invoice != nullptr)
+                {
+                    /* The document's own amount, which is not its balance: a
+                     * partially paid invoice still has its total here and
+                     * only the unpaid part in `balance`. */
+                    cells.amount (InvoiceColumn::Total,
+                                  gncInvoiceGetTotal (document->invoice));
+                    cells.amount (InvoiceColumn::Tax,
+                                  gncInvoiceGetTotalTax (document->invoice));
+                }
+                cells.amount (InvoiceColumn::Balance, document->amount);
+                cells.amount (bucket_column (document->bucket),
+                              document->amount);
+                add_row (cells, RowType::Split);
+
+                if (invoice != nullptr)
+                {
+                    document_total = numeric_add (
+                        document_total, gncInvoiceGetTotal (document->invoice));
+                    document_tax = numeric_add (
+                        document_tax, gncInvoiceGetTotalTax (document->invoice));
+                }
+                document_balance = numeric_add (document_balance,
+                                                document->amount);
+            }
+        }
+
+        InvoiceCells total (columns);
+        total.text (label_column, "Total");
+        add_buckets (total, account.totals);
+        if (spec.invoice_grouping == InvoiceGrouping::Owner)
+        {
+            total.amount (InvoiceColumn::Total,
+                          account.totals[aging_bucket_count]);
+        }
+        else
+        {
+            total.amount (InvoiceColumn::Total, document_total);
+            total.amount (InvoiceColumn::Tax, document_tax);
+            total.amount (InvoiceColumn::Balance, document_balance);
+        }
+        add_row (total, RowType::Total);
+    }
+    return table;
+}
+
 std::string
 render_aging (const AgingReport& report)
 {
@@ -6388,13 +6872,7 @@ render_aging (const AgingReport& report)
 
     /* The Scheme report prints its explanation as document text, under the
      * same title, when there is nothing to age. */
-    std::ostringstream out;
-    out << "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
-        << html_escape (report.title) << "</title><style>"
-        << report_stylesheet () << "</style></head><body><h3>"
-        << html_escape (report.title) << "</h3>\n<p class='text-cell'>"
-        << html_escape (report.warning) << "</p>\n</body></html>\n";
-    return out.str ();
+    return render_aging_warning (report.title, report.warning);
 }
 
 LotReport

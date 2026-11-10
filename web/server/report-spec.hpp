@@ -50,15 +50,31 @@ struct ReportSpec
      *  Stored with the spec, so they are shared by every browser on the
      *  book, unlike the localStorage saved views. */
     std::vector<std::string> tags;
-    /** "accounts" (the default, and what a spec without the field means) or
-     *  "splits".  A split spec's `columns` are split columns, its rows are the
-     *  book's individual splits, and `split_grouping` decides their order and
-     *  sections. */
+    /** "accounts" (the default, and what a spec without the field means),
+     *  "splits", "balance-sheet" or "invoices".  A split spec's `columns` are
+     *  split columns, its rows are the book's individual splits, and
+     *  `split_grouping` decides their order and sections.  An invoices spec's
+     *  rows are the aging reports' owners or the documents they age, and
+     *  `invoice_owner`, `invoice_grouping` and `bucket_basis` say which. */
     std::string source = "accounts";
     std::vector<std::string> columns;
     /** "none" (the default), "account", "account-code" or "transaction"; only
      *  meaningful for `source` "splits". */
     std::string split_grouping = "none";
+    /** "owner" (the default) or "document"; only meaningful for `source`
+     *  "invoices".  The owner rows are the aging report's own table -- one row
+     *  per owner with the six buckets and the row total -- and the document
+     *  rows are the invoices, credit notes and payments whose amounts make
+     *  those buckets. */
+    std::string invoice_grouping = "owner";
+    /** "receivable" (the default) or "payable"; only meaningful for `source`
+     *  "invoices".  It chooses the report: the Receivable Aging or the Payable
+     *  Aging. */
+    std::string invoice_owner = "receivable";
+    /** "due" (the default) or "posted"; only meaningful for `source`
+     *  "invoices".  Which invoice date decides the bucket, the report's "Due
+     *  or Post Date" option. */
+    std::string bucket_basis = "due";
     std::string grouping = "none";
     std::string period_unit = "year";
     /** "activity" (the default) or "cumulative"; cumulative turns a period
@@ -79,6 +95,14 @@ struct ReportSpec
  *  spec_from_json() accepts only these on a balance-sheet spec and
  *  /api/spec/options publishes them, so both read this one list. */
 const std::vector<std::string>& balance_sheet_columns ();
+
+/** The columns an invoices spec has, in display order, for each of its two row
+ *  sets: the aging report's own owner rows (Company, the six buckets, Total)
+ *  and the document rows (the document's fields and the six buckets).  Like
+ *  balance_sheet_columns(), one list serves validation, serialization and
+ *  /api/spec/options, so the three cannot disagree. */
+const std::vector<std::string>& invoice_owner_columns ();
+const std::vector<std::string>& invoice_document_columns ();
 
 /** Where saved reports live: $GNC_WEBUI_REPORTS when set (the tests use a
  *  temporary file), else $XDG_DATA_HOME/gnucash/webui/reports.json, else

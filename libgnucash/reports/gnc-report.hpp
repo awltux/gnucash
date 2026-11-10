@@ -126,6 +126,59 @@ std::vector<SplitColumn> split_column_vocabulary ();
  *  the caller reports it as a bad spec. */
 bool split_column_from_name (const std::string& name, SplitColumn& column);
 
+/* ------------------------------------------------------ invoice columns */
+
+/** One column of an invoices spec.  Two row sets share one vocabulary: the
+ *  aging reports' own owner rows (Company, the six buckets, Total) and the
+ *  documents the buckets are made of (type, number, dates, owner, total, tax
+ *  and the remaining balance).  `invoice_owner_column_names()` and
+ *  `invoice_document_column_names()` name the two sets; a spec's columns must
+ *  be a subset of the set its `invoice_grouping` selects. */
+enum class InvoiceColumn
+{
+    DocumentType,
+    Number,
+    Date,
+    DueDate,
+    Owner,
+    Total,
+    Tax,
+    Balance,
+    /* The six aging buckets.  The enum follows the report's internal order
+     * (oldest first); the display order is the reverse, see
+     * invoice_column_vocabulary(). */
+    PrePayment,
+    Current,
+    Days0To30,
+    Days31To60,
+    Days61To90,
+    Days91Plus,
+};
+
+/** Every invoice column a spec may ask for, in display order: the document's
+ *  fields (type, number, dates, owner, total, tax and balance), then the six
+ *  buckets oldest-first.  The owner grouping has its own order, the report's;
+ *  see invoice_owner_column_names(). */
+std::vector<InvoiceColumn> invoice_column_vocabulary ();
+
+std::string invoice_column_name (InvoiceColumn column);
+std::string invoice_column_heading (InvoiceColumn column);
+
+/** Resolve an invoice column name.  False for a name outside the vocabulary;
+ *  the caller reports it as a bad spec. */
+bool invoice_column_from_name (const std::string& name, InvoiceColumn& column);
+
+/** The columns an owner-grouped invoices spec prints, in display order.  They
+ *  are the aging reports' own table -- the owner name under the heading
+ *  "Company", the six buckets and the row total -- so a spec that asks for
+ *  all of them renders the report's cells. */
+std::vector<std::string> invoice_owner_column_names ();
+
+/** The columns a document-grouped invoices spec may print: the document's own
+ *  fields and the six buckets.  The owner grouping is the report's; this one
+ *  is the table the report's arithmetic is made of. */
+std::vector<std::string> invoice_document_column_names ();
+
 /* -------------------------------------------------------------- typed cells */
 
 /** What a cell holds.  The account reports above need one kind of cell, an
@@ -278,6 +331,11 @@ struct Table
     std::string row_heading;
     /** An optional chart section rendered below the table. */
     std::optional<Chart> chart;
+    /** A sentence to print instead of the table, for a source whose native
+     *  report prints an explanation when there is nothing to show: the aging
+     *  reports explain why they have no rows.  Empty means print the table,
+     *  which is every other table. */
+    std::string warning;
 };
 
 /* --------------------------------------------------------------- grouping */
@@ -318,9 +376,40 @@ enum class PeriodUnit
     Month,
 };
 
+/** Which invoice date decides an invoice's bucket: the due date (the Scheme
+ *  aging reports' default) or the post date.  The Scheme option is called
+ *  "Due or Post Date"; the native report route exposes the report's date but
+ *  not this choice, so a spec can ask for either and the route stays at the
+ *  default. */
+enum class AgingDate
+{
+    Due,
+    Posted,
+};
+
+/** Which aging report an invoices spec describes: the Receivable Aging (the
+ *  A/Receivable accounts) or the Payable Aging (the A/Payable ones).  The two
+ *  reports are one engine over different account types; the amounts are the
+ *  negation of the payable balances, so a bill owed is a positive number. */
+enum class InvoiceOwner
+{
+    Receivable,
+    Payable,
+};
+
+/** What an invoices spec's rows are: the aging report's own owner rows, or one
+ *  row per document (invoice, credit note, bill, payment) whose amounts the
+ *  owner rows total. */
+enum class InvoiceGrouping
+{
+    Owner,
+    Document,
+};
+
 /** Where a spec's rows come from: the account table the designer has always
  *  built (columns from `Column`), a listing of the book's individual splits
- *  (columns from `SplitColumn`), or the native Balance Sheet's own table. */
+ *  (columns from `SplitColumn`), the native Balance Sheet's own table, or the
+ *  invoices and payments an aging report ages (columns from `InvoiceColumn`). */
 enum class SpecSource
 {
     /** One row per account or period: the account reports' own axis. */
@@ -333,6 +422,12 @@ enum class SpecSource
      *  grouping or the section order; only the as-of date and the commodity
      *  are its own. */
     BalanceSheet,
+    /** The aging reports' rows: the invoices, credit notes, bills and payments
+     *  of the A/Receivable (or A/Payable) accounts as of `TableSpec::end`,
+     *  measured into the report's six buckets.  The report's owner rows are
+     *  one projection of that walk and its documents another; both come from
+     *  the same collection, so the buckets cannot disagree. */
+    Invoices,
 };
 
 /** How a split listing orders and sections its rows.  Each value reproduces
@@ -390,6 +485,17 @@ struct TableSpec
     /** The amount columns the chart plots, in series order: one or two of
      *  Debit/Credit/Balance.  Empty means derive from `columns`. */
     std::vector<Column> chart_columns;
+    /** The invoice source's columns, when `source` is Invoices: a subset of
+     *  the list `invoice_grouping` names.  Unused otherwise. */
+    std::vector<InvoiceColumn> invoice_columns;
+    /** Which aging report's owners, when `source` is Invoices. */
+    InvoiceOwner invoice_owner = InvoiceOwner::Receivable;
+    /** The report's owner rows (the default) or one row per document, when
+     *  `source` is Invoices. */
+    InvoiceGrouping invoice_grouping = InvoiceGrouping::Owner;
+    /** The invoice date the buckets are measured from, when `source` is
+     *  Invoices. */
+    AgingDate invoice_bucket_basis = AgingDate::Due;
 };
 
 /** Build the table a split spec asks for.  The rows are the splits of the
@@ -429,6 +535,30 @@ Table split_table (Account* root, const TableSpec& spec);
  *  section order, the sign reversal or the retained-earnings arithmetic could
  *  drift from the report the source claims to be. */
 Table balance_sheet_spec_table (Account* root, const TableSpec& spec);
+
+/** Build the table an invoices spec asks for.
+ *
+ *  The rows and amounts are the native aging report's own: `invoices_table()`
+ *  collects through the same walk `receivable_aging()`/`payable_aging()` use --
+ *  the report's date, its six buckets and their boundaries, its owner scope,
+ *  its sort by owner name and its per-account totals -- and projects that
+ *  collection two ways:
+ *
+ *  * Owner (the default): one row per owner with the six buckets and the row
+ *    total, an account heading when the book has more than one aging account,
+ *    and the report's "Total" row per account.  This is the report's table.
+ *  * Document: one row per invoice, credit note, bill or payment that made the
+ *    buckets, with the document's type, number, dates, owner, total, tax and
+ *    remaining balance.  A document's balance is the amount the bucket walk
+ *    put in its bucket, so a partially paid invoice shows what is still owed
+ *    and its payment contributes only the part no invoice absorbed.
+ *
+ *  `spec.end` is the report date ("To"); a missing one is the report's own
+ *  default, the end of today.  There is no start date, no account scope, no
+ *  currency conversion and no chart: the report has none of them.  When there
+ *  is nothing to age the table carries the report's explanation in
+ *  `Table::warning` and no rows. */
+Table invoices_table (Account* root, const TableSpec& spec);
 
 /** The account type names a spec may scope by, in display order: the engine's
  *  persistent names (xaccAccountTypeEnumAsString), without the hidden root. */
@@ -824,16 +954,6 @@ std::string render_no_customers (const std::string& title);
  *  They are the Scheme report's own bucket names, and the sixth one ("91+
  *  days") is open-ended. */
 std::vector<std::string> aging_bucket_headings ();
-
-/** Which invoice date decides an invoice's bucket: the due date (the Scheme
- *  report's default) or the post date.  The Scheme option is called "Due or
- *  Post Date"; the native route exposes the report's date but not this
- *  choice yet, so it stays at the default. */
-enum class AgingDate
-{
-    Due,
-    Posted,
-};
 
 struct AgingOptions
 {
