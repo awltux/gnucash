@@ -1605,14 +1605,41 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     {
         if (request.method == "GET")
         {
-            std::vector<web::ReportSpec> specs;
+            /* ?tag=<slug> keeps the reports carrying that tag; ?q=<text>
+             * keeps the ones whose name, description or tag contains it
+             * (case-insensitive).  Both compose, an unknown tag is an empty
+             * list rather than an error, and both the saved and the built-in
+             * specs are filtered. */
+            std::vector<QueryParam> params;
             std::string error;
-            if (!web::load_specs (specs, error))
+            std::string tag;
+            std::string text;
+            bool bad_query = !parse_query (query, params, error);
+            for (size_t index = 0; !bad_query && index < params.size ();
+                 ++index)
+            {
+                if (params[index].name == "tag")
+                    tag = params[index].value;
+                else if (params[index].name == "q")
+                    text = params[index].value;
+                else
+                {
+                    error = "unknown query parameter '" +
+                            params[index].name + "'";
+                    bad_query = true;
+                }
+            }
+
+            std::vector<web::ReportSpec> specs;
+            if (bad_query)
+                send_response (connection, "400 Bad Request", "text/plain",
+                               error + "\n");
+            else if (!web::load_specs (specs, error))
                 send_response (connection, "500 Internal Server Error",
                                "text/plain", error + "\n");
             else
                 send_response (connection, "200 OK", "application/json",
-                               web::specs_to_json (specs));
+                               web::specs_to_json (specs, tag, text));
         }
         else if (request.method == "POST")
         {

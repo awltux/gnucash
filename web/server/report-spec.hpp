@@ -46,6 +46,10 @@ struct ReportSpec
     /** Optional one-line explanation shown in the report list.  Built-ins
      *  use it to say which accounts they are scoped to. */
     std::string description;
+    /** Lowercase slugs ([a-z0-9-], 1-24 characters) used to group reports.
+     *  Stored with the spec, so they are shared by every browser on the
+     *  book, unlike the localStorage saved views. */
+    std::vector<std::string> tags;
     std::vector<std::string> columns;
     std::string grouping = "none";
     std::string period_unit = "year";
@@ -81,10 +85,20 @@ bool spec_from_json (const std::string& body, Account* root, ReportSpec& spec,
                      std::string& error);
 
 std::string spec_to_json (const ReportSpec& spec, bool builtin = false);
-/** The saved reports, plus the built-in specs under "builtin".  Built-ins are
- *  not stored: they are code, so they appear in every book and survive a
- *  deleted or missing store. */
-std::string specs_to_json (const std::vector<ReportSpec>& specs);
+
+/** True when the spec passes both list filters.  "tag" is an exact,
+ *  case-insensitive tag match; "text" is a case-insensitive substring of the
+ *  name, the description or any tag.  An empty filter always matches, and the
+ *  two compose (AND). */
+bool spec_matches (const ReportSpec& spec, const std::string& tag,
+                   const std::string& text);
+
+/** The saved reports, plus the built-in specs under "builtin", filtered by
+ *  the optional tag/text arguments.  Built-ins are not stored: they are code,
+ *  so they appear in every book and survive a deleted or missing store. */
+std::string specs_to_json (const std::vector<ReportSpec>& specs,
+                           const std::string& tag = std::string (),
+                           const std::string& text = std::string ());
 
 /** The built-in report specs, in report-list order.  Their ids are stable
  *  ("builtin-...") and their scope is by account type, never by GUID, so the

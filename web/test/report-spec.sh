@@ -167,6 +167,68 @@ for name in "Income vs Expenses by Month" "Expenses by Account" \
     fi
 done
 
+echo "== tags filter the list"
+# The ids in a /api/specs response, saved specs first then built-ins, in the
+# order the endpoint printed them.
+list_ids() { # json-file
+    python3 - "$1" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+for spec in data.get("specs", []) + data.get("builtin", []):
+    print(spec["id"])
+PY
+}
+
+expect_ids() { # description expected-space-separated path
+    local code got
+    code=$(fetch "$3")
+    if [ "$code" != "200" ]; then
+        bad "$3: expected 200, got $code ($1)"
+        return
+    fi
+    got=$(list_ids "$TMP/body" | paste -sd ' ' -)
+    if [ "$got" = "$2" ]; then
+        ok "$1 -> [$got]"
+    else
+        bad "$1: expected [$2], got [$got]"
+    fi
+}
+
+# A distinct tag selects exactly the built-in that carries it.
+expect_ids "one built-in by tag" "builtin-net-worth-barchart" \
+    "/api/specs?tag=bar-chart"
+# A shared tag selects all of them, not just the first.
+expect_ids "two built-ins by tag" \
+    "builtin-expenses-by-account builtin-income-by-account" \
+    "/api/specs?tag=breakdown"
+expect_ids "tag matching is case-insensitive" "builtin-net-worth-linechart" \
+    "/api/specs?tag=LINE-CHART"
+expect_ids "an unknown tag matches nothing" "" "/api/specs?tag=no-such-tag"
+expect_status 200 "unknown tag" "/api/specs?tag=no-such-tag"
+if [ "$(cat "$TMP/body")" = '{"specs":[],"builtin":[]}' ]; then
+    ok "an unknown tag is an empty array, not an error"
+else
+    bad "an unknown tag answered: $(head -c 200 "$TMP/body")"
+fi
+
+# ?q= searches the name, the description and the tags.  "worth" is in three
+# names; "trend" is in no name and in exactly two tag lists.
+expect_ids "q matches names" \
+    "builtin-net-worth-month builtin-net-worth-barchart builtin-net-worth-linechart" \
+    "/api/specs?q=worth"
+expect_ids "q matches tags" \
+    "builtin-income-expenses-month builtin-net-worth-month" \
+    "/api/specs?q=trend"
+expect_ids "q is case-insensitive" \
+    "builtin-income-expenses-month builtin-net-worth-month" \
+    "/api/specs?q=TREND"
+# Both filters compose: net-worth keeps three, then "bar" keeps the barchart.
+expect_ids "tag and q compose" "builtin-net-worth-barchart" \
+    "/api/specs?tag=net-worth&q=bar"
+expect_ids "tag and q compose to nothing" "" \
+    "/api/specs?tag=breakdown&q=worth"
+
 echo "== a built-in is the same spec built by hand"
 python3 - "$TMP/specs.json" "$TMP" <<'PY'
 import json, sys
@@ -396,6 +458,71 @@ reject "unknown account type" "unknown account type 'BOGUS'" \
        "{$BASE,\"account_types\":[\"BOGUS\"]}"
 reject "root account type" "unknown account type 'ROOT'" \
        "{$BASE,\"account_types\":[\"ROOT\"]}"
+
+echo "== invalid tags are named 400s"
+reject "uppercase tag" "invalid tag 'Net Worth'" \
+       "{$BASE,\"tags\":[\"ok\",\"Net Worth\"]}"
+reject "tag with an underscore" "invalid tag 'bad_tag'" \
+       "{$BASE,\"tags\":[\"bad_tag\"]}"
+reject "tag longer than 24 characters" \
+       "invalid tag 'abcdefghijklmnopqrstuvwxyz'" \
+       "{$BASE,\"tags\":[\"abcdefghijklmnopqrstuvwxyz\"]}"
+reject "more than 12 tags" "'tags' has more than 12 entries" \
+       "{$BASE,\"tags\":[\"t1\",\"t2\",\"t3\",\"t4\",\"t5\",\"t6\",\"t7\",\"t8\",\"t9\",\"t10\",\"t11\",\"t12\",\"t13\"]}"
+reject "tags must be strings" "'tags' entries must be strings" \
+       "{$BASE,\"tags\":[\"ok\",7]}"
+reject "tags must be an array" "'tags' must be an array" \
+       "{$BASE,\"tags\":\"ok\"}"
+
+echo "== a saved spec's tags live in the store"
+cat > "$TMP/tagged.json" <<'JSON'
+{"name":"Tagged report","columns":["account-name","balance"],
+ "date_preset":"all","tags":[" spending ","monthly","spending"]}
+JSON
+code=$(curl -sS -o "$TMP/body" -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' --data-binary @"$TMP/tagged.json" \
+    "${URL%/}/api/specs")
+if [ "$code" = "201" ]; then
+    ok "201 saving a spec with tags"
+    cp "$TMP/body" "$TMP/tagged-saved.json"
+    if grep -qF '"tags":["spending","monthly"]' "$TMP/body"; then
+        ok "the save response has the trimmed, deduplicated tags"
+    else
+        bad "unexpected tags in the save response: $(head -c 300 "$TMP/body")"
+    fi
+    TAG_ID=$(python3 -c \
+        'import json,sys; print(json.load(open(sys.argv[1]))["id"])' \
+        "$TMP/tagged-saved.json")
+
+    # The store is a file, re-read on every request: this GET is the reload
+    # after the save, and the tags must still be there.
+    expect_status 200 "the tagged spec after a store reload" \
+        "/api/specs/$TAG_ID"
+    expect_body "the tagged spec after a store reload" \
+        '"tags":["spending","monthly"]'
+    if grep -qF '"tags":["spending","monthly"]' "$REPORT_STORE"; then
+        ok "the tags are written to the report store file"
+    else
+        bad "tags missing from the store file $REPORT_STORE"
+    fi
+
+    # Saved and built-in specs are filtered by the same query: "monthly" is a
+    # saved tag and "breakdown" a built-in one.
+    expect_ids "the API filters saved tags too" "$TAG_ID" \
+        "/api/specs?tag=monthly"
+    expect_ids "q finds the saved spec by name" "$TAG_ID" \
+        "/api/specs?q=tagged"
+
+    code=$(curl -sS -o "$TMP/body" -w '%{http_code}' -X DELETE \
+        "${URL%/}/api/specs/$TAG_ID")
+    if [ "$code" = "200" ]; then
+        ok "the tagged spec can be deleted again"
+    else
+        bad "deleting the tagged spec answered $code"
+    fi
+else
+    bad "saving a tagged spec answered $code: $(head -c 300 "$TMP/body")"
+fi
 
 echo "== built-ins are not saved reports"
 expect_status 200 "get a built-in spec" \

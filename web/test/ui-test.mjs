@@ -125,6 +125,48 @@ const builtinDeletes = await page.locator(
 check('built-in reports have no delete control', builtinDeletes === 0,
       `${builtinDeletes} delete buttons`);
 
+/* ------------------------------------------------- report list filtering */
+
+// The list carries tags from the server, the search box narrows it as you
+// type, and a tag chip applies that tag.  These are the visible-list half of
+// the API's ?tag= and ?q= filters that report-spec.sh checks.
+const visibleEntries = () => page.evaluate(() =>
+    [...document.querySelectorAll('#report-list li')]
+        .filter((li) => !li.hidden)
+        .map((li) => li.textContent.replace(/\s+/g, ' ').trim()));
+const allEntries = await visibleEntries();
+const tagChips = await page.locator('#report-list button.tag-chip').count();
+check('the report entries carry tag chips', tagChips > 0, `${tagChips} chips`);
+
+await page.fill('#report-search', 'net worth');
+const narrowed = await visibleEntries();
+check('typing in the search box narrows the list',
+      narrowed.length > 0 && narrowed.length < allEntries.length &&
+      narrowed.every((text) => /net worth/i.test(text)),
+      `${allEntries.length} -> ${narrowed.length}: ${narrowed.join(' | ')}`);
+
+await page.fill('#report-search', '');
+const restored = await visibleEntries();
+check('clearing the search restores the list',
+      restored.length === allEntries.length,
+      `${restored.length} of ${allEntries.length}`);
+
+await page.locator('#report-list button.tag-chip[data-tag="breakdown"]')
+    .first().click();
+const taggedEntries = await visibleEntries();
+check('clicking a tag chip filters to that tag',
+      taggedEntries.length === 2 &&
+      taggedEntries.every((text) =>
+          /Expenses by Account|Income by Account/.test(text)),
+      taggedEntries.join(' | '));
+await page.locator(
+    '#report-list button.tag-chip.selected[data-tag="breakdown"]')
+    .first().click();
+const clearedEntries = await visibleEntries();
+check('clicking the selected chip clears the tag filter',
+      clearedEntries.length === allEntries.length,
+      `${clearedEntries.length} of ${allEntries.length}`);
+
 await page.locator('#report-list a.builtin-report-link',
                   { hasText: 'Income vs Expenses by Month' }).first().click();
 await page.waitForFunction(() => {
@@ -511,8 +553,16 @@ check('the designer is built from the server vocabulary',
       `groupings=${specVocabulary.groupings.join(',')} ` +
       `options=${specVocabulary.options.join(',')}`);
 
+const tagChoices = await page.evaluate(() =>
+    [...document.querySelectorAll('#spec-tag-suggestions option')]
+        .map((option) => option.value));
+check('the designer offers the existing tags as suggestions',
+      tagChoices.includes('net-worth') && tagChoices.includes('breakdown'),
+      tagChoices.join(','));
+
 await page.fill('#spec-name', 'Designer Trial Balance');
 await page.fill('#spec-title', 'Designer Trial Balance');
+await page.fill('#spec-tags', 'spending, monthly');
 await page.check('#spec-columns input[value="debit"]');
 await page.check('#spec-columns input[value="credit"]');
 await page.selectOption('#spec-grouping', 'none');
@@ -566,6 +616,10 @@ check('the spec is saved server-side and listed',
       Boolean(savedSpec) && typeof savedSpec.id === 'string' &&
       savedSpec.grouping === 'none',
       savedSpec ? savedSpec.id : 'not in /api/specs');
+check('the saved spec keeps its tags on the server',
+      Boolean(savedSpec) &&
+      JSON.stringify(savedSpec.tags) === JSON.stringify(['spending', 'monthly']),
+      savedSpec ? JSON.stringify(savedSpec.tags) : 'not in /api/specs');
 
 await page.waitForFunction(() => {
     const frame = document.getElementById('view');
@@ -588,6 +642,19 @@ await page.waitForFunction(() =>
     null, { timeout: 15000 });
 check('the saved report survives a page reload', true,
       'it lives on the server, not in localStorage');
+const savedChips = await page.evaluate(() => {
+    const link = [...document.querySelectorAll(
+        '#report-list a.saved-report-link')]
+        .find((node) => node.textContent === 'Designer Trial Balance');
+    const row = link && link.closest('li');
+    return row
+        ? [...row.querySelectorAll('button.tag-chip')]
+            .map((chip) => chip.dataset.tag)
+        : [];
+});
+check('saving a spec with tags then reloading the page shows them',
+      JSON.stringify(savedChips) === JSON.stringify(['spending', 'monthly']),
+      savedChips.join(','));
 
 await page.locator('#report-list a.saved-report-link',
                   { hasText: 'Designer Trial Balance' }).first().click();

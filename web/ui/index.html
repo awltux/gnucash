@@ -68,6 +68,21 @@
   #report-list li.builtin-report a { font-style: normal; }
   .builtin-tag { color: #666; font-size: .75rem; border: 1px solid #ccc;
                  border-radius: .5rem; padding: 0 .35rem; }
+
+  /* Report search and tags.  A tag chip is a button: clicking it filters the
+     list to that tag, and clicking it again clears the filter. */
+  #report-search-row { display: flex; gap: .5rem; align-items: baseline;
+                       margin: 0 0 .5rem; }
+  #report-search { font: inherit; padding: .25rem .4rem; width: 22rem;
+                   max-width: 100%; }
+  #report-filter-note { color: #555; font-size: .85rem; }
+  button.tag-chip { font: inherit; font-size: .75rem; color: #0645ad;
+                    background: #eef3fb; border: 1px solid #c6d7ef;
+                    border-radius: .6rem; padding: 0 .4rem; cursor: pointer;
+                    line-height: 1.4; }
+  button.tag-chip:hover { background: #dfe9f8; }
+  button.tag-chip.selected { background: #0645ad; color: #fff;
+                             border-color: #0645ad; }
 </style>
 </head>
 <body>
@@ -78,6 +93,12 @@
 <main id="tree"></main>
 <section id="reports">
   <h2>Reports</h2>
+  <p id="report-search-row">
+    <label for="report-search">Search</label>
+    <input id="report-search" type="search" autocomplete="off"
+           spellcheck="false" placeholder="Report name or tag">
+    <span id="report-filter-note" class="hint" hidden></span>
+  </p>
   <ul id="report-list"></ul>
 
   <!-- Built from the report's option descriptors when one is opened. -->
@@ -118,6 +139,19 @@
       <label for="spec-title">Title</label>
       <input id="spec-title" type="text" maxlength="120" autocomplete="off"
              placeholder="Defaults to the name">
+    </div>
+    <div class="option">
+      <label for="spec-tags">Tags</label>
+      <input id="spec-tags" type="text" maxlength="300" autocomplete="off"
+             list="spec-tag-suggestions"
+             placeholder="e.g. spending, monthly">
+      <datalist id="spec-tag-suggestions"></datalist>
+      <p class="hint">
+        Comma or space separated lowercase slugs: letters, digits and hyphens,
+        at most 24 characters and 12 tags. Tags are saved with the report on
+        the server, so every browser on this book sees them; click a tag in the
+        Reports list to filter by it.
+      </p>
     </div>
     <div class="option">
       <label>Columns</label>
@@ -212,6 +246,7 @@ let reportNames = [];      // the native/Scheme reports, from /api/reports
 let savedSpecs = [];       // designer reports, from /api/specs
 let builtinSpecs = [];     // built-in designer reports, from /api/specs
 let specFields = null;     // the designer vocabulary, from /api/spec/options
+let activeTag = "";        // the tag chip currently applied to the report list
 
 const STORAGE_KEY = "gnucash-webui.saved-views.v1";
 
@@ -225,9 +260,13 @@ const savedWrap = document.getElementById("saved-views-wrap");
 const savedList = document.getElementById("saved-views");
 const viewName = document.getElementById("view-name");
 const reportList = document.getElementById("report-list");
+const searchBox = document.getElementById("report-search");
+const filterNote = document.getElementById("report-filter-note");
 const specForm = document.getElementById("spec-form");
 const specName = document.getElementById("spec-name");
 const specTitle = document.getElementById("spec-title");
+const specTags = document.getElementById("spec-tags");
+const tagSuggestions = document.getElementById("spec-tag-suggestions");
 const specColumns = document.getElementById("spec-columns");
 const specGrouping = document.getElementById("spec-grouping");
 const specPeriodUnit = document.getElementById("spec-period-unit");
@@ -286,6 +325,77 @@ async function load() {
   }
 }
 
+// A tag chip on a report entry: clicking it filters the list to that tag,
+// and clicking the selected chip again clears the filter.
+function addTagChips(li, spec) {
+  const tags = Array.isArray(spec.tags) ? spec.tags : [];
+  for (const tag of tags) {
+    const chip = el("button", "tag-chip", tag);
+    chip.type = "button";
+    chip.dataset.tag = tag;
+    chip.title = `Filter reports tagged ${tag}`;
+    chip.setAttribute("aria-label", `Filter reports tagged ${tag}`);
+    chip.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      activeTag = activeTag === tag ? "" : tag;
+      applyReportFilter();
+    });
+    li.append(chip);
+  }
+}
+
+// What the search box looks at: the name and the tags, lower-cased once when
+// the list is built.  (The API's ?q= also searches the description; the list
+// on screen is about the report's name and its tags.)
+function setFilterData(li, spec) {
+  const tags = Array.isArray(spec.tags) ? spec.tags : [];
+  li.dataset.tags = tags.join(" ");
+  li.dataset.searchText = [spec.name, ...tags].join(" ").toLowerCase();
+}
+
+// Filtering is client-side over the rendered list: the server endpoint has
+// the same ?tag= exact match and ?q= substring idea (it also searches the
+// description), but typing must not re-fetch a list the page already has.
+// The two filters compose, exactly like the API's.
+function applyReportFilter() {
+  const query = searchBox.value.trim().toLowerCase();
+  let shown = 0;
+  for (const li of reportList.children) {
+    const tags = (li.dataset.tags || "").split(" ").filter(Boolean);
+    const tagOk = activeTag === "" || tags.includes(activeTag);
+    const textOk = query === "" || (li.dataset.searchText || "").includes(query);
+    li.hidden = !(tagOk && textOk);
+    if (!li.hidden) shown++;
+    for (const chip of li.querySelectorAll("button.tag-chip"))
+      chip.classList.toggle("selected", chip.dataset.tag === activeTag);
+  }
+  if (activeTag === "" && query === "") {
+    filterNote.hidden = true;
+    filterNote.textContent = "";
+  } else {
+    filterNote.textContent =
+      `${shown} of ${reportList.children.length} reports` +
+      (activeTag !== "" ? ` tagged "${activeTag}"` : "") +
+      (query !== "" ? ` matching "${searchBox.value.trim()}"` : "");
+    filterNote.hidden = false;
+  }
+}
+
+function allTags() {
+  const tags = new Set();
+  for (const spec of [...savedSpecs, ...builtinSpecs])
+    for (const tag of Array.isArray(spec.tags) ? spec.tags : []) tags.add(tag);
+  return [...tags].sort();
+}
+
+// The designer's tag field offers the tags already in use as suggestions.
+function refreshTagSuggestions() {
+  tagSuggestions.replaceChildren();
+  for (const tag of allTags())
+    tagSuggestions.append(new Option(tag, tag));
+}
+
 // Saved designer reports and the report templates share one list.  The
 // template list keeps its own order; saved reports follow it, each with its
 // delete control.  A built-in spec appears under its /api/reports name, but
@@ -307,7 +417,9 @@ function renderReportList() {
       });
       const tag = el("span", "builtin-tag", "built-in");
       tag.title = builtin.description || "";
+      setFilterData(li, builtin);
       li.append(link, tag);
+      addTagChips(li, builtin);
     } else {
       const link = el("a", null, name);
       link.href = api("report/" + encodeURIComponent(name));
@@ -315,6 +427,7 @@ function renderReportList() {
         event.preventDefault();
         selectReport(name);
       });
+      setFilterData(li, { name });
       li.append(link);
     }
     reportList.append(li);
@@ -337,9 +450,14 @@ function renderReportList() {
       event.stopPropagation();
       deleteSpec(spec);
     });
-    li.append(link, remove);
+    setFilterData(li, spec);
+    li.append(link);
+    addTagChips(li, spec);
+    li.append(remove);
     reportList.append(li);
   }
+  refreshTagSuggestions();
+  applyReportFilter();
 }
 
 async function loadSpecs() {
@@ -906,6 +1024,14 @@ function readDesignerSpec() {
   }
   const currency = specField("currency").trim();
   if (currency !== "") spec.currency = currency;
+  // The field is comma or space separated.  Lower-case it here so a typed
+  // "Spending" is a valid slug; the server still rejects anything that is not
+  // [a-z0-9-], naming the tag, and does the trimming and deduplication.
+  const tags = [...new Set(
+    specTags.value.split(/[\s,]+/)
+      .map((tag) => tag.trim().toLowerCase())
+      .filter((tag) => tag !== ""))];
+  if (tags.length > 0) spec.tags = tags;
   return spec;
 }
 
@@ -958,6 +1084,7 @@ async function saveSpec(event) {
     const saved = JSON.parse(text);
     specName.value = "";
     specTitle.value = "";
+    specTags.value = "";
     await loadSpecs();
     selectSpec(saved);
   } catch (err) {
@@ -1016,6 +1143,7 @@ async function deleteSpec(spec) {
 }
 
 specForm.addEventListener("submit", saveSpec);
+searchBox.addEventListener("input", applyReportFilter);
 document.getElementById("spec-preview").addEventListener("click", previewSpec);
 specGrouping.addEventListener("change", syncDesignerState);
 specChart.addEventListener("change", syncDesignerState);

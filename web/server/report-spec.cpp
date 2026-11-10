@@ -47,6 +47,35 @@ fail (std::string& error, const std::string& message)
     return false;
 }
 
+/* Tags are slugs, not free text: lower case, digits and hyphens.  Trimming
+ * happens before validation, so " spending " is the tag "spending". */
+std::string
+trimmed (const std::string& text)
+{
+    size_t first = 0;
+    while (first < text.size () && g_ascii_isspace (text[first]))
+        ++first;
+    size_t last = text.size ();
+    while (last > first && g_ascii_isspace (text[last - 1]))
+        --last;
+    return text.substr (first, last - first);
+}
+
+bool
+valid_tag (const std::string& tag)
+{
+    if (tag.empty () || tag.size () > 24)
+        return false;
+    for (const char character : tag)
+    {
+        const bool letter = character >= 'a' && character <= 'z';
+        const bool digit = character >= '0' && character <= '9';
+        if (!letter && !digit && character != '-')
+            return false;
+    }
+    return true;
+}
+
 bool
 valid_iso_date (const std::string& text)
 {
@@ -122,7 +151,7 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return fail (error, "a report spec must be a JSON object");
 
     static const std::set<std::string> allowed = {
-        "id", "name", "title", "description", "columns", "grouping",
+        "id", "name", "title", "description", "tags", "columns", "grouping",
         "period_unit", "period_mode", "start", "end", "date_preset",
         "currency", "accounts", "account_types", "chart", "chart_series",
         "builtin"};
@@ -162,6 +191,29 @@ parse_spec_value (const json::Value& value, Account* root, bool check_book,
         return false;
     if (spec.description.size () > 240)
         return fail (error, "'description' is longer than 240 characters");
+
+    spec.tags.clear ();
+    const json::Value* tags = value.find ("tags");
+    if (tags != nullptr && !tags->is_null ())
+    {
+        if (!tags->is_array ())
+            return fail (error, "'tags' must be an array of tag names");
+        std::set<std::string> seen_tags;
+        for (const json::Value& entry : tags->array)
+        {
+            if (!entry.is_string ())
+                return fail (error, "'tags' entries must be strings");
+            const std::string tag = trimmed (entry.string);
+            if (!valid_tag (tag))
+                return fail (error, "invalid tag '" + tag +
+                                     "' (expected 1-24 lowercase letters, "
+                                     "digits or hyphens)");
+            if (seen_tags.insert (tag).second)
+                spec.tags.push_back (tag);
+        }
+        if (spec.tags.size () > 12)
+            return fail (error, "'tags' has more than 12 entries");
+    }
 
     const json::Value* columns = value.find ("columns");
     if (columns == nullptr || !columns->is_array () || columns->array.empty ())
@@ -591,6 +643,14 @@ spec_to_json (const ReportSpec& spec, bool builtin)
     out << json_field ("name", spec.name) << ",";
     out << json_field ("title", spec.title) << ",";
     out << json_field ("description", spec.description) << ",";
+    out << "\"tags\":[";
+    for (size_t index = 0; index < spec.tags.size (); ++index)
+    {
+        if (index > 0)
+            out << ",";
+        out << json::quote (spec.tags[index]);
+    }
+    out << "],";
     out << "\"columns\":[";
     for (size_t index = 0; index < spec.columns.size (); ++index)
     {
@@ -666,6 +726,7 @@ builtin_specs ()
             "month over the range the book's transactions cover. Credit is "
             "income, Debit is expenses.");
         income_expenses.columns = {"account-name", "debit", "credit"};
+        income_expenses.tags = {"income", "spending", "trend", "period"};
         income_expenses.grouping = "period";
         income_expenses.period_unit = "month";
         income_expenses.query.date_preset = "all";
@@ -679,6 +740,7 @@ builtin_specs ()
             "Built-in, scoped to Expense accounts over all dates: one bar per "
             "expense account with activity.");
         expenses.columns = {"account-name", "debit"};
+        expenses.tags = {"spending", "breakdown"};
         expenses.query.date_preset = "all";
         expenses.account_types = {"EXPENSE"};
         expenses.chart = "bar";
@@ -690,6 +752,7 @@ builtin_specs ()
             "Built-in, scoped to Income accounts over all dates: one bar per "
             "income account with activity.");
         income.columns = {"account-name", "credit"};
+        income.tags = {"income", "breakdown"};
         income.query.date_preset = "all";
         income.account_types = {"INCOME"};
         income.chart = "bar";
@@ -702,6 +765,7 @@ builtin_specs ()
             "card, stock, A/R and A/P): each point is the balance at that "
             "month's end, so the line is net worth, not the month's change.");
         net_worth.columns = {"account-name", "balance"};
+        net_worth.tags = {"net-worth", "trend"};
         net_worth.grouping = "period";
         net_worth.period_unit = "month";
         net_worth.period_mode = "cumulative";
@@ -735,6 +799,7 @@ builtin_specs ()
                 "Debit is the positive-balance side, Credit the negative "
                 "side, Balance net worth.");
             spec.columns = {"account-name", "debit", "credit", "balance"};
+            spec.tags = {"net-worth", std::string (chart) + "-chart"};
             spec.grouping = "period";
             spec.period_unit = "month";
             spec.period_mode = "cumulative";
@@ -776,24 +841,80 @@ builtin_spec_by_id (const std::string& id, ReportSpec& spec)
     return false;
 }
 
+namespace
+{
+
 std::string
-specs_to_json (const std::vector<ReportSpec>& specs)
+folded (const std::string& text)
+{
+    gchar* lower = g_utf8_strdown (text.c_str (), -1);
+    if (lower == nullptr)
+        return text;
+    const std::string result (lower);
+    g_free (lower);
+    return result;
+}
+
+bool
+has_tag (const ReportSpec& spec, const std::string& tag)
+{
+    for (const std::string& candidate : spec.tags)
+    {
+        if (g_ascii_strcasecmp (candidate.c_str (), tag.c_str ()) == 0)
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
+bool
+spec_matches (const ReportSpec& spec, const std::string& tag,
+              const std::string& text)
+{
+    if (!tag.empty () && !has_tag (spec, tag))
+        return false;
+    if (text.empty ())
+        return true;
+
+    const std::string needle = folded (text);
+    if (folded (spec.name).find (needle) != std::string::npos ||
+        folded (spec.description).find (needle) != std::string::npos)
+        return true;
+    for (const std::string& candidate : spec.tags)
+    {
+        if (folded (candidate).find (needle) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+std::string
+specs_to_json (const std::vector<ReportSpec>& specs, const std::string& tag,
+               const std::string& text)
 {
     std::ostringstream out;
     out << "{\"specs\":[";
-    for (size_t index = 0; index < specs.size (); ++index)
+    bool first = true;
+    for (const ReportSpec& spec : specs)
     {
-        if (index > 0)
+        if (!spec_matches (spec, tag, text))
+            continue;
+        if (!first)
             out << ",";
-        out << spec_to_json (specs[index]);
+        first = false;
+        out << spec_to_json (spec);
     }
     out << "],\"builtin\":[";
-    const std::vector<ReportSpec>& builtins = builtin_specs ();
-    for (size_t index = 0; index < builtins.size (); ++index)
+    first = true;
+    for (const ReportSpec& spec : builtin_specs ())
     {
-        if (index > 0)
+        if (!spec_matches (spec, tag, text))
+            continue;
+        if (!first)
             out << ",";
-        out << spec_to_json (builtins[index], true);
+        first = false;
+        out << spec_to_json (spec, true);
     }
     out << "]}";
     return out.str ();

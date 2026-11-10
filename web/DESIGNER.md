@@ -52,6 +52,7 @@ is never silently discarded.
 | `name` | required, unique, at most 80 characters; this is the report-list label |
 | `title` | optional, at most 120 characters; defaults to `name` |
 | `description` | optional, at most 240 characters; shown in the report list and when a built-in is opened |
+| `tags` | optional array of up to 12 slugs: `[a-z0-9-]`, 1–24 characters each. Leading/trailing whitespace is trimmed and duplicates are dropped, in order. Tags are stored with the spec (so every browser on the book sees them) and drive the `?tag=`/`?q=` list filters. |
 | `columns` | required non-empty array from `account-name`, `debit`, `credit`, `balance`, `subtotal`; no duplicates |
 | `grouping` | `none` (one flat row per account), `account-tree` (rollups plus a subtotal per parent) or `period` (one row per year or month) |
 | `period_unit` | `year` or `month`; used by `grouping: "period"` |
@@ -69,6 +70,28 @@ a preset that resolves to them (`this-year` or `last-year`), or
 `date_preset: "all"`. With `all` the renderer takes the range from the scoped
 transactions, so a built-in period report needs no dates that fit only one
 book.
+
+## Tags and the list filters
+
+Tags are part of the spec document, not the UI's `localStorage` saved views:
+a saved report's tags are in the same file as its query, so they survive a
+reload and every browser pointed at that book sees the same tags. An invalid
+tag is a `400` whose body names it (`invalid tag 'Net Worth'`); trimming
+happens before validation, so `" spending "` is the tag `spending`.
+
+`GET /api/specs` accepts two optional filters, which compose (AND) and apply
+to the saved and the built-in specs alike:
+
+| query | meaning |
+|---|---|
+| `tag=<slug>` | keep the specs carrying that tag (exact, case-insensitive); an unknown tag is `{"specs":[],"builtin":[]}`, not an error |
+| `q=<text>` | keep the specs whose `name`, `description` or one of whose tags contains the text (case-insensitive) |
+
+The report list in the browser mirrors this client-side: the search box
+narrows the rendered list by name or tag as you type, and each tag on a
+built-in or saved entry is a chip that filters the list to that tag (clicking
+it again clears the filter). The designer's tag field is comma or space
+separated and offers the tags already in use as suggestions.
 
 ## How a chart consumes the table
 
@@ -111,6 +134,12 @@ without Guile — offers reports beyond the native reports:
 | `builtin-net-worth-month` | Net Worth by Month | asset and liability account types, cumulative balance at each month's end (so the line is net worth, not the month's change) |
 | `builtin-net-worth-barchart` | Net Worth Barchart | asset and liability account types, cumulative balance at each month's end; three series, `debit` (the positive-balance side), `credit` (the negative-balance side) and `balance` (net worth) |
 | `builtin-net-worth-linechart` | Net Worth Linechart | the same three series as a line |
+
+Their tags are defined in code too: `income`, `spending`, `trend`, `period`
+(income vs expenses); `spending`, `breakdown` (expenses); `income`,
+`breakdown` (income); `net-worth`, `trend` (net worth by month); `net-worth`
+with `bar-chart` or `line-chart` (the two net-worth charts). A fresh store can
+therefore be filtered usefully before anything has been saved.
 
 They are served by `GET /api/specs` under `builtin` (with `"builtin": true`),
 are named in `GET /api/reports` beside the native and Scheme reports, and
@@ -188,7 +217,7 @@ Every route is under the server's random token, like the rest of the web UI.
 |---|---|---|
 | `/api/spec/options` | GET | columns, groupings, period units/modes, chart types, chart series, account types and the date/currency option descriptors the designer form is generated from |
 | `/api/spec/preview` | POST | validate and render an unsaved spec; returns the same HTML a saved report produces |
-| `/api/specs` | GET | list saved specs under `specs`, and the built-ins under `builtin` |
+| `/api/specs` | GET | list saved specs under `specs`, and the built-ins under `builtin`; `?tag=` and `?q=` filter both lists |
 | `/api/specs` | POST | validate, assign an id and save; `400` names the invalid field, `201` returns the saved spec |
 | `/api/specs/<id>` | GET | one saved or built-in spec |
 | `/api/specs/<id>` | DELETE | delete a saved spec; a built-in is a `400` |
@@ -196,10 +225,10 @@ Every route is under the server's random token, like the rest of the web UI.
 
 Creation validates every field against the open book: unknown columns,
 groupings, chart types, account types, currencies, account GUIDs, spec fields,
-malformed dates, duplicate names and a start after the end are `400`
-responses whose body names the problem. The preview and the saved report run
-the same validator and the same renderer, so the preview cannot disagree with
-what Save produces.
+malformed dates, invalid tags, duplicate names and a start after the end are
+`400` responses whose body names the problem. The preview and the saved report
+run the same validator and the same renderer, so the preview cannot disagree
+with what Save produces.
 
 ## Correctness gate
 
@@ -210,7 +239,11 @@ not exactly the spec a user could build by hand fails. It also asserts the
 chart's data block is the period table's own Debit/Credit figures, that the
 net-worth built-ins draw all three series, that a narrower scope and a wider
 period change the three series, and that each nonsensical chart combination
-is a 400 naming the field.
+is a 400 naming the field. The tag checks quote the filtered id lists: one
+tag selects exactly one built-in, a shared tag selects all of them, an
+unknown tag is the empty object, `?q=` matches a name and a tag, the two
+filters compose, an invalid tag is a 400 naming it, and a saved spec's
+trimmed tags come back after the store is re-read.
 
 `web/test/ui-test.mjs` builds a spec in the browser equivalent to an explicit
 `/report/Trial Balance?end=2018-12-31` request, previews it, saves it, reloads
