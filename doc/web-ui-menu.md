@@ -283,11 +283,12 @@ and Print Report… / Export as PDF… / Export Report… (report).
 ### 4.4 Edit
 
 Cut/Copy/Paste are disabled even though the browser has them: the desktop's
-items act on its register widget, and the web tier has no register and no
-editable cell. The page-scoped account, invoice, budget and owner-tree items
-are all present and disabled with their page. Find… works, with a changed
-meaning (§4.8). Report Options works when a report is selected: it scrolls to
-the options form the page already shows. Preferences, Style Sheets and Tax
+items act on its register widget, and the web register exists but has no
+editable cell yet. The page-scoped account, invoice, budget and owner-tree
+items are all present and disabled with their page. Find… works, with a
+changed meaning (§4.8). Report Options works when a report is selected: it
+scrolls to the options form the page already shows. Preferences, Style Sheets
+and Tax
 Report Options are server/book-level and have no endpoint.
 
 ### 4.5 View
@@ -312,8 +313,8 @@ These are the menus whose desktop items presume a page or a write path.
   (Transfer…, Reconcile…, Auto-clear…, Stock Assistant…, **Stock Split…**,
   View Lots…), the invoice entry actions, Check & Repair, Reset Warnings and
   Rename Page. Stock Split… is the case the brief names: it keeps that label,
-  is disabled, and says a stock split writes to the book and the web tier has
-  no register page.
+  is disabled, and says a stock split writes to the book and the web register
+  is read-only (it now exists, as a grid opened from the account tree).
 - **Business** is the largest honest gap. Invoices *do* exist in the web tier,
   but as report documents rendered by the engine; the desktop's Business menu
   is about editing owners, jobs, payments and tax tables, none of which the

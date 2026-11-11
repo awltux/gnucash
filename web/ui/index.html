@@ -10,11 +10,48 @@
   header { border-bottom: 1px solid #ccc; margin-bottom: 1rem; }
   #summary { color: #555; }
   ul { list-style: none; padding-left: 1rem; }
-  li > span.name { cursor: pointer; }
+  .account-line { display: flex; align-items: baseline; gap: .3rem; }
+  button.account-name { background: none; border: 0; padding: 0; font: inherit;
+                        color: #0645ad; cursor: pointer; text-align: left; }
+  button.account-name:hover { text-decoration: underline; }
+  button.disclosure { background: none; border: 0; padding: 0 .1rem; font: inherit;
+                      color: #666; cursor: pointer; line-height: 1; }
+  li[aria-current="true"] > .account-line > button.account-name {
+      font-weight: 600; color: #222; }
   li > span.total { color: #444; margin-left: .5rem; font-variant-numeric: tabular-nums; }
   li > span.total.negative { color: #c00; }
   ul.collapsed { display: none; }
   .error { color: #c00; }
+
+  /* The register: a read-only grid in the content area.  The selected row is
+     the focused row (roving tabindex), so the outline is the keyboard focus
+     and the same element carries aria-selected for a screen reader. */
+  #register { border-top: 1px solid #ddd; margin-top: 1.25rem; padding-top: .5rem; }
+  #register h2 { font-size: 1.2rem; margin: 0 0 .25rem; }
+  #register-meta { color: #555; margin: 0 0 .6rem; display: flex; gap: 1.5rem; }
+  #register-message { color: #a00; }
+  #register-grid { border-collapse: collapse; width: 100%; }
+  #register-grid-wrap { max-height: 55vh; overflow: auto;
+                        border-top: 1px solid #e0e0e0; }
+  #register-grid thead th { position: sticky; top: 0; z-index: 1; }
+  #register-grid th, #register-grid td { padding: .3rem .55rem;
+      border-bottom: 1px solid #e0e0e0; text-align: left; white-space: nowrap; }
+  #register-grid th { font-weight: 600; color: #444; background: #f7f7f7; }
+  #register-grid tbody tr { cursor: default; }
+  #register-grid tbody tr[aria-selected="true"] { background: #e8f0fb;
+      outline: 2px solid #0645ad; outline-offset: -2px; }
+  #register-grid tbody tr:focus { outline: 2px solid #0645ad; outline-offset: -2px; }
+  #register-grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  #register-grid td.description, #register-grid td.memo { white-space: normal; }
+  #register-grid tbody tr.voided td { color: #999; text-decoration: line-through; }
+  #register-detail { border: 1px solid #b9cfe6; background: #f7fafd;
+                     padding: .6rem .8rem; margin-top: .8rem; }
+  #register-detail h3 { font-size: 1rem; margin: 0 0 .4rem; }
+  #register-detail table { border-collapse: collapse; width: 100%; }
+  #register-detail th, #register-detail td { padding: .25rem .5rem;
+      border-bottom: 1px solid #dde6ef; text-align: left; }
+  #register-detail td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  #register-detail .actions { margin: .5rem 0 0; }
   #reports { margin-top: 1.5rem; }
   #report-list { display: flex; flex-wrap: wrap; gap: .25rem 1rem; padding-left: 0; }
   #report-list a { color: #0645ad; }
@@ -162,6 +199,51 @@
   <p id="summary">Loading…</p>
 </header>
 <main id="tree"></main>
+
+<!-- The register opens here, in the content area, not in the report frame.
+     It is read-only: rows can be selected and a transaction inspected, but
+     there is no editing control and no save button. -->
+<section id="register" hidden aria-labelledby="register-title">
+  <h2 id="register-title"></h2>
+  <p id="register-meta">
+    <span id="register-balance"></span>
+    <span id="register-count"></span>
+  </p>
+  <p id="register-message" class="error" role="alert" hidden></p>
+  <div id="register-grid-wrap">
+  <table id="register-grid" role="grid" aria-labelledby="register-title"
+         aria-colcount="8" aria-rowcount="0">
+    <thead>
+      <tr role="row">
+        <th scope="col" role="columnheader">Date</th>
+        <th scope="col" role="columnheader">Num</th>
+        <th scope="col" role="columnheader">Description</th>
+        <th scope="col" role="columnheader">Memo</th>
+        <th scope="col" role="columnheader">Transfer</th>
+        <th scope="col" role="columnheader">R</th>
+        <th scope="col" role="columnheader">Amount</th>
+        <th scope="col" role="columnheader">Balance</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  </div>
+  <section id="register-detail" hidden tabindex="-1"
+           aria-labelledby="register-detail-title">
+    <h3 id="register-detail-title"></h3>
+    <p id="register-detail-status" class="hint" hidden></p>
+    <table>
+      <thead>
+        <tr><th scope="col">Account</th><th scope="col">Memo</th>
+            <th scope="col">Action</th><th scope="col">R</th>
+            <th scope="col">Amount</th></tr>
+      </thead>
+      <tbody id="register-detail-body"></tbody>
+    </table>
+    <p class="actions"><button id="register-detail-close" type="button">Close</button></p>
+  </section>
+</section>
+
 <section id="reports">
   <h2>Reports</h2>
   <p id="report-search-row">
@@ -452,6 +534,9 @@ let builtinSpecs = [];     // built-in designer reports, from /api/specs
 let specFields = null;     // the designer vocabulary, from /api/spec/options
 let activeTag = "";        // the tag chip currently applied to the report list
 let bookLoaded = false;    // true once /api/book and /api/accounts have answered
+let selectedAccount = null; // the account row selected in the tree
+let registerState = null;   // { account, data, rows, index } for the open register
+const transactionCache = new Map(); // transaction GUID -> /api/transaction JSON
 let reportStoreVersion = ""; // "version" from /api/specs *when the server
                              // includes it* — it does not today, so About says
                              // the server publishes no version
@@ -548,21 +633,56 @@ const aboutClose = document.getElementById("about-close");
 
 /* ------------------------------------------------------------- the book */
 
-// A foldable row: name toggles its children, total is read-only.
+// The account tree: a disclosure control for children, and a button for the
+// account name that opens that account's register in the content area.
 function renderAccount(account) {
   const li = el("li");
-  const name = el("span", "name", account.name);
+  li.dataset.guid = account.guid;
+  const line = el("div", "account-line");
+
+  const name = el("button", "link account-name", account.name);
+  name.type = "button";
+  name.dataset.guid = account.guid;
+  name.title = `Open the register for ${account.name}`;
+  name.addEventListener("click", () => selectAccount(account, li));
+
   const total = el("span", "total", account.total);
   if (account.negative) total.classList.add("negative");
-  li.append(name, total);
+
+  line.append(name, total);
+  li.append(line);
 
   if (account.children.length > 0) {
+    const toggle = el("button", "disclosure", "▾");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", "true");
+    toggle.setAttribute("aria-label", `Collapse ${account.name}`);
+    toggle.title = `Collapse ${account.name}`;
     const children = el("ul");
     for (const child of account.children) children.append(renderAccount(child));
+    toggle.addEventListener("click", () => {
+      const collapsed = children.classList.toggle("collapsed");
+      toggle.textContent = collapsed ? "▸" : "▾";
+      toggle.setAttribute("aria-expanded", String(!collapsed));
+      const verb = collapsed ? "Expand" : "Collapse";
+      toggle.setAttribute("aria-label", `${verb} ${account.name}`);
+      toggle.title = `${verb} ${account.name}`;
+    });
+    line.prepend(toggle);
     li.append(children);
-    name.addEventListener("click", () => children.classList.toggle("collapsed"));
   }
   return li;
+}
+
+// Select a tree row and open its register.  Selection is what the Edit >
+// Open Account item acts on; opening on click is the tree's own behaviour.
+function selectAccount(account, li) {
+  selectedAccount = account;
+  for (const current of document.querySelectorAll('#tree li[aria-current="true"]'))
+    current.removeAttribute("aria-current");
+  if (li) li.setAttribute("aria-current", "true");
+  refreshMenuStates();
+  openRegister(account);
 }
 
 async function load() {
@@ -579,6 +699,11 @@ async function load() {
     const list = el("ul");
     for (const account of root.children) list.append(renderAccount(account));
     tree.append(list);
+    if (selectedAccount) {
+      const current = [...tree.querySelectorAll("li")].find(
+        (row) => row.dataset.guid === selectedAccount.guid);
+      if (current) current.setAttribute("aria-current", "true");
+    }
     bookLoaded = true;
 
     // Reports are rendered by the server and shown in the frame below the
@@ -592,6 +717,237 @@ async function load() {
     console.error(err);
   }
 }
+
+/* ---------------------------------------------------------- the register */
+
+// One row is always selected when the account has rows.  The selected row is
+// also the focused row (roving tabindex), which is what makes the focus visible
+// and what carries aria-selected to a screen reader.
+let registerGeneration = 0;
+
+function registerRowElements() {
+  return [...document.querySelectorAll("#register-grid tbody tr")];
+}
+
+function selectRegisterRow(index, focus = true) {
+  if (!registerState || registerState.rows.length === 0)
+    return;
+  const rows = registerRowElements();
+  const clamped = Math.max(0, Math.min(index, rows.length - 1));
+  registerState.index = clamped;
+  rows.forEach((row, i) => {
+    row.setAttribute("aria-selected", i === clamped ? "true" : "false");
+    row.tabIndex = i === clamped ? 0 : -1;
+  });
+  if (focus) rows[clamped].focus();
+}
+
+// How many rows PageUp/PageDown move: the visible height of the scrolling
+// grid, not a hard-coded guess.  The header row is the -1.
+function registerPageSize() {
+  const wrap = document.getElementById("register-grid-wrap");
+  const row = wrap.querySelector("tbody tr");
+  if (!row || row.offsetHeight === 0) return 10;
+  return Math.max(1, Math.floor(wrap.clientHeight / row.offsetHeight) - 1);
+}
+
+function reconcileLabel(state) {
+  switch (state) {
+    case "y": return "R";
+    case "c": return "C";
+    case "f": return "F";
+    case "v": return "V";
+    default: return "";
+  }
+}
+
+function renderRegisterRow(row, index) {
+  const tr = el("tr");
+  tr.setAttribute("role", "row");
+  tr.setAttribute("aria-rowindex", String(index + 2)); // row 1 is the header
+  tr.setAttribute("aria-selected", "false");
+  tr.dataset.index = String(index);
+  tr.tabIndex = -1;
+  if (row.voided) tr.classList.add("voided");
+
+  const cells = [
+    ["date", row.date], ["num", row.num],
+    ["description", row.description], ["memo", row.memo],
+    ["transfer", row.transfer_account], ["reconcile", reconcileLabel(row.reconcile)],
+    ["num", row.amount], ["num", row.running_balance],
+  ];
+  for (const [kind, text] of cells) {
+    const cell = el("td", kind, text);
+    cell.setAttribute("role", "gridcell");
+    tr.append(cell);
+  }
+  tr.addEventListener("click", () => selectRegisterRow(index));
+  return tr;
+}
+
+function closeRegisterDetail(focus = true) {
+  const panel = document.getElementById("register-detail");
+  if (panel.hidden) return false;
+  panel.hidden = true;
+  document.getElementById("register-detail-title").textContent = "";
+  document.getElementById("register-detail-body").replaceChildren();
+  document.getElementById("register-detail-status").hidden = true;
+  if (focus && registerState && registerState.rows.length > 0)
+    selectRegisterRow(registerState.index);
+  return true;
+}
+
+async function openRegister(account, options = {}) {
+  const section = document.getElementById("register");
+  const grid = document.getElementById("register-grid");
+  const tbody = grid.querySelector("tbody");
+  const message = document.getElementById("register-message");
+  const generation = ++registerGeneration;
+  const previousIndex = registerState ? registerState.index : 0;
+
+  section.hidden = false;
+  message.hidden = true;
+  closeRegisterDetail(false);
+
+  try {
+    const response = await fetch(
+      api("api/register/" + encodeURIComponent(account.guid)));
+    if (generation !== registerGeneration) return; // a newer click won
+    if (!response.ok) {
+      const body = await response.text();
+      message.textContent = `Could not open the register: ${body}`;
+      message.hidden = false;
+      return;
+    }
+    const data = await response.json();
+    if (generation !== registerGeneration) return;
+
+    registerState = {
+      account,
+      data,
+      rows: data.splits,
+      index: data.splits.length === 0 ? -1 : 0,
+    };
+
+    document.getElementById("register-title").textContent =
+      data.full_name || data.account;
+    document.getElementById("register-balance").textContent =
+      `Balance: ${data.balance}`;
+    document.getElementById("register-count").textContent =
+      `${data.row_count} row${data.row_count === 1 ? "" : "s"}`;
+    grid.setAttribute("aria-rowcount", String(data.splits.length + 1));
+
+    tbody.replaceChildren();
+    for (const [index, row] of data.splits.entries())
+      tbody.append(renderRegisterRow(row, index));
+
+    if (data.splits.length > 0) {
+      const start = options.preserveIndex === false ? 0 : previousIndex;
+      selectRegisterRow(Math.min(start, data.splits.length - 1),
+                        options.focus !== false);
+    }
+    section.scrollIntoView({ block: "start" });
+    refreshMenuStates();
+  } catch (err) {
+    message.textContent = `Could not open the register: ${err}`;
+    message.hidden = false;
+    console.error(err);
+  }
+}
+
+function onRegisterKeydown(event) {
+  if (!registerState || registerState.rows.length === 0)
+    return;
+  if (!event.target.closest("#register-grid tbody tr"))
+    return;
+
+  const last = registerState.rows.length - 1;
+  let next = null;
+  switch (event.key) {
+    case "ArrowDown": next = registerState.index + 1; break;
+    case "ArrowUp": next = registerState.index - 1; break;
+    case "Home": next = 0; break;
+    case "End": next = last; break;
+    case "PageDown": next = registerState.index + registerPageSize(); break;
+    case "PageUp": next = registerState.index - registerPageSize(); break;
+    case "Enter":
+      event.preventDefault();
+      openRegisterDetail(registerState.rows[registerState.index]);
+      return;
+    default:
+      return;
+  }
+  event.preventDefault();
+  selectRegisterRow(next);
+}
+
+async function openRegisterDetail(row) {
+  if (!row) return;
+  const panel = document.getElementById("register-detail");
+  const title = document.getElementById("register-detail-title");
+  const status = document.getElementById("register-detail-status");
+  const body = document.getElementById("register-detail-body");
+
+  title.textContent = `Transaction ${row.date}` +
+    (row.num ? ` #${row.num}` : "") + ` — ${row.description}`;
+  body.replaceChildren();
+  status.hidden = true;
+  /* Stay hidden until the panel has content: a visible but empty panel would
+     tell a reader (and a test) that the transaction has no splits. */
+  panel.hidden = true;
+
+  let transaction = transactionCache.get(row.transaction_guid);
+  if (!transaction) {
+    try {
+      const response = await fetch(
+        api("api/transaction/" + encodeURIComponent(row.transaction_guid)));
+      if (!response.ok) {
+        status.textContent = `Could not load the transaction: ${await response.text()}`;
+        status.hidden = false;
+        panel.hidden = false;
+        panel.focus();
+        return;
+      }
+      transaction = await response.json();
+      transactionCache.set(row.transaction_guid, transaction);
+    } catch (err) {
+      status.textContent = `Could not load the transaction: ${err}`;
+      status.hidden = false;
+      panel.hidden = false;
+      panel.focus();
+      console.error(err);
+      return;
+    }
+  }
+
+  for (const split of transaction.splits) {
+    const tr = el("tr");
+    tr.append(
+      el("td", null, split.account),
+      el("td", null, split.memo),
+      el("td", null, split.action),
+      el("td", null, reconcileLabel(split.reconcile)),
+      el("td", "num", split.amount),
+    );
+    body.append(tr);
+  }
+  panel.hidden = false;
+  panel.focus();
+}
+
+document.getElementById("register-grid")
+  .addEventListener("keydown", onRegisterKeydown);
+document.getElementById("register-detail-close")
+  .addEventListener("click", () => closeRegisterDetail(true));
+
+// Escape closes the transaction panel and puts focus back on the selected
+// grid row.  The menu bar has its own Escape handling on #menubar, so this
+// only fires for the register.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (closeRegisterDetail(true))
+    event.preventDefault();
+});
 
 // A tag chip on a report entry: clicking it filters the list to that tag,
 // and clicking the selected chip again clears the filter.
@@ -2286,7 +2642,8 @@ const NO_EXPORT =
 const PAGE_REASONS = {
   register:
     "Register page only: the desktop merges this item while a register page " +
-    "is open, and the web tier has no register page yet.",
+    "is open. The web register is read-only, so this editing action has no " +
+    "web equivalent yet.",
   "account-tree":
     "Accounts page only: the desktop merges this item while the accounts " +
     "page is open, and the web tier has no separate accounts page.",
@@ -2313,6 +2670,8 @@ const MENU_NEEDS = {
             reason: "No report is selected." },
   designerReady: { ok: () => specFields !== null,
                    reason: "The report designer's vocabulary has not loaded yet." },
+  accountSelected: { ok: () => selectedAccount !== null,
+                     reason: "No account is selected in the tree." },
 };
 
 // Each page module below is the extension point.  `present()` says whether
@@ -2327,8 +2686,8 @@ const MENU_NEEDS = {
 // { before: "<item id>", items: [...] } to sit before a named base item.
 const MENU_PAGES = {
   report: { present: () => selectedReport !== null },
-  register: { present: () => false },
-  "account-tree": { present: () => false },
+  register: { present: () => registerState !== null },
+  "account-tree": { present: () => true },
   invoice: { present: () => false },
   budget: { present: () => false },
   scheduled: { present: () => false },
@@ -2425,7 +2784,8 @@ const MENU_TABLE = [
       { label: "Find Account", accel: "Ctrl+I", page: "account-tree" },
       { label: "Cascade Account Properties…", page: "account-tree" },
       { label: "Renumber Subaccounts…", page: "account-tree" },
-      { label: "Open Account", page: "account-tree" },
+      { id: "open-account", label: "Open Account", page: "account-tree",
+        needs: "accountSelected", run: openSelectedAccount },
       { label: "Open SubAccounts", page: "account-tree" },
       { label: "Edit Invoice", page: "invoice" },
       { label: "Duplicate Invoice", page: "invoice" },
@@ -2513,7 +2873,8 @@ const MENU_TABLE = [
   {
     id: "transaction", label: "Transaction", mnemonic: "N",
     note: "Register page only: the desktop hides this menu unless a register " +
-          "page is open, and the web tier has no register page yet.",
+          "page is open. The web register is read-only, so its editing " +
+          "actions stay disabled.",
     items: [
       { label: "Cut Transaction", page: "register" },
       { label: "Copy Transaction", page: "register" },
@@ -2792,6 +3153,14 @@ function focusSearch() {
   searchBox.select();
 }
 
+// Edit > Open Account: the desktop's account-tree action, acting on the row
+// selected in the tree.  (Clicking the row opens it too; the menu is the
+// desktop's path and gives keyboard users a named action.)
+function openSelectedAccount() {
+  if (selectedAccount)
+    openRegister(selectedAccount);
+}
+
 function toggleDesigner() {
   designer.hidden = !designer.hidden;
   if (!designer.hidden)
@@ -2853,12 +3222,15 @@ function showAbout() {
 
 async function refreshPage() {
   // The desktop's View > Refresh re-reads the page's data.  Here that means
-  // the book, the accounts and the report list, and the report frame if one
-  // is open (the frame is a separate document and does not re-fetch by
-  // itself).
+  // the book, the accounts and the report list, the open register (keeping
+  // its selected row), and the report frame if one is open (the frame is a
+  // separate document and does not re-fetch by itself).
   const frame = view;
   const frameSrc = !frame.hidden ? frame.getAttribute("src") : null;
+  const account = registerState ? registerState.account : null;
   await load();
+  if (account)
+    await openRegister(account, { preserveIndex: true, focus: false });
   if (frameSrc) {
     frame.removeAttribute("src");
     frame.src = frameSrc;

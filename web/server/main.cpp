@@ -797,46 +797,228 @@ find_spec (const std::string& id, web::ReportSpec& spec, std::string& error)
 }
 
 std::string
-register_json (Account* account)
+guid_text (const GncGUID* guid)
 {
-    GNCPrintAmountInfo info = gnc_account_print_info (account, TRUE);
-    std::string out = "{\"account\":\"";
-    out += json_escape (xaccAccountGetName (account));
-    out += "\",\"splits\":[";
+    gchar* text = guid_to_string (guid);
+    std::string result = text != nullptr ? text : "";
+    g_free (text);
+    return result;
+}
 
-    const bool newest_first = true;
-    GList* splits = xaccAccountGetSplitList (account);
-    if (newest_first)
-        splits = g_list_reverse (g_list_copy (splits));
-    else
-        splits = g_list_copy (splits);
+/* One register row, exactly as the page and the JSON show it.
+ *
+ * The account's split list is the engine's own register order: the account
+ * keeps its splits sorted with xaccSplitOrder(), which is what the desktop
+ * register's default "BY_STANDARD" sort uses (gnc_split_reg_sort(), BY_STANDARD
+ * -> QUERY_DEFAULT_SORT -> xaccSplitOrder).  The running balance is
+ * xaccSplitGetBalance(), the number xaccAccountRecomputeBalance() folds into
+ * the account balance while walking that same list, so the last row's balance
+ * and xaccAccountGetBalance() are the same value rather than two calculations
+ * that could drift apart. */
+struct RegisterRow
+{
+    std::string guid;
+    std::string transaction_guid;
+    std::string date;
+    std::string date_iso;
+    std::string num;
+    std::string description;
+    std::string memo;
+    std::string action;
+    std::string transfer_account;
+    std::string transfer_account_guid;
+    std::string reconcile;
+    bool reconciled = false;
+    bool voided = false;
+    std::string amount;
+    std::string running_balance;
+};
 
-    bool first = true;
-    for (GList* node = splits; node != nullptr; node = node->next)
+std::vector<RegisterRow>
+register_rows (Account* account)
+{
+    /* Both are public engine calls and no-ops when nothing changed.  Sorting
+     * first matters because the running balance depends on the order. */
+    xaccAccountSortSplits (account, TRUE);
+    xaccAccountRecomputeBalance (account);
+
+    const GNCPrintAmountInfo info = gnc_account_print_info (account, TRUE);
+    std::vector<RegisterRow> rows;
+
+    for (GList* node = xaccAccountGetSplitList (account); node != nullptr;
+         node = node->next)
     {
         auto* split = static_cast<Split*>(node->data);
+        Transaction* transaction = xaccSplitGetParent (split);
+        RegisterRow row;
+
+        row.guid = guid_text (xaccSplitGetGUID (split));
+        row.transaction_guid = guid_text (xaccTransGetGUID (transaction));
+
+        char date[16] = {0};
+        qof_print_date_buff (date, sizeof date, xaccTransGetDate (transaction));
+        row.date = date;
+        char date_iso[64] = {0};
+        gnc_time64_to_iso8601_buff (xaccTransGetDate (transaction), date_iso);
+        row.date_iso = date_iso;
+
+        const gchar* num = xaccTransGetNum (transaction);
+        row.num = num != nullptr ? num : "";
+        const gchar* description = xaccTransGetDescription (transaction);
+        row.description = description != nullptr ? description : "";
+        const gchar* memo = xaccSplitGetMemo (split);
+        row.memo = memo != nullptr ? memo : "";
+        const gchar* action = xaccSplitGetAction (split);
+        row.action = action != nullptr ? action : "";
+
+        /* The Transfer column: the other account of a two-split transaction,
+         * or the engine's own placeholder for a split transaction. */
+        Split* other = xaccSplitGetOtherSplit (split);
+        if (other != nullptr)
+        {
+            Account* other_account = xaccSplitGetAccount (other);
+            row.transfer_account = xaccAccountGetName (other_account);
+            row.transfer_account_guid = account_guid_text (other_account);
+        }
+        else
+        {
+            const gchar* corr = xaccSplitGetCorrAccountName (split);
+            row.transfer_account = corr != nullptr ? corr : "";
+        }
+
+        const char reconcile = xaccSplitGetReconcile (split);
+        row.reconcile = std::string (1, reconcile);
+        row.reconciled = reconcile == YREC;
+        row.voided = xaccTransGetVoidStatus (transaction);
+
+        const gchar* amount = xaccPrintAmount (xaccSplitGetAmount (split), info);
+        row.amount = amount != nullptr ? amount : "";
+        const gchar* running =
+            xaccPrintAmount (xaccSplitGetBalance (split), info);
+        row.running_balance = running != nullptr ? running : "";
+
+        rows.push_back (std::move (row));
+    }
+    return rows;
+}
+
+std::string
+register_json (Account* account)
+{
+    const GNCPrintAmountInfo info = gnc_account_print_info (account, TRUE);
+    const std::vector<RegisterRow> rows = register_rows (account);
+
+    gchar* full_name = gnc_account_get_full_name (account);
+    std::string out = "{\"account\":\"";
+    out += json_escape (xaccAccountGetName (account));
+    out += "\",\"account_guid\":\"";
+    out += json_escape (account_guid_text (account).c_str ());
+    out += "\",\"full_name\":\"";
+    out += json_escape (full_name != nullptr ? full_name : "");
+    g_free (full_name);
+    out += "\",\"balance\":\"";
+    const gchar* balance = xaccPrintAmount (xaccAccountGetBalance (account), info);
+    out += json_escape (balance != nullptr ? balance : "");
+    out += "\",\"balance_negative\":";
+    out += gnc_numeric_negative_p (xaccAccountGetBalance (account)) ? "true"
+                                                                   : "false";
+    out += ",\"row_count\":";
+    out += std::to_string (rows.size ());
+    out += ",\"splits\":[";
+
+    bool first = true;
+    for (const RegisterRow& row : rows)
+    {
         if (!first)
             out += ",";
         first = false;
 
-        char date[16] = {0};
-        qof_print_date_buff (date, sizeof date, xaccTransGetDate (xaccSplitGetParent (split)));
-
-        out += "{\"date\":\"";
-        out += date;
-        out += "\",\"description\":\"";
-        out += json_escape (xaccTransGetDescription (xaccSplitGetParent (split)));
-        out += "\",\"account\":\"";
-        out += json_escape (xaccAccountGetName (xaccSplitGetAccount (split)));
-        out += "\",\"amount\":\"";
-        const gchar* amount = xaccPrintAmount (xaccSplitGetAmount (split), info);
-        out += json_escape (amount != nullptr ? amount : "");
-        out += "\",\"reconciled\":";
-        out += xaccSplitGetReconcile (split) == YREC ? "true" : "false";
+        out += "{\"guid\":\"" + json_escape (row.guid.c_str ()) + "\"";
+        out += ",\"transaction_guid\":\"" +
+               json_escape (row.transaction_guid.c_str ()) + "\"";
+        out += ",\"date\":\"" + json_escape (row.date.c_str ()) + "\"";
+        out += ",\"date_iso\":\"" + json_escape (row.date_iso.c_str ()) + "\"";
+        out += ",\"num\":\"" + json_escape (row.num.c_str ()) + "\"";
+        out += ",\"description\":\"" +
+               json_escape (row.description.c_str ()) + "\"";
+        out += ",\"memo\":\"" + json_escape (row.memo.c_str ()) + "\"";
+        out += ",\"action\":\"" + json_escape (row.action.c_str ()) + "\"";
+        out += ",\"transfer_account\":\"" +
+               json_escape (row.transfer_account.c_str ()) + "\"";
+        out += ",\"transfer_account_guid\":\"" +
+               json_escape (row.transfer_account_guid.c_str ()) + "\"";
+        out += ",\"reconcile\":\"" + json_escape (row.reconcile.c_str ()) + "\"";
+        out += ",\"reconciled\":";
+        out += row.reconciled ? "true" : "false";
+        out += ",\"voided\":";
+        out += row.voided ? "true" : "false";
+        out += ",\"amount\":\"" + json_escape (row.amount.c_str ()) + "\"";
+        out += ",\"running_balance\":\"" +
+               json_escape (row.running_balance.c_str ()) + "\"";
         out += "}";
     }
-    g_list_free (splits);
 
+    out += "]}";
+    return out;
+}
+
+/* The read-only transaction panel's data: every split of one transaction, so
+ * a register row can show what it is part of without inventing a second
+ * register model. */
+std::string
+transaction_json (Transaction* transaction)
+{
+    std::string out = "{\"guid\":\"";
+    out += json_escape (guid_text (xaccTransGetGUID (transaction)).c_str ());
+    out += "\",\"date\":\"";
+    char date[16] = {0};
+    qof_print_date_buff (date, sizeof date, xaccTransGetDate (transaction));
+    out += json_escape (date);
+    out += "\",\"date_iso\":\"";
+    char date_iso[64] = {0};
+    gnc_time64_to_iso8601_buff (xaccTransGetDate (transaction), date_iso);
+    out += json_escape (date_iso);
+    out += "\",\"num\":\"";
+    const gchar* num = xaccTransGetNum (transaction);
+    out += json_escape (num != nullptr ? num : "");
+    out += "\",\"description\":\"";
+    out += json_escape (xaccTransGetDescription (transaction));
+    out += "\",\"voided\":";
+    out += xaccTransGetVoidStatus (transaction) ? "true" : "false";
+    out += ",\"splits\":[";
+
+    bool first = true;
+    for (GList* node = xaccTransGetSplitList (transaction); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*>(node->data);
+        Account* account = xaccSplitGetAccount (split);
+        if (!first)
+            out += ",";
+        first = false;
+
+        out += "{\"guid\":\"" +
+               json_escape (guid_text (xaccSplitGetGUID (split)).c_str ()) + "\"";
+        out += ",\"account\":\"" +
+               json_escape (xaccAccountGetName (account)) + "\"";
+        out += ",\"account_guid\":\"" +
+               json_escape (account_guid_text (account).c_str ()) + "\"";
+        const gchar* memo = xaccSplitGetMemo (split);
+        out += ",\"memo\":\"" + json_escape (memo != nullptr ? memo : "") + "\"";
+        const gchar* action = xaccSplitGetAction (split);
+        out += ",\"action\":\"" +
+               json_escape (action != nullptr ? action : "") + "\"";
+        const char reconcile = xaccSplitGetReconcile (split);
+        out += ",\"reconcile\":\"";
+        out += json_escape (std::string (1, reconcile).c_str ());
+        out += "\",\"reconciled\":";
+        out += reconcile == YREC ? "true" : "false";
+        const gchar* amount = xaccPrintAmount (
+            xaccSplitGetAmount (split), gnc_account_print_info (account, TRUE));
+        out += ",\"amount\":\"";
+        out += json_escape (amount != nullptr ? amount : "");
+        out += "\"}";
+    }
 
     out += "]}";
     return out;
@@ -901,11 +1083,15 @@ rewrite_links (const std::string& html, const std::string& token)
     return out;
 }
 
-/* A server-rendered register page: the frame the report navigates into. */
+/* A server-rendered register page: the frame the report navigates into.  It
+ * walks the same RegisterRow list the JSON does, so the page's rows, order and
+ * balances are the API's, not a second calculation. */
 std::string
 register_html (Account* account)
 {
-    GNCPrintAmountInfo info = gnc_account_print_info (account, TRUE);
+    const GNCPrintAmountInfo info = gnc_account_print_info (account, TRUE);
+    const std::vector<RegisterRow> rows = register_rows (account);
+
     std::string out = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>";
     out += html_escape (xaccAccountGetName (account));
     out += "</title><style>"
@@ -917,6 +1103,7 @@ register_html (Account* account)
            "th{font-weight:600;color:#444}"
            "td.num{text-align:right;font-variant-numeric:tabular-nums}"
            "tr.reconciled td.num{color:#080}"
+           "tr.voided td{color:#999;text-decoration:line-through}"
            "</style></head><body><h1>";
     out += html_escape (xaccAccountGetName (account));
     out += "</h1><p class='total'>Balance: ";
@@ -927,41 +1114,51 @@ register_html (Account* account)
            "<th>Transfer</th><th class='num'>Amount</th>"
            "<th class='num'>Balance</th></tr></thead><tbody>";
 
-    GList* splits = g_list_reverse (g_list_copy (xaccAccountGetSplitList (account)));
-    /* Newest first, walking the account's balance backwards: each row shows the
-     * balance after that entry, which is what a register column means. */
-    gnc_numeric running = xaccAccountGetBalance (account);
-    for (GList* node = splits; node != nullptr; node = node->next)
+    for (const RegisterRow& row : rows)
     {
-        auto* split = static_cast<Split*>(node->data);
-        char date[16] = {0};
-        qof_print_date_buff (date, sizeof date,
-                             xaccTransGetDate (xaccSplitGetParent (split)));
-
         out += "<tr";
-        out += xaccSplitGetReconcile (split) == YREC ? " class='reconciled'" : "";
+        if (row.reconciled)
+            out += " class='reconciled'";
+        else if (row.voided)
+            out += " class='voided'";
         out += "><td>";
-        out += date;
+        out += html_escape (row.date.c_str ());
         out += "</td><td>";
-        out += html_escape (xaccTransGetDescription (xaccSplitGetParent (split)));
+        out += html_escape (row.description.c_str ());
         out += "</td><td>";
-        out += html_escape (xaccAccountGetName (xaccSplitGetAccount (split)));
+        out += html_escape (row.transfer_account.c_str ());
         out += "</td><td class='num'>";
-        const gchar* amount = xaccPrintAmount (xaccSplitGetAmount (split), info);
-        out += html_escape (amount != nullptr ? amount : "");
+        out += html_escape (row.amount.c_str ());
         out += "</td><td class='num'>";
-        const gchar* running_text = xaccPrintAmount (running, info);
-        out += html_escape (running_text != nullptr ? running_text : "");
+        out += html_escape (row.running_balance.c_str ());
         out += "</td></tr>";
-
-        running = gnc_numeric_sub (running, xaccSplitGetAmount (split),
-                                   GNC_DENOM_AUTO, GNC_HOW_RND_ROUND_HALF_UP);
     }
-    g_list_free (splits);
 
 
     out += "</tbody></table></body></html>";
     return out;
+}
+
+/* The register routes accept both "acct-guid=<guid>" (the form the reports'
+ * links use) and a bare GUID.  Strip the prefix once, and look the account up
+ * in the book this process owns.  A null result means "no such account" for
+ * both routes; the caller decides the status and the message. */
+std::string
+account_spec (std::string spec)
+{
+    const std::string prefix = "acct-guid=";
+    if (spec.compare (0, prefix.size (), prefix) == 0)
+        spec = spec.substr (prefix.size ());
+    return spec;
+}
+
+Account*
+lookup_account (const std::string& spec)
+{
+    GncGUID guid;
+    if (!string_to_guid (spec.c_str (), &guid))
+        return nullptr;
+    return xaccAccountLookup (&guid, gnc_account_get_book (g_server.root));
 }
 
 /* One request, already read.  The designer's POST bodies are small JSON
@@ -2269,15 +2466,8 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     {
         /* The drill-down target: an account's register, rendered here so a
          * link inside a report frame can simply navigate to it. */
-        std::string spec = url_decode (route.substr (9));
-        const std::string prefix = "acct-guid=";
-        if (spec.compare (0, prefix.size (), prefix) == 0)
-            spec = spec.substr (prefix.size ());
-
-        GncGUID guid;
-        Account* account = nullptr;
-        if (string_to_guid (spec.c_str (), &guid))
-            account = xaccAccountLookup (&guid, gnc_account_get_book (g_server.root));
+        const std::string spec = account_spec (url_decode (route.substr (9)));
+        Account* account = lookup_account (spec);
 
         if (account == nullptr)
         {
@@ -2294,25 +2484,44 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         /* Reports link to accounts by GUID; this is the endpoint those links
          * will be rewritten to point at. Accepts both "acct-guid=<guid>" (the
          * form the report HTML uses) and a bare GUID. */
-        std::string spec = url_decode (route.substr (13));
-        const std::string prefix = "acct-guid=";
-        if (spec.compare (0, prefix.size (), prefix) == 0)
-            spec = spec.substr (prefix.size ());
-
-        GncGUID guid;
-        Account* account = nullptr;
-        if (string_to_guid (spec.c_str (), &guid))
-            account = xaccAccountLookup (&guid, gnc_account_get_book (g_server.root));
+        const std::string spec = account_spec (url_decode (route.substr (13)));
+        Account* account = lookup_account (spec);
 
         if (account == nullptr)
         {
-            send_response (connection, "404 Not Found", "text/plain",
-                           "no such account\n");
+            /* A register for an account that does not exist is a bad request,
+             * not a missing page, and it names the GUID that was asked for. */
+            std::string body = "{\"error\":\"unknown-account\",\"message\":";
+            body += "\"no such account: " + json_escape (spec.c_str ()) + "\"}";
+            send_json (connection, "400 Bad Request", body);
             return TRUE;
         }
 
         send_response (connection, "200 OK", "application/json",
                        register_json (account));
+    }
+    else if (route.compare (0, 16, "api/transaction/") == 0)
+    {
+        /* The read-only split panel behind a register row: every split of one
+         * transaction, looked up by the GUID the register row carries. */
+        const std::string spec = url_decode (route.substr (16));
+
+        GncGUID guid;
+        Transaction* transaction = nullptr;
+        if (string_to_guid (spec.c_str (), &guid))
+            transaction = xaccTransLookup (
+                &guid, gnc_account_get_book (g_server.root));
+
+        if (transaction == nullptr)
+        {
+            std::string body = "{\"error\":\"unknown-transaction\",\"message\":";
+            body += "\"no such transaction: " + json_escape (spec.c_str ()) + "\"}";
+            send_json (connection, "400 Bad Request", body);
+            return TRUE;
+        }
+
+        send_response (connection, "200 OK", "application/json",
+                       transaction_json (transaction));
     }
     else if (route == "api/reports")
     {

@@ -998,6 +998,8 @@ set(web_DIST
   web/test/report-spec-documents.sh
   web/test/tax-txf-parity.sh
   web/test/book-save.sh
+  web/test/register-api.sh
+  web/test/register-ui.mjs
   web/test/demo-book-check.sh
   web/test/ui-test.mjs)
 add_subdirectory (bindings)
