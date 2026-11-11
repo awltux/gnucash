@@ -161,6 +161,12 @@ surfaces that as `500 backup-failed`, naming the book, and does **not** retry
 without a backup. A save that writes the book returns the backup path and its
 size, so the user has a concrete, named artefact.
 
+(ADR 0014 §10 adds one narrow exception: when the backup name is already taken
+by a save in the same second, the server waits for the next second and retries
+once, so the retry is still the engine's own backup under the engine's own
+naming rule — never a save without one. A genuine backup failure still answers
+the named `500` on the first attempt.)
+
 The server makes no backup of its own: a second copy with a different naming
 rule would be a second story to keep true, and would not match what a desktop
 user finds next to the book.

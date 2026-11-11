@@ -373,6 +373,148 @@ request GET "api/register/$GUID"
 stop
 echo "re-open: the edits are on disk"
 
+echo "== two dirty saves back-to-back both succeed, each with its own backup"
+# The user's case (ADR 0014 §10): save, edit, save again immediately.  If both
+# saves fall inside one second the engine's per-second backup name collides
+# and the server waits for the next second and retries once; if the clock has
+# already turned there is no collision to retry.  Either way both saves must
+# succeed, both backups must exist and be distinct, and the final book must
+# carry both edits.
+start "$TMP/collision.log" --writable
+write_body "$TMP/edit.json" '{"memo":"back-to-back first"}'
+request POST "api/split/$SPLIT" "$TMP/edit.json"
+[ "$CODE" = "200" ] || fail "the first back-to-back edit answered $CODE: $BODY"
+request POST "api/book/save"
+[ "$CODE" = "200" ] || fail "the first back-to-back save answered $CODE: $BODY"
+BACKUP_FIRST=$(echo "$BODY" | sed -n 's/.*"backup":"\([^"]*\)".*/\1/p')
+[ -n "$BACKUP_FIRST" ] \
+    || fail "the first back-to-back save named no backup: $BODY"
+[ -f "$BACKUP_FIRST" ] \
+    || fail "the first back-to-back backup is missing: $BACKUP_FIRST"
+
+# No sleep here on purpose: this is the save that can collide.
+write_body "$TMP/edit.json" '{"num":"BACK-TO-BACK-2"}'
+request POST "api/split/$SPLIT" "$TMP/edit.json"
+[ "$CODE" = "200" ] || fail "the second back-to-back edit answered $CODE: $BODY"
+request POST "api/book/save"
+[ "$CODE" = "200" ] || fail "the second back-to-back save answered $CODE: $BODY"
+BACKUP_SECOND=$(echo "$BODY" | sed -n 's/.*"backup":"\([^"]*\)".*/\1/p')
+[ -n "$BACKUP_SECOND" ] \
+    || fail "the second back-to-back save named no backup: $BODY"
+[ -f "$BACKUP_SECOND" ] \
+    || fail "the second back-to-back backup is missing: $BACKUP_SECOND"
+[ "$BACKUP_FIRST" != "$BACKUP_SECOND" ] \
+    || fail "the two saves named the same backup file: $BACKUP_FIRST"
+echo "back-to-back: 200/200, backups $(basename "$BACKUP_FIRST") and $(basename "$BACKUP_SECOND")"
+
+echo "== a colliding same-second backup name is waited out and retried once"
+# Force the exact precondition: plant a file at the backup name this second
+# would use, then save inside that second.  The engine refuses the backup, the
+# server sees this second's name is taken, waits for the next second and
+# retries once.  The back-to-back case above only reaches this by timing; this
+# one reaches it by construction.
+RETRY_MARK='retrying the save once'
+RETRIES_BEFORE=$(grep -cF "$RETRY_MARK" "$TMP/collision.log" || true)
+COLLISION_OK=0
+PLANTED=""
+for attempt in 1 2 3; do
+    # Start just after a second boundary so the plant, the edit and the save
+    # all fit inside one second.
+    python3 -c 'import time; time.sleep(1.0 - (time.time() % 1.0) + 0.01)'
+    STAMP=$(date +%Y%m%d%H%M%S)
+    PLANTED="$BOOK.$STAMP.gnucash"
+    if [ -e "$PLANTED" ]; then
+        # A real backup already uses this second's name; try the next second.
+        PLANTED=""
+        continue
+    fi
+    : > "$PLANTED"
+    write_body "$TMP/edit.json" \
+        "{\"description\":\"retried collision $attempt\"}"
+    request POST "api/split/$SPLIT" "$TMP/edit.json"
+    [ "$CODE" = "200" ] \
+        || { rm -f "$PLANTED"; fail "the edit before the colliding save answered $CODE: $BODY"; }
+    request POST "api/book/save"
+    if [ "$CODE" != "200" ]; then
+        rm -f "$PLANTED"
+        fail "a save whose backup name was taken answered $CODE instead of retrying: $BODY"
+    fi
+    RETRIES_AFTER=$(grep -cF "$RETRY_MARK" "$TMP/collision.log" || true)
+    if [ "$RETRIES_AFTER" -gt "$RETRIES_BEFORE" ]; then
+        COLLISION_OK=1
+        break
+    fi
+    # The clock turned between the plant and the save, so there was nothing to
+    # collide with.  Remove the plant and try again.
+    rm -f "$PLANTED"
+    PLANTED=""
+done
+[ "$COLLISION_OK" = "1" ] \
+    || fail "no save collided on the planted backup name in three attempts"
+[ -f "$PLANTED" ] \
+    || fail "the retry removed the file that caused the collision: $PLANTED"
+[ ! -s "$PLANTED" ] \
+    || fail "the retry overwrote the file that caused the collision: $PLANTED"
+RETRY_BACKUP=$(echo "$BODY" | sed -n 's/.*"backup":"\([^"]*\)".*/\1/p')
+[ -n "$RETRY_BACKUP" ] || fail "the retried save named no backup: $BODY"
+[ "$RETRY_BACKUP" != "$PLANTED" ] \
+    || fail "the retried save reused the colliding name: $BODY"
+[ -f "$RETRY_BACKUP" ] \
+    || fail "the retried save's backup is missing: $RETRY_BACKUP"
+echo "$BODY" | grep -q '"retried":true' \
+    || fail "the retried save does not report that it retried: $BODY"
+echo "collision: waited for the next second, retried once, backup $(basename "$RETRY_BACKUP")"
+
+echo "== the saved book carries both back-to-back changes"
+stop
+[ ! -e "$BOOK.LCK" ] || fail "the collision server left $BOOK.LCK behind"
+start "$TMP/collision-reopen.log"
+request GET "api/register/$GUID"
+[ "$CODE" = "200" ] \
+    || fail "the reopened register answered $CODE: $BODY"
+[ "$(split_field "$TMP/body" "$SPLIT" memo)" = "back-to-back first" ] \
+    || fail "the first back-to-back change is not in the saved book"
+[ "$(split_field "$TMP/body" "$SPLIT" num)" = "BACK-TO-BACK-2" ] \
+    || fail "the second back-to-back change is not in the saved book"
+echo "$BODY" | grep -q 'retried collision' \
+    || fail "the retried save's change is not in the saved book"
+echo "reopen: both back-to-back changes and the retried edit are on disk"
+stop
+
+echo "== a genuinely failing backup still fails with the named 500, and is not retried"
+start "$TMP/failing-backup.log" --writable
+write_body "$TMP/edit.json" '{"memo":"backup must fail"}'
+request POST "api/split/$SPLIT" "$TMP/edit.json"
+[ "$CODE" = "200" ] \
+    || fail "the edit before the failing save answered $CODE: $BODY"
+cp "$BOOK" "$TMP/before-failing-backup.gnucash"
+RETRIES_BEFORE=$(grep -cF "$RETRY_MARK" "$TMP/failing-backup.log" || true)
+# The engine makes the backup in the book's directory; taking write permission
+# away there makes backup_file() fail without any name having been taken.
+chmod u-w "$TMP"
+request POST "api/book/save"
+chmod u+w "$TMP"
+[ "$CODE" = "500" ] \
+    || fail "a save with no writable directory answered $CODE (expected 500): $BODY"
+echo "$BODY" | grep -q '"error":"backup-failed"' \
+    || fail "the failed-backup refusal is not named 'backup-failed': $BODY"
+echo "$BODY" | grep -q '"path_exists":true' \
+    || fail "the failed save does not say the book is still there: $BODY"
+FAILED_BACKUP=$(echo "$BODY" | sed -n 's/.*"backup":"\([^"]*\)".*/\1/p')
+[ -n "$FAILED_BACKUP" ] \
+    || fail "the failed-backup body names no backup path: $BODY"
+echo "$FAILED_BACKUP" | grep -qE '\.[0-9]{14}\.gnucash$' \
+    || fail "the failed-backup body does not name a timestamped backup: $FAILED_BACKUP"
+echo "$BODY" | grep -qF "$FAILED_BACKUP" \
+    || fail "the failed-backup message does not name the backup path: $BODY"
+RETRIES_AFTER=$(grep -cF "$RETRY_MARK" "$TMP/failing-backup.log" || true)
+[ "$RETRIES_AFTER" = "$RETRIES_BEFORE" ] \
+    || fail "a genuinely failing backup was retried"
+cmp -s "$BOOK" "$TMP/before-failing-backup.gnucash" \
+    || fail "the book changed even though the backup failed"
+echo "failing backup: 500 named, backup path named, no retry, book untouched"
+stop
+
 echo "== a locked book refuses the edit and names the lock"
 start "$TMP/lockA.log" --writable
 A_PID=$SERVER_PID

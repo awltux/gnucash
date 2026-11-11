@@ -200,6 +200,44 @@ act carries the reason that is true in a writable session too, and the items
 whose old reason said "the session is read-only" were reworded rather than left
 to become false.
 
+### 10. Two saves in one second: wait out the backup name, retry once
+
+The engine names the pre-save backup `<book>.<YYYYMMDDHHMMSS>.gnucash`
+(ADR 0013 §3) and `backup_file()` refuses a name that already exists, so two
+dirty saves inside one second collide: the second used to answer
+`500 backup-failed` and leave the book untouched. ADR 0013 forbids a second
+backup naming rule, so the server must not invent a copy under another name.
+
+The server now recognises the collision instead of reporting it as a failure.
+After `ERR_FILEIO_BACKUP_ERROR` it asks the engine's own
+`gnc_date_timestamp()` for the name this save would have used; if that file
+exists **and the book's directory is still writable**, the save collided (an
+unwritable directory leaves the name free and must not pause before failing;
+a full disk passes the writability check and is retried, which is harmless).
+It then sleeps until the timestamp changes and retries `qof_session_save`
+**once**. The retry names a new file, so it is still the engine's naming rule
+and still the engine's backup. If the retry fails too, the `500` is not
+swallowed: it names the backup path and the reason ("a backup with this
+second's name already exists", or "the engine could not create it … check that
+the book's directory is writable"), keeps `path_exists`, and the book is
+untouched.
+
+Why waiting rather than serialising: saves are already serial — the server has
+one thread — so serialisation cannot fix this. The collision is with the
+*previous save's own* backup name, not with a concurrent request. The wait is
+bounded (a 10 ms poll until the second changes, hard-capped at two seconds) and
+only happens on a collision. It blocks the single-threaded server for that
+second, which is the cost; it is acceptable for a local single-user server
+because the alternative is a failure for a save that is about to become
+possible. The retry is one, not a loop: a name still taken after the second
+boundary is a real failure.
+
+`web/test/register-edit.sh` covers it: two back-to-back edit/save pairs both
+answer `200` and name distinct backups; a planted same-second name makes the
+second save retry, leaves the planted file untouched, and names the retry's new
+backup; an unwritable directory still answers the named `500`, with the backup
+path, no retry, and the book unchanged.
+
 ## Consequences
 
 * A writable session can now do the smallest useful thing: fix a description, a
@@ -215,17 +253,15 @@ to become false.
   whole story.
 * Stopping the server with unsaved edits loses them; the tab guard is the only
   warning, and it is the browser's dialog, not a server promise.
-* **Two dirty saves in the same second collide on the backup name.**  The
-  engine names the backup `<book>.<YYYYMMDDHHMMSS>.gnucash` (ADR 0013 §3), and
-  its `backup_file()` refuses when that name already exists; the route answers
-  `500 backup-failed`, names the book, says `path_exists:true`, and the book is
-  untouched.  A user who saves, edits and saves again inside one second sees
-  that error and can simply save again a moment later.  The page is not the
-  cause and does not retry: a server-side retry would either invent a second
-  backup naming rule (ADR 0013 forbids that) or block the single-threaded
-  server for a second.  It is recorded here because this stage is what made the
-  case reachable from a browser, and the browser test waits out the second
-  before its post-refusal retry so it tests the page rather than the engine.
+* **Two dirty saves in the same second no longer fail on the backup name.**
+  The engine still names the backup `<book>.<YYYYMMDDHHMMSS>.gnucash` and still
+  refuses a name that exists (ADR 0013 §3), but the server now recognises that
+  collision, waits for the next second and retries once (§10).  If the retry
+  fails too, the route answers `500 backup-failed` naming the backup path and
+  the reason, with `path_exists:true`; the book is untouched.  ADR 0013's "does
+  not retry without a backup" still holds: the retry waits for the engine to be
+  able to make the backup, it never saves without one.  The cost is that a
+  collision blocks the single-threaded server for up to a second.
 
 ## Tests
 
@@ -235,7 +271,11 @@ to become false.
   the book; a good edit returns the row, the register reflects it and no amount
   or balance moves; a save names a backup byte-identical to the pre-edit book; a
   fresh server re-opens the book with the edits; a same-value edit leaves the
-  book clean; a locked book is a 409 naming the `.LCK` and changes nothing.
+  book clean; two back-to-back saves succeed with distinct backups and the
+  final book carries both edits; a planted same-second backup name is waited
+  out and retried once; an unwritable directory still fails with the named
+  `500`, the backup path and no retry; a locked book is a 409 naming the
+  `.LCK` and changes nothing.
 * `web/test/register-edit-ui.mjs` — the writable browser phase: the editable
   cells and the non-editable amount; click/Escape/blur; keyboard-only editing
   through Tab; the row and page dirty state; File > Save before and after an

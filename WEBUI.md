@@ -45,6 +45,22 @@ enable saving; see ADR 0013 for the guarantees that mode makes and does not
 make. It is per process and explicit: a request cannot turn a read-only server
 writable.
 
+For development there is `--debug-port [port]`: bare `--debug-port` uses 8984,
+or give a port (a `host:port` value is accepted but only `127.0.0.1` or
+`localhost` is allowed). It serves the natural paths — `/`, `/report/...`,
+`/api/book` — with no token segment, on a fixed port, so a reload keeps the
+same URL. It is loopback-only by construction, and it is loud: a startup
+warning and a red banner in the page say that any local process can drive the
+UI, and that `--writable` with it means any local process can edit and save
+the book. A busy port is refused by name, never replaced by a silent ephemeral
+port; a restart can rebind the same port immediately (the listener sets
+`SO_REUSEADDR`), while a live listener is still refused. This is a development
+convenience, **not** the way to run the app; the default (ephemeral port,
+per-run token) is unchanged.
+
+    build/bin/gnc-webd --backend build/lib/gnucash/libgncmod-backend-xml.so \
+        --debug-port 8984 book.gnucash
+
 ## API
 
 | path | returns |
@@ -59,6 +75,8 @@ writable.
 
 Report names are URL-decoded, so `/report/Trial%20Balance` works. The UI lists
 `/api/reports` and shows a report in a frame, so it never leaves the page.
+With `--debug-port` the same routes are served without the `/<token>/` segment
+(`/api/book`, `/report/<name>`), and nothing else changes.
 
 `api/book/save` answers `403 read-only` in the default mode, `409 locked` when
 the book's `.LCK` is held, and otherwise reports the path, size and backup the
@@ -94,12 +112,16 @@ toolkit-free one.
   `--writable`, and even then there is no register UI yet.
 * One user, one book, one process; no concurrency beyond serialising requests.
   A writable process holds the book's `.LCK` for its lifetime (ADR 0013).
-* Plain HTTP on loopback; the token is the only credential.
+* Plain HTTP on loopback; the token is the only credential. With
+  `--debug-port` there is no token on purpose, which is why that mode is for
+  development and warns at startup and in the page.
 * The UI is vanilla HTML/CSS/ES modules. No framework has been chosen yet —
   the JSON API is what a framework would sit on.
 
 ## Related
 
 * `doc/adr/0011-reports-in-the-server-process.md`
-* `doc/adr/0012-single-threaded-local-server.md`
+* `doc/adr/0012-single-threaded-local-server.md` (the token model and
+  `--debug-port`)
 * `doc/adr/0013-writable-web-session.md`
+* `doc/adr/0014-register-editing.md` (the save/backup retry)

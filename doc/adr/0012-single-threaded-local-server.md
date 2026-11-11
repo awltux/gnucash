@@ -26,7 +26,25 @@ on that loop. There is no worker pool and no lock.
 first path segment. A request without the token gets the same `404` as an
 unknown path. There is no option to bind a public address.
 
+**`--debug-port [port]` is a development mode, not the way to run the app.**
+Bare `--debug-port` binds `8984`; `--debug-port 9100` binds 9100. A value may
+be written `host:port`, but the host is refused by name unless it is
+`127.0.0.1` or `localhost`: the flag removes the token, so it must not widen
+the socket. In this mode the token segment is gone — `/`, `/report/<name>` and
+`/api/book` are the routes — the server prints a startup warning saying that
+any local process can drive the UI (and, with `--writable`, edit and save the
+book), and the page it serves carries a visible banner saying the same, because
+"no token" is otherwise invisible. A busy port is a named startup error;
+there is never a silent fallback to an ephemeral port, because a stable URL
+that quietly is not stable is worse than a refusal. The listener sets
+`SO_REUSEADDR`, so a restart can rebind the same port immediately even while
+the previous run's accepted connections are in `TIME_WAIT`; a port that is
+really being listened on still fails by name. The default (ephemeral port,
+per-run token) is unchanged and remains the way to run the server.
+
 **The session is read-only.** `SESSION_READ_ONLY`, and no endpoint writes.
+(ADR 0013 later adds an explicit `--writable` opt-in; it does not change the
+default.)
 
 ## Consequences
 

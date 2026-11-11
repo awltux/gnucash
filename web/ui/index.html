@@ -538,9 +538,12 @@
 <script>
 "use strict";
 
-// The token is the first path segment; every request keeps it.
-const token = location.pathname.split("/")[1];
-const api = (route) => `/${token}/${route}`;
+// The token is the first path segment; every request keeps it.  --debug-port
+// serves the natural paths with no token segment (ADR 0012), so an empty or
+// non-token first segment means the routes start at the root.
+const tokenSegment = location.pathname.split("/")[1] || "";
+const token = /^[0-9a-f]{32}$/.test(tokenSegment) ? tokenSegment : "";
+const api = (route) => (token ? `/${token}/${route}` : `/${route}`);
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);

@@ -84,6 +84,12 @@ struct Server
     bool locked = false;
     std::string lock_path;
     std::string book_path;
+
+    /* ADR 0012.  Non-zero when --debug-port asked for a fixed loopback port.
+     * In that mode the token segment is gone from the URL: every path is the
+     * natural one, the banner and the startup warning say so, and the socket
+     * still binds 127.0.0.1 only.  Zero is the normal per-run-token mode. */
+    int debug_port = 0;
 };
 
 Server g_server;
@@ -1938,12 +1944,38 @@ render_spec_page (const web::ReportSpec& spec, std::string& html,
 }
 
 /* The first path segment is the token. Anything else is a 404, which is also
- * what an attacker without the token sees. */
+ * what an attacker without the token sees.  --debug-port removes the token
+ * segment by design (ADR 0012): every path is accepted, and the banner plus
+ * the startup warning are the only notice. */
 bool
 authorised (const std::string& path)
 {
+    if (g_server.debug_port != 0)
+        return !path.empty () && path[0] == '/';
+
     const std::string prefix = "/" + g_server.token + "/";
     return path.compare (0, prefix.size(), prefix) == 0;
+}
+
+/* The path with the token segment removed.  In token mode this is everything
+ * after "/<token>/"; in --debug-port mode it is everything after the leading
+ * "/", so the natural routes (/api/book, /report/<name>) work unchanged. */
+std::string
+route_of (const std::string& path)
+{
+    if (g_server.debug_port != 0)
+        return path.substr (1);
+
+    const std::string prefix = "/" + g_server.token + "/";
+    return path.substr (prefix.size ());
+}
+
+/* The token rewrite_links() puts in front of every route.  --debug-port has no
+ * token segment, so an empty token yields the natural paths. */
+std::string
+links_token ()
+{
+    return g_server.debug_port != 0 ? std::string () : g_server.token;
 }
 
 std::string
@@ -1963,6 +1995,31 @@ static_file (const char* name)
     g_free (path);
     g_free (contents);
     return body;
+}
+
+/* The UI page.  In --debug-port mode the server puts a visible banner at the
+ * top of the body, because a URL without a token is otherwise invisible: the
+ * page looks normal and any local process can drive it.  The normal page is
+ * returned byte-for-byte (ADR 0013 §1). */
+std::string
+index_html ()
+{
+    std::string html = static_file ("index.html");
+    if (g_server.debug_port == 0)
+        return html;
+
+    const std::string marker = "<body>";
+    const std::string banner =
+        "<div id=\"debug-port-banner\" role=\"alert\" "
+        "style=\"background:#b00020;color:#fff;padding:.6rem 1rem;"
+        "font:600 14px/1.4 system-ui,sans-serif\">"
+        "Debug mode (--debug-port " + std::to_string (g_server.debug_port) +
+        "): no token in the URL. Any local process can drive this UI; with "
+        "--writable it can edit and save the book. Development only.</div>";
+    const size_t at = html.find (marker);
+    if (at == std::string::npos)
+        return banner + html;
+    return html.insert (at + marker.size (), banner);
 }
 
 /* The vendored Chart.js.  It is served straight out of borrowed/ so the tree
@@ -2092,6 +2149,43 @@ new_backup (const std::set<std::string>& before,
     return newest;
 }
 
+/* The name the engine's backup_file() would use *now*:
+ * <book>.<YYYYMMDDHHMMSS>.gnucash, in local time.  It calls the engine's own
+ * timestamp helper rather than formatting the clock here, so the server does
+ * not grow a second naming rule (ADR 0013 §3): the name is the engine's, the
+ * server only uses it to recognise the same-second collision. */
+std::string
+backup_path_for_now (const std::string& book_path)
+{
+    gchar* stamp = gnc_date_timestamp ();
+    std::string path = book_path + "." + stamp + GNC_DATAFILE_EXT;
+    g_free (stamp);
+    return path;
+}
+
+/* Sleep until the clock's second changes, with a hard cap.  The backup name
+ * is per second, so this is what makes the retry name a different file.  The
+ * server is single-threaded and this blocks it for up to a second; that is
+ * acceptable because it only happens when a save actually collided, and it is
+ * bounded (ADR 0014 §10). */
+void
+wait_for_next_second ()
+{
+    gchar* before = gnc_date_timestamp ();
+    const std::string stamp (before);
+    g_free (before);
+
+    for (int tick = 0; tick < 200; ++tick)
+    {
+        g_usleep (10 * 1000);
+        gchar* now = gnc_date_timestamp ();
+        const bool changed = stamp != now;
+        g_free (now);
+        if (changed)
+            return;
+    }
+}
+
 /* Size of a regular file, or -1 when there is no regular file at that path. */
 gint64
 file_size (const std::string& path)
@@ -2201,6 +2295,70 @@ save_book (QofSession* session, QofBook* book, const std::string& path)
     return outcome;
 }
 
+/* Name the backup path and the reason when the engine refuses to make the
+ * pre-save backup.  backup_file() returns false without setting a message for
+ * this error, so without this the body would say only "could not make the
+ * pre-save backup" and not which file blocked it. */
+void
+describe_backup_failure (SaveOutcome& outcome, const std::string& path,
+                         bool retried)
+{
+    const std::string backup = backup_path_for_now (path);
+    std::string reason;
+    if (!outcome.message.empty ())
+        reason = outcome.message;
+    else if (g_file_test (backup.c_str (), G_FILE_TEST_EXISTS))
+        reason = "a backup with this second's name already exists";
+    else
+        reason = "the engine could not create it (check that the book's "
+                 "directory is writable)";
+    if (retried)
+        reason += "; the retry after the next second also failed";
+
+    outcome.backup = backup;
+    outcome.message = "the engine could not make the pre-save backup " +
+                      backup + ": " + reason;
+}
+
+/* One save, plus the one retry the same-second backup collision needs.
+ *
+ * Two dirty saves inside one second collide on the engine's backup name:
+ * backup_file() refuses a path that already exists, and the save fails with
+ * ERR_FILEIO_BACKUP_ERROR with the book untouched.  A collision is
+ * recognisable by the fact that this second's backup is already there; a
+ * genuinely failing backup (unwritable directory, full disk) leaves the name
+ * free.  On a collision, wait for the next second and retry once, because the
+ * second attempt then names a different file.  The retry is not a silent
+ * success: if it fails too, describe_backup_failure() names the backup path
+ * and the reason (ADR 0014 §10). */
+SaveOutcome
+save_book_with_retry (QofSession* session, QofBook* book,
+                      const std::string& path, bool& retried)
+{
+    retried = false;
+    SaveOutcome outcome = save_book (session, book, path);
+    if (outcome.error != ERR_FILEIO_BACKUP_ERROR)
+        return outcome;
+
+    /* A taken name is only a collision if the next second's name can be
+     * created: an unwritable book directory leaves the expected name free too,
+     * and must fail at once rather than pause for a second first. */
+    const std::string collided = backup_path_for_now (path);
+    gchar* dirname = g_path_get_dirname (path.c_str ());
+    const bool can_retry = g_access (dirname, W_OK) == 0;
+    g_free (dirname);
+    if (!can_retry || !g_file_test (collided.c_str (), G_FILE_TEST_EXISTS))
+        return outcome;
+
+    retried = true;
+    std::fprintf (stderr,
+                  "webd: the pre-save backup %s already exists; waiting for "
+                  "the next second and retrying the save once\n",
+                  collided.c_str ());
+    wait_for_next_second ();
+    return save_book (session, book, path);
+}
+
 void
 send_save_lost (GSocketConnection* connection, const SaveOutcome& outcome,
                 const std::string& path)
@@ -2248,10 +2406,12 @@ send_save_failure (GSocketConnection* connection, const SaveOutcome& outcome,
 
 void
 send_save_success (GSocketConnection* connection, const SaveOutcome& outcome,
-                   const std::string& path)
+                   const std::string& path, bool retried)
 {
     std::string body = "{\"saved\":true,\"changed\":";
     body += outcome.changed ? "true" : "false";
+    if (retried)
+        body += ",\"retried\":true";
     body += ",\"path\":" + json_string (path);
     body += ",\"bytes\":" + std::to_string (outcome.bytes);
     body += ",\"backup\":";
@@ -2279,15 +2439,20 @@ handle_book_save (GSocketConnection* connection, const HttpRequest& request)
         return;
 
     const std::string path = g_server.book_path;
-    const SaveOutcome outcome = save_book (g_server.session, g_server.book,
-                                           path);
+    bool retried = false;
+    SaveOutcome outcome = save_book_with_retry (g_server.session, g_server.book,
+                                               path, retried);
 
     if (outcome.error != ERR_BACKEND_NO_ERR)
+    {
+        if (outcome.error == ERR_FILEIO_BACKUP_ERROR)
+            describe_backup_failure (outcome, path, retried);
         send_save_failure (connection, outcome, path);
+    }
     else if (!outcome.verified)
         send_save_lost (connection, outcome, path);
     else
-        send_save_success (connection, outcome, path);
+        send_save_success (connection, outcome, path, retried);
 }
 
 /* --------------------------------------------------------- split editing
@@ -2739,8 +2904,7 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         return TRUE;
     }
 
-    const std::string prefix = "/" + g_server.token + "/";
-    std::string route = path.substr (prefix.size());
+    std::string route = route_of (path);
     std::string query;
     const size_t question = route.find ('?');
     if (question != std::string::npos)
@@ -2780,6 +2944,10 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         body += json_string (g_server.book_path);
         body += ",\"edit_reason\":";
         body += editable ? "\"\"" : json_string (reason);
+        /* Only in --debug-port mode, so the normal body stays byte-identical
+         * (ADR 0013 §1).  The UI uses it to say the token is gone. */
+        if (g_server.debug_port != 0)
+            body += ",\"debug_port\":" + std::to_string (g_server.debug_port);
         body += "}";
         send_json (connection, "200 OK", body);
     }
@@ -2804,7 +2972,7 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         {
             send_response (connection, "200 OK", "text/html; charset=utf-8",
                            rewrite_links (html != nullptr ? html : "",
-                                          g_server.token));
+                                          links_token ()));
             g_free (html);
         }
         else
@@ -2943,7 +3111,7 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
                 else
                     send_response (connection, "200 OK",
                                    "text/html; charset=utf-8",
-                                   rewrite_links (html, g_server.token));
+                                   rewrite_links (html, links_token ()));
             }
         }
     }
@@ -3137,7 +3305,7 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
             else
                 send_response (connection, "200 OK",
                                "text/html; charset=utf-8",
-                               rewrite_links (html, g_server.token));
+                               rewrite_links (html, links_token ()));
         }
     }
     else if (route.compare (0, 11, "api/report/") == 0)
@@ -3234,7 +3402,7 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
                                         native_html))
         {
             send_response (connection, "200 OK", "text/html; charset=utf-8",
-                           rewrite_links (native_html, g_server.token));
+                           rewrite_links (native_html, links_token ()));
         }
 #ifdef GNC_WITH_REPORT
         else
@@ -3258,7 +3426,7 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
                                                     &errmsg))
             {
                 const std::string document = rewrite_links (
-                    html != nullptr ? html : "", g_server.token);
+                    html != nullptr ? html : "", links_token ());
                 send_response (connection, "200 OK",
                                "text/html; charset=utf-8", document);
                 g_free (html);
@@ -3297,7 +3465,7 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     else if (route.empty() || route == "index.html")
     {
         send_response (connection, "200 OK", "text/html; charset=utf-8",
-                       static_file ("index.html"));
+                       index_html ());
     }
     else
     {
@@ -3332,12 +3500,91 @@ random_token ()
     return token;
 }
 
+/* --debug-port [port] -- the fixed, tokenless development URL (ADR 0012).
+ * The value is optional: bare --debug-port means 8984.  A value is a port or
+ * "host:port"; whatever it says, only loopback is accepted (127.0.0.1 or
+ * localhost), because the flag removes the token and must not widen the
+ * socket.  A bad value is refused by name before the engine starts, so it
+ * cannot take the book's lock and then fail. */
+constexpr int default_debug_port = 8984;
+
+/* True when the argument is a port or a host:port (the forms --debug-port
+ * accepts).  Used to tell a bare flag from a following book path. */
+bool
+looks_like_debug_port (const char* text)
+{
+    if (text == nullptr || text[0] == '\0')
+        return false;
+    const char* colon = strrchr (text, ':');
+    const char* digits = colon != nullptr ? colon + 1 : text;
+    if (digits[0] == '\0')
+        return false;
+    for (const char* p = digits; *p != '\0'; ++p)
+    {
+        if (*p < '0' || *p > '9')
+            return false;
+    }
+    return true;
+}
+
+bool
+parse_debug_port (const char* text, int& port, std::string& error)
+{
+    if (text == nullptr)
+    {
+        port = default_debug_port;
+        return true;
+    }
+
+    std::string spec (text);
+    std::string host;
+    const size_t colon = spec.rfind (':');
+    if (colon != std::string::npos)
+    {
+        host = spec.substr (0, colon);
+        spec = spec.substr (colon + 1);
+    }
+
+    if (!host.empty () && host != "127.0.0.1"
+        && g_ascii_strcasecmp (host.c_str (), "localhost") != 0)
+    {
+        error = "--debug-port refuses to bind " + host +
+                ": it is loopback only (127.0.0.1 or localhost)";
+        return false;
+    }
+
+    bool digits = !spec.empty () && spec.size () <= 5;
+    for (const char character : spec)
+    {
+        if (character < '0' || character > '9')
+            digits = false;
+    }
+    if (!digits)
+    {
+        error = "--debug-port needs a port between 1 and 65535, not '" +
+                std::string (text) + "'";
+        return false;
+    }
+
+    const long value = std::strtol (spec.c_str (), nullptr, 10);
+    if (value < 1 || value > 65535)
+    {
+        error = "--debug-port needs a port between 1 and 65535, not '" +
+                spec + "'";
+        return false;
+    }
+
+    port = static_cast<int> (value);
+    return true;
+}
+
 struct Arguments
 {
     const char* backend = nullptr;
     const char* book = nullptr;
     bool writable = false;
     bool break_lock = false;
+    int debug_port = 0; /* 0 = no --debug-port (the normal token mode) */
 };
 
 GMainLoop* g_loop = nullptr;
@@ -3487,32 +3734,110 @@ webd_main (void* data, int argc, char** argv)
         ? static_cast<int> (g_list_length (gnc_account_get_children (g_server.root)))
         : 0;
     g_server.token = random_token ();
+    g_server.debug_port = args->debug_port;
 
     GSocketService* service = g_socket_service_new ();
     GInetAddress* loopback = g_inet_address_new_loopback (G_SOCKET_FAMILY_IPV4);
-    GSocketAddress* address = g_inet_socket_address_new (loopback, 0);
+    /* --debug-port asks for a fixed port; the normal mode asks for 0 and lets
+     * the kernel pick one.  Both bind the loopback address, which is the only
+     * address this server has ever bound or will bind. */
+    const guint16 requested_port =
+        args->debug_port != 0 ? static_cast<guint16> (args->debug_port) : 0;
+    GSocketAddress* address = g_inet_socket_address_new (loopback,
+                                                         requested_port);
     GError* error = nullptr;
     guint16 port = 0;
 
-    GSocketAddress* effective = nullptr;
-    if (!g_socket_listener_add_address (
-            G_SOCKET_LISTENER (service), address, G_SOCKET_TYPE_STREAM,
-            G_SOCKET_PROTOCOL_TCP, nullptr, &effective, &error))
+    /* Bind a socket ourselves so SO_REUSEADDR can be set (g_socket_bind's
+     * allow_reuse): a fixed --debug-port must be rebindable straight after a
+     * restart, even while the previous run's accepted connections are in
+     * TIME_WAIT.  It does not let a second server take a port that is really
+     * listening -- that still fails with G_IO_ERROR_ADDRESS_IN_USE. */
+    GSocket* listener = g_socket_new (G_SOCKET_FAMILY_IPV4,
+                                      G_SOCKET_TYPE_STREAM,
+                                      G_SOCKET_PROTOCOL_TCP, &error);
+    bool listening = false;
+    if (listener != nullptr)
     {
-        std::fprintf (stderr, "webd: cannot listen: %s\n", error->message);
+        listening = g_socket_bind (listener, address, TRUE, &error)
+                    && g_socket_listen (listener, &error)
+                    && g_socket_listener_add_socket (
+                        G_SOCKET_LISTENER (service), listener, nullptr, &error);
+    }
+
+    if (!listening)
+    {
+        if (args->debug_port != 0)
+        {
+            /* A stable URL that quietly is not stable is worse than a
+             * refusal: never fall back to an ephemeral port here. */
+            if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_ADDRESS_IN_USE))
+            {
+                std::fprintf (stderr,
+                              "webd: --debug-port %d is already in use on "
+                              "127.0.0.1; refusing to fall back to an "
+                              "ephemeral port\n", args->debug_port);
+            }
+            else
+            {
+                std::fprintf (stderr,
+                              "webd: cannot listen on 127.0.0.1:%d: %s\n",
+                              args->debug_port,
+                              error != nullptr ? error->message : "unknown");
+            }
+        }
+        else
+        {
+            std::fprintf (stderr, "webd: cannot listen: %s\n",
+                          error != nullptr ? error->message : "unknown");
+        }
+        if (error != nullptr)
+            g_error_free (error);
+        if (listener != nullptr)
+            g_object_unref (listener);
+        /* Do not leave the book's .LCK behind when the bind is what failed. */
+        qof_session_end (session);
         exit (1);
     }
 
-    port = g_inet_socket_address_get_port (G_INET_SOCKET_ADDRESS (effective));
-    g_object_unref (effective);
+    GSocketAddress* effective = g_socket_get_local_address (listener, nullptr);
+    if (effective != nullptr)
+    {
+        port = g_inet_socket_address_get_port (
+            G_INET_SOCKET_ADDRESS (effective));
+        g_object_unref (effective);
+    }
+    g_object_unref (listener);
     g_object_unref (address);
     g_object_unref (loopback);
 
     g_signal_connect (service, "incoming", G_CALLBACK (on_incoming), nullptr);
     g_socket_service_start (service);
 
-    std::printf ("webd listening on http://127.0.0.1:%u/%s/\n", port,
-                 g_server.token.c_str ());
+    if (args->debug_port != 0)
+    {
+        /* The natural paths, no token segment: a stable development URL.  It
+         * is loud about what that means, both here and in the page banner. */
+        std::printf ("webd listening on http://127.0.0.1:%u/\n", port);
+        std::fprintf (stderr,
+                      "webd: WARNING: --debug-port %u serves without a token: "
+                      "any local process can drive this UI%s. Development "
+                      "only; not how to run the app (ADR 0012).\n",
+                      port, writable ? "; with --writable it can edit and "
+                                       "save the book" : "");
+        if (writable)
+        {
+            std::fprintf (stderr,
+                          "webd: WARNING: --writable with --debug-port %u: any "
+                          "local process can edit and save %s\n",
+                          port, g_server.book_path.c_str ());
+        }
+    }
+    else
+    {
+        std::printf ("webd listening on http://127.0.0.1:%u/%s/\n", port,
+                     g_server.token.c_str ());
+    }
     std::fflush (stdout);
 
     if (writable)
@@ -3555,6 +3880,20 @@ main (int argc, char** argv)
             args.writable = true;
         else if (g_strcmp0 (argv[i], "--break-lock") == 0)
             args.break_lock = true;
+        else if (g_strcmp0 (argv[i], "--debug-port") == 0)
+        {
+            /* The value is optional: consume the next argument only when it
+             * looks like a port (or host:port), never a book path. */
+            const char* value = nullptr;
+            if (i + 1 < argc && looks_like_debug_port (argv[i + 1]))
+                value = argv[++i];
+            std::string error;
+            if (!parse_debug_port (value, args.debug_port, error))
+            {
+                std::fprintf (stderr, "webd: %s\n", error.c_str ());
+                return 2;
+            }
+        }
         else if (args.book == nullptr)
             args.book = argv[i];
     }
@@ -3563,7 +3902,8 @@ main (int argc, char** argv)
     {
         std::fprintf (stderr,
                       "usage: %s [--backend <backend-module>] [--writable "
-                      "[--break-lock]] <book>\n", argv[0]);
+                      "[--break-lock]] [--debug-port [port]] <book>\n",
+                      argv[0]);
         return 2;
     }
 

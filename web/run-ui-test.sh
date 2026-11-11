@@ -21,6 +21,11 @@
 #                                                 editing a cell, the dirty
 #                                                 markers, Save, reload,
 #                                                 unsaved-changes guard
+#   phase 4  sample1.gnucash, --debug-port
+#                             -> debug-port-ui.mjs
+#                                                 the tokenless URL, the
+#                                                 visible banner, natural
+#                                                 /api/book and /report paths
 #
 # Needs node and playwright (or playwright-core) on NODE_PATH, and python3 for
 # the demo book.  Set PW_CHANNEL to use an installed browser (e.g.
@@ -43,6 +48,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [ -f "$SRC/web/test/ui-test.mjs" ] || fail "ui-test.mjs not found"
 [ -f "$SRC/web/test/register-ui.mjs" ] || fail "register-ui.mjs not found"
 [ -f "$SRC/web/test/register-edit-ui.mjs" ] || fail "register-edit-ui.mjs not found"
+[ -f "$SRC/web/test/debug-port-ui.mjs" ] || fail "debug-port-ui.mjs not found"
 [ -f "$SRC/web/test/make-demo-book.py" ] || fail "make-demo-book.py not found"
 command -v node >/dev/null || fail "node is not installed"
 command -v python3 >/dev/null || fail "python3 is required for the demo book"
@@ -89,6 +95,32 @@ start_server() {
     return 1
 }
 
+# start_debug_server <book> <log> <store> <port> -- sets URL to the tokenless
+# --debug-port URL.  The URL is known before the server starts; the wait is for
+# its "webd listening" line, not for a token.
+start_debug_server() {
+    local book=$1 log=$2 store=$3 port=$4
+    env GNC_UNINSTALLED=YES GNC_BUILDDIR="$BUILD" \
+        ${SCHEMAS:+GSETTINGS_SCHEMA_DIR="$SCHEMAS"} \
+        LD_LIBRARY_PATH="$BUILD/lib:$BUILD/lib/gnucash" \
+        GNC_MODULE_PATH="$BUILD/lib/gnucash" \
+        GUILE_LOAD_PATH="$BUILD/share/guile/site/3.0" \
+        GUILE_LOAD_COMPILED_PATH="${CCACHE:-}" \
+        GNC_WEBUI_DIR="$SRC/web/ui" \
+        GNC_WEBUI_REPORTS="$store" \
+        "$BUILD/bin/gnc-webd" --debug-port "$port" "$book" > "$log" 2>&1 &
+    local pid=$!
+    PIDS+=("$pid")
+    URL="http://127.0.0.1:$port/"
+    for _ in $(seq 1 300); do
+        grep -qF "webd listening on $URL" "$log" 2>/dev/null && return 0
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+    done
+    cat "$log" >&2
+    return 1
+}
+
 STATUS=0
 
 echo "== the page, reports, designer and menu bar"
@@ -116,5 +148,21 @@ start_server "$TMP/demo-edit.gnucash" "$TMP/demo-edit.log" \
     || fail "editable register server did not start"
 echo "server: $URL"
 node "$SRC/web/test/register-edit-ui.mjs" "$URL" || STATUS=1
+
+echo
+echo "== the tokenless --debug-port URL: banner and natural paths"
+DEBUG_PORT=$(python3 -c '
+import socket
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+print(sock.getsockname()[1])
+sock.close()
+')
+start_debug_server "$BOOK" "$TMP/debug.log" "$TMP/debug-reports.json" \
+    "$DEBUG_PORT" || fail "debug-port server did not start"
+echo "server: $URL"
+grep -q 'WARNING: --debug-port' "$TMP/debug.log" \
+    || fail "the debug-port server printed no warning"
+node "$SRC/web/test/debug-port-ui.mjs" "$URL" || STATUS=1
 
 exit "$STATUS"
