@@ -214,13 +214,17 @@ echo "writable debug: two warnings, save 200, lock released"
 
 echo "== bare --debug-port uses 8984"
 # The bare-flag check is only meaningful if 8984 is free.  A previous run's
-# accepted connections can leave the port in TIME_WAIT for a few seconds, so
-# wait briefly before calling it busy; then say so by name rather than skip.
+# accepted connections leave the port in TIME_WAIT for up to a minute, which a
+# plain bind refuses even though no process is listening; SO_REUSEADDR lets
+# this probe tell "a live listener" from "a cooling-down socket".  It cannot
+# let the probe bind over a live listener, so a genuinely busy port still
+# fails by name rather than being skipped.
 BARE_READY=0
 for _ in $(seq 1 100); do
     if python3 -c '
 import socket
 sock = socket.socket()
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 sock.bind(("127.0.0.1", 8984))
 sock.close()
 ' 2>/dev/null; then

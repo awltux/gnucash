@@ -132,7 +132,25 @@ await page.goto(url);
 await page.waitForFunction(() => document.querySelectorAll('#tree li').length > 0,
                            null, { timeout: 30000 });
 
+// Stage 1: the tree is the pinned Accounts tab and a register is its own tab.
+// A tree click therefore needs the Accounts tab on screen first.  The page
+// also applies the URL asynchronously, so a navigation is settled first: a
+// click must not race the route that is about to show the register tab.
+const waitForRoute = () => page.waitForFunction(
+    () => document.documentElement.dataset.routeReady === '1',
+    null, { timeout: 30000 });
+
+async function showAccountsTab() {
+    await waitForRoute();
+    if (await page.evaluate(() => document.getElementById('register').hidden))
+        return;
+    await page.locator('#tab-accounts').click();
+    await page.waitForFunction(() => document.getElementById('register').hidden,
+                               null, { timeout: 15000 });
+}
+
 async function openAccount(account, rows) {
+    await showAccountsTab();
     await page.locator(`#tree button.account-name[data-guid="${account.guid}"]`).click();
     await page.waitForFunction(
         (expected) => {
@@ -586,6 +604,7 @@ const accountTitle = await page.evaluate(() =>
     document.getElementById('register-title').textContent);
 const dialogsBefore = dialogs.length;
 dialogAnswer = 'dismiss';
+await showAccountsTab();
 await page.locator(`#tree button.account-name[data-guid="${other[1].guid}"]`).click();
 await page.waitForTimeout(400);
 const afterDismiss = await page.evaluate(() => ({
@@ -607,6 +626,7 @@ dialogAnswer = 'accept';
 const guardSave = page.waitForResponse(
     (response) => response.url().includes('/api/book/save') &&
                  response.request().method() === 'POST');
+await showAccountsTab();
 await page.locator(`#tree button.account-name[data-guid="${other[1].guid}"]`).click();
 const guardSaveHTTP = await guardSave;
 await page.waitForFunction((expected) =>

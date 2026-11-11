@@ -23,6 +23,31 @@
   ul.collapsed { display: none; }
   .error { color: #c00; }
 
+  /* The Book page's tab bar: the desktop's notebook, one tab per open page.
+     The Accounts tab is pinned (it has no close control); a register tab is
+     one account and is closable.  The close control is a sibling of the tab
+     button, not a button inside role="tab": a tab is a single interactive
+     element, and a control nested in it would be an inaccessible second one. */
+  #book-tabs { display: flex; align-items: stretch; flex-wrap: wrap;
+               border-bottom: 1px solid #b9b9b9; margin: 0 0 1rem; }
+  .tab-slot { display: flex; align-items: stretch; margin: 0 .15rem -1px 0;
+              border: 1px solid #c4c4c4; border-bottom: 0;
+              border-radius: .3rem .3rem 0 0; background: #f2f2f2; }
+  .tab-slot.active { background: #fff; border-color: #b9b9b9;
+                     box-shadow: inset 0 2px 0 #0645ad; }
+  #book-tabs [role="tab"] { font: inherit; color: #222; background: none;
+                            border: 0; padding: .4rem .8rem; cursor: pointer; }
+  #book-tabs [role="tab"][aria-selected="true"] { font-weight: 600; }
+  #book-tabs [role="tab"]:focus-visible { outline: 2px solid #0645ad;
+                                          outline-offset: -2px; }
+  .tab-close { background: none; border: 0; padding: 0 .55rem 0 .15rem;
+               font: inherit; line-height: 1; color: #666; cursor: pointer; }
+  .tab-close:hover { color: #a00; }
+  .tab-close:focus-visible { outline: 2px solid #0645ad; outline-offset: -2px; }
+  [role="tabpanel"] { outline: none; }
+  [role="tabpanel"]:focus-visible { outline: 2px solid #0645ad;
+                                    outline-offset: 2px; }
+
   /* The register: a grid in the content area, read-only unless the server is
      writable.  The selected row is the focused row (roving tabindex), so the
      outline is the keyboard focus and the same element carries aria-selected
@@ -218,9 +243,31 @@
   <h1>GnuCash</h1>
   <p id="summary">Loading…</p>
 </header>
+<!-- The Book page: one tab per open account and the pinned Accounts tab.
+     The tab bar is the desktop's notebook: the Accounts tab is the account
+     tree (the default tab — there is no "default account"), and each register
+     tab is one account's register.  Only the active tab's panel holds the
+     register, so there is one grid and one register state, as there was when
+     the register was a section under the tree.  See doc/web-ui-pages.md. -->
+<div id="page-book">
+<div id="book-tabs" role="tablist" aria-label="Book pages"
+     aria-description="The Accounts tab is pinned. Ctrl+Tab and Ctrl+Shift+Tab cycle the tabs; Left, Right, Home and End move between them; Delete closes the focused register tab.">
+  <div class="tab-slot" role="presentation">
+    <button type="button" role="tab" id="tab-accounts"
+            aria-selected="true" aria-controls="panel-accounts"
+            tabindex="0">Accounts</button>
+  </div>
+  <!-- One slot per open register tab is appended by ensureRegisterTab(). -->
+</div>
+<div id="panel-accounts" role="tabpanel" aria-labelledby="tab-accounts"
+     tabindex="0">
 <main id="tree"></main>
+</div>
+<!-- Register tab panels are appended here.  #register moves into the active
+     one, so switching tabs never leaves two grids in the document. -->
+<div id="register-panels"></div>
 
-<!-- The register opens here, in the content area, not in the report frame.
+<!-- The register, in the content area of its tab, not in the report frame.
      It is read-only by default: rows can be selected and a transaction
      inspected, and there is no editing control.  When the server was started
      writable the three text cells become editable and a Save control appears
@@ -272,6 +319,14 @@
     <p class="actions"><button id="register-detail-close" type="button">Close</button></p>
   </section>
 </section>
+</div><!-- #page-book -->
+
+<!-- The Reports page.  On the desktop a report is a tab of the same window
+     that holds the account pages; the web tier keeps it as a separate page,
+     which is a divergence, not fidelity.  The report list, its options, the
+     saved views and the designer keep their layout: only the page around
+     them is new.  See doc/web-ui-pages.md. -->
+<div id="page-reports" hidden>
 
 <section id="reports">
   <h2>Reports</h2>
@@ -515,6 +570,8 @@
   </form>
 </section>
 
+</div><!-- #page-reports -->
+
 <!-- Help ▸ About.  The desktop's About dialog reads the application version
      and build ID from the build (gnc-main-window.cpp:5548-5551); gnc-webd
      publishes neither, so this dialog shows what the server does publish and
@@ -663,6 +720,483 @@ const aboutSession = document.getElementById("about-session");
 const aboutCounts = document.getElementById("about-counts");
 const aboutClose = document.getElementById("about-close");
 
+/* ---------------------------------------------------------------- pages
+ *
+ * A page is a URL.  The path decides the top-level page, the Book page's
+ * active tab, and the report open on the Reports page, so a reload, a
+ * bookmark and Back all read the same state the reader saw.  The server
+ * serves the shell for every one of these paths (see doc/web-ui-pages.md);
+ * the routing below is the client half of that contract.
+ *
+ *   <base>/accounts            Book page, Accounts tab
+ *   <base>/register/<guid>     Book page, that account's register tab
+ *   <base>/reports             Reports page, no report open
+ *   <base>/report/<name>       Reports page, that report open
+ *   <base>/report/spec/<id>    Reports page, that saved report open
+ *
+ * <base> is /<token>/ normally and / under --debug-port.  `api()` builds the
+ * same prefix for a request and for a page URL, so there is one spelling.
+ */
+const PAGE_BOOK = "book";
+const PAGE_REPORTS = "reports";
+const ACCOUNTS_TAB = "accounts";
+const REGISTER_TAB_PREFIX = "register:";
+const OPEN_TABS_KEY = "gnucash-webui.open-tabs.v1";
+
+const pageBook = document.getElementById("page-book");
+const pageReports = document.getElementById("page-reports");
+const bookTabs = document.getElementById("book-tabs");
+const accountsPanel = document.getElementById("panel-accounts");
+const accountsTab = document.getElementById("tab-accounts");
+const accountsSlot = accountsTab.closest(".tab-slot");
+const registerPanels = document.getElementById("register-panels");
+const registerSection = document.getElementById("register");
+
+// The pinned Accounts tab is a real tab: clicking it shows the tree and puts
+// /accounts in the URL, exactly as clicking a register tab does for its
+// account.
+accountsTab.addEventListener("click", () => {
+  activateBookTab(ACCOUNTS_TAB, { navigate: true });
+});
+
+let activePage = PAGE_BOOK;   // which top-level page is on screen
+let activeTab = ACCOUNTS_TAB; // "accounts", or "register:<guid>"
+const registerTabs = new Map(); // guid -> { account, panel, slot, button, close }
+let routeGeneration = 0;      // guards the asynchronous application of a route
+
+const registerTabId = (guid) => REGISTER_TAB_PREFIX + guid;
+const registerPath = (guid) => "register/" + encodeURIComponent(guid);
+const reportPath = (name) => "report/" + encodeURIComponent(name);
+const specPath = (id) => "report/spec/" + encodeURIComponent(id);
+// The tabs in display order: the pinned Accounts tab first, then the register
+// tabs in the order they were opened.  Cycling, the arrow keys and closing a
+// tab all read this one order.
+const bookTabOrder = () =>
+  [ACCOUNTS_TAB, ...[...registerTabs.keys()].map(registerTabId)];
+
+// The path the current page is showing, for a menu action that moves between
+// pages without changing what is on them.
+function currentPagePath() {
+  if (selectedSpecId) return specPath(selectedSpecId);
+  if (selectedReport) return reportPath(selectedReport);
+  return "reports";
+}
+
+// Write the URL the page is now showing.  The page's own state is already
+// correct; only Back and Forward re-read the URL (popstate -> applyRoute).
+function setUrl(path, { replace = false } = {}) {
+  const url = api(path);
+  if (url === location.pathname) return;
+  if (replace) history.replaceState(null, "", url);
+  else history.pushState(null, "", url);
+}
+
+// What the path says.  Unknown paths fall back to the Accounts tab, which is
+// the page's default, and are canonicalised there.
+function parseRoute() {
+  let rest = location.pathname;
+  if (token && rest.startsWith("/" + token)) rest = rest.slice(token.length + 1);
+  rest = rest.replace(/^\/+/, "").replace(/\/+$/, "");
+  let parts;
+  try {
+    parts = rest.split("/").filter(Boolean).map(decodeURIComponent);
+  } catch (err) {
+    parts = [];
+  }
+  if (parts.length === 0 || (parts.length === 1 && parts[0] === "index.html"))
+    return { page: PAGE_BOOK, tab: ACCOUNTS_TAB };
+  if (parts.length === 1 && parts[0] === "accounts")
+    return { page: PAGE_BOOK, tab: ACCOUNTS_TAB };
+  if (parts.length === 2 && parts[0] === "register") {
+    const spec = parts[1];
+    const guid = spec.startsWith("acct-guid=") ? spec.slice(10) : spec;
+    return { page: PAGE_BOOK, tab: registerTabId(guid), guid };
+  }
+  if (parts.length === 1 && parts[0] === "reports")
+    return { page: PAGE_REPORTS };
+  if (parts.length === 2 && parts[0] === "report")
+    return { page: PAGE_REPORTS, report: parts[1] };
+  if (parts.length === 3 && parts[0] === "report" && parts[1] === "spec")
+    return { page: PAGE_REPORTS, spec: parts[2] };
+  return { page: PAGE_BOOK, tab: ACCOUNTS_TAB, unknown: true };
+}
+
+function setPage(page) {
+  if (activePage !== page) {
+    activePage = page;
+    pageBook.hidden = page !== PAGE_BOOK;
+    pageReports.hidden = page !== PAGE_REPORTS;
+    refreshMenuStates();
+  }
+}
+
+function findAccount(guid, node = accountRoot) {
+  if (!node) return null;
+  if (node.guid === guid) return node;
+  for (const child of node.children || []) {
+    const found = findAccount(guid, child);
+    if (found) return found;
+  }
+  return null;
+}
+
+function tabSlotIsActive(slot, active) {
+  slot.classList.toggle("active", active);
+}
+
+// Make `id` the visible tab.  The single #register section moves into the
+// active register tab's panel, so there is one grid and one register state
+// whichever tab is showing.
+function setActiveTab(id) {
+  activeTab = id;
+  const accountsActive = id === ACCOUNTS_TAB;
+  accountsTab.setAttribute("aria-selected", String(accountsActive));
+  accountsTab.tabIndex = accountsActive ? 0 : -1;
+  accountsPanel.hidden = !accountsActive;
+  tabSlotIsActive(accountsSlot, accountsActive);
+
+  for (const [guid, tab] of registerTabs) {
+    const active = id === registerTabId(guid);
+    tab.button.setAttribute("aria-selected", String(active));
+    tab.button.tabIndex = active ? 0 : -1;
+    tab.panel.hidden = !active;
+    tabSlotIsActive(tab.slot, active);
+    if (active) tab.panel.append(registerSection);
+  }
+
+  if (accountsActive) {
+    registerSection.hidden = true;
+    registerPanels.append(registerSection);
+  } else {
+    registerSection.hidden = false;
+  }
+  refreshMenuStates();
+}
+
+function ensureRegisterTab(account) {
+  let tab = registerTabs.get(account.guid);
+  if (tab) {
+    if (account.name && account.name !== tab.account.name) {
+      tab.account.name = account.name;
+      tab.button.textContent = account.name;
+      tab.button.title = `Register for ${account.name}`;
+      tab.close.setAttribute("aria-label", `Close the ${account.name} tab`);
+      tab.close.title = `Close the register for ${account.name}`;
+    }
+    return tab;
+  }
+
+  const panel = el("div");
+  panel.id = "panel-register-" + account.guid;
+  panel.setAttribute("role", "tabpanel");
+  panel.tabIndex = 0;
+  panel.hidden = true;
+
+  const slot = el("div", "tab-slot");
+  slot.setAttribute("role", "presentation");
+
+  const button = el("button", "tab", account.name);
+  button.type = "button";
+  button.id = "tab-register-" + account.guid;
+  button.setAttribute("role", "tab");
+  button.setAttribute("aria-selected", "false");
+  button.setAttribute("aria-controls", panel.id);
+  button.setAttribute("aria-label", `Register for ${account.name}`);
+  button.title = `Register for ${account.name}`;
+  button.tabIndex = -1;
+
+  const close = el("button", "tab-close", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", `Close the ${account.name} tab`);
+  close.title = `Close the register for ${account.name}`;
+
+  panel.setAttribute("aria-labelledby", button.id);
+  slot.append(button, close);
+  bookTabs.append(slot);
+  registerPanels.append(panel);
+
+  tab = { account: { guid: account.guid, name: account.name },
+          panel, slot, button, close };
+  registerTabs.set(account.guid, tab);
+
+  button.addEventListener("click", () => {
+    activateBookTab(registerTabId(account.guid), { navigate: true });
+  });
+  close.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeRegisterTab(account.guid);
+  });
+  rememberOpenTabs();
+  return tab;
+}
+
+function renameRegisterTab(guid, name) {
+  const tab = registerTabs.get(guid);
+  if (!tab || !name || tab.account.name === name) return;
+  tab.account.name = name;
+  tab.button.textContent = name;
+  tab.button.setAttribute("aria-label", `Register for ${name}`);
+  tab.button.title = `Register for ${name}`;
+  tab.close.setAttribute("aria-label", `Close the ${name} tab`);
+  tab.close.title = `Close the register for ${name}`;
+}
+
+// The open register tabs are a view preference, not page state: the URL can
+// hold only the active one.  sessionStorage keeps the strip across a reload of
+// this browser tab; the URL decides which tab is active (and a link into a
+// register opens its tab even when the strip was never restored).
+function rememberOpenTabs() {
+  try {
+    sessionStorage.setItem(OPEN_TABS_KEY, JSON.stringify([...registerTabs.keys()]));
+  } catch (err) { /* private mode: the URL still restores the active tab */ }
+}
+
+function restoreOpenTabs() {
+  let guids = [];
+  try {
+    guids = JSON.parse(sessionStorage.getItem(OPEN_TABS_KEY) || "[]");
+  } catch (err) {
+    guids = [];
+  }
+  if (!Array.isArray(guids)) return;
+  for (const guid of guids) {
+    const account = findAccount(guid);
+    if (account) ensureRegisterTab(account);
+  }
+}
+
+// Show an already-open register tab: make it the active tab, name it in the
+// URL, and read its register unless the page already holds that account's
+// data (or `reload` asks for a fresh read, which opening an account does).
+async function showRegisterTab(id, { navigate = false, focus = true,
+                                     reload = false } = {}) {
+  const guid = id.slice(REGISTER_TAB_PREFIX.length);
+  const tab = registerTabs.get(guid);
+  if (!tab) return false;
+
+  setPage(PAGE_BOOK);
+  setActiveTab(id);
+  // The URL names the tab before its data is read: a reload while the
+  // register is still loading must land on the same tab.
+  if (navigate) setUrl(registerPath(guid));
+  if (reload || !registerState || registerState.account.guid !== guid) {
+    await openRegister(tab.account, { focus });
+  } else if (focus && registerState.rows.length > 0) {
+    selectRegisterRow(registerState.index);
+  }
+  refreshMenuStates();
+  return true;
+}
+
+async function activateBookTab(id, { navigate = false, focus = true } = {}) {
+  if (id === ACCOUNTS_TAB) {
+    setPage(PAGE_BOOK);
+    setActiveTab(ACCOUNTS_TAB);
+    if (navigate) setUrl("accounts");
+    return true;
+  }
+  return showRegisterTab(id, { navigate, focus });
+}
+
+// Open an account's register tab, creating it or switching to it.  The
+// register is read again even when its tab is already open: opening an
+// account is an action on that account, and the engine may have data the
+// tab's last read did not see.  (Switching tabs does not re-read; only
+// opening does.)
+async function openRegisterTab(account, { navigate = true, guard = true,
+                                          focus = true } = {}) {
+  const id = registerTabId(account.guid);
+  if (guard && id !== activeTab && bookDirty &&
+      !(await guardUnsavedChanges(`open ${account.name}`)))
+    return false;
+  ensureRegisterTab(account);
+  return showRegisterTab(id, { navigate, focus, reload: true });
+}
+
+async function closeRegisterTab(guid) {
+  const tab = registerTabs.get(guid);
+  if (!tab) return;
+  if (!(await guardUnsavedChanges(`close ${tab.account.name}`))) return;
+
+  const wasActive = activeTab === registerTabId(guid);
+  const order = bookTabOrder();
+  const at = order.indexOf(registerTabId(guid));
+  const neighbour = order[at - 1] || order[at + 1] || ACCOUNTS_TAB;
+
+  registerTabs.delete(guid);
+  // The one #register section must leave the panel before the panel goes.
+  if (registerSection.parentElement === tab.panel) {
+    registerPanels.append(registerSection);
+    registerSection.hidden = true;
+  }
+  tab.slot.remove();
+  tab.panel.remove();
+  rememberOpenTabs();
+
+  if (wasActive) await activateBookTab(neighbour, { navigate: true });
+  refreshMenuStates();
+}
+
+// Ctrl+Tab / Ctrl+Shift+Tab cycle the Book page's tabs, the desktop's
+// notebook keys.  They are bound on the document because the focus may be
+// anywhere in the page when the reader uses them.  Switching a tab is not
+// leaving the page: the open register stays open, so this does not ask about
+// unsaved changes (opening another account and closing a tab still do).
+function cycleBookTabs(step) {
+  if (activePage !== PAGE_BOOK) return false;
+  const order = bookTabOrder();
+  const at = order.indexOf(activeTab);
+  const next = order[(at + step + order.length) % order.length];
+  activateBookTab(next, { navigate: true });
+  return true;
+}
+
+document.addEventListener("keydown", (event) => {
+  if (!event.ctrlKey || event.altKey || event.metaKey) return;
+  if (event.key !== "Tab") return;
+  if (cycleBookTabs(event.shiftKey ? -1 : 1)) event.preventDefault();
+});
+
+// Arrow keys inside the tab list, the standard tablist keyboard model.  The
+// tablist has one tab stop (the selected tab), so this is how a keyboard user
+// reaches the others.  The move is relative to the focused tab, which is the
+// selected one whenever the tablist has focus in normal use.
+bookTabs.addEventListener("keydown", (event) => {
+  const order = bookTabOrder();
+  const focused = document.activeElement &&
+    document.activeElement.closest('[role="tab"]');
+  let from = activeTab;
+  if (focused) {
+    from = focused.id === "tab-accounts" ? ACCOUNTS_TAB
+      : registerTabId(focused.id.slice("tab-register-".length));
+  }
+  const at = Math.max(0, order.indexOf(from));
+  let next = null;
+  switch (event.key) {
+    case "ArrowRight": next = order[(at + 1) % order.length]; break;
+    case "ArrowLeft": next = order[(at - 1 + order.length) % order.length]; break;
+    case "Home": next = order[0]; break;
+    case "End": next = order[order.length - 1]; break;
+    case "Delete":
+    case "Backspace":
+      if (activeTab !== ACCOUNTS_TAB) {
+        event.preventDefault();
+        closeRegisterTab(activeTab.slice(REGISTER_TAB_PREFIX.length));
+        return;
+      }
+      break;
+    default: return;
+  }
+  if (next === null) return;
+  event.preventDefault();
+  activateBookTab(next, { navigate: true }).then(() => {
+    const tab = next === ACCOUNTS_TAB ? accountsTab
+      : registerTabs.get(next.slice(REGISTER_TAB_PREFIX.length))?.button;
+    if (tab) tab.focus();
+  });
+});
+
+// The delete/backspace guard above closes only the focused tab; a click on the
+// close control of another tab is handled by that control's own listener.
+
+// Read the URL and put the page, the tab and the report on screen.  This runs
+// on load and on popstate; user actions set the URL themselves (setUrl) so
+// that a click never goes through an asynchronous re-read of what it just did.
+// When it settles it marks the document as route-ready, so a caller (or a
+// test) can tell that the URL has been applied before it acts on the page.
+async function applyRoute() {
+  const generation = ++routeGeneration;
+  try {
+    await applyRouteFor(parseRoute());
+  } finally {
+    if (generation === routeGeneration)
+      document.documentElement.dataset.routeReady = "1";
+  }
+}
+
+async function applyRouteFor(route) {
+  const generation = routeGeneration;
+
+  if (route.unknown) {
+    setPage(PAGE_BOOK);
+    setActiveTab(ACCOUNTS_TAB);
+    setUrl("accounts", { replace: true });
+    return;
+  }
+
+  if (route.page === PAGE_REPORTS) {
+    setPage(PAGE_REPORTS);
+    if (route.report) {
+      await selectReport(route.report, { navigate: false });
+      return;
+    }
+    if (route.spec) {
+      const builtin = builtinSpecs.find((spec) => spec.id === route.spec);
+      const saved = savedSpecs.find((spec) => spec.id === route.spec);
+      const spec = builtin || saved;
+      if (generation !== routeGeneration) return;
+      if (spec) await selectSpec(spec, Boolean(builtin), { navigate: false });
+      else showMissingSpec(route.spec);
+      return;
+    }
+    clearReportView();
+    return;
+  }
+
+  setPage(PAGE_BOOK);
+  if (route.guid) {
+    const account = findAccount(route.guid) || { guid: route.guid, name: route.guid };
+    ensureRegisterTab(account);
+    await activateBookTab(registerTabId(route.guid),
+                          { navigate: false, focus: false });
+    return;
+  }
+  setActiveTab(ACCOUNTS_TAB);
+}
+
+// A saved report the URL names but the store no longer has (deleted in another
+// window, or a stale bookmark): say so instead of silently showing the list.
+function showMissingSpec(id) {
+  clearReportView();
+  optionsSection.hidden = false;
+  optionsTitle.textContent = "Saved report";
+  optionsNote.hidden = true;
+  errorBox.textContent = `There is no saved report ${id} in this book's store.`;
+  errorBox.hidden = false;
+}
+
+function clearReportView() {
+  formGeneration++;
+  selectedReport = null;
+  selectedSpecId = null;
+  currentOptions = [];
+  optionsSection.hidden = true;
+  // Hide the frame but keep its document: tearing the frame down would abort
+  // whatever it is still loading (a report's Chart.js, for one) and report a
+  // failed request in the console.  A hidden frame is not a page on screen.
+  view.hidden = true;
+  view.removeAttribute("srcdoc");
+  hideError();
+  refreshMenuStates();
+}
+
+function showAccountsPage() {
+  setPage(PAGE_BOOK);
+  setActiveTab(ACCOUNTS_TAB);
+  setUrl("accounts");
+  refreshMenuStates();
+}
+
+function showReportsPage() {
+  setPage(PAGE_REPORTS);
+  // The page keeps the report it has open, if any; the URL names it.
+  setUrl(currentPagePath());
+  refreshMenuStates();
+}
+
+window.addEventListener("popstate", () => { applyRoute(); });
+
+
 /* ------------------------------------------------------------- the book */
 
 // The account tree: a disclosure control for children, and a button for the
@@ -706,7 +1240,7 @@ function renderAccount(account) {
   return li;
 }
 
-// Select a tree row and open its register.  Selection is what the Edit >
+// Select a tree row and open its register tab.  Selection is what the Edit >
 // Open Account item acts on; opening on click is the tree's own behaviour.
 // The unsaved-changes guard runs first: a refused move must not leave the
 // tree pointing at one account while the register shows another.
@@ -715,9 +1249,13 @@ async function selectAccount(account, li) {
   selectedAccount = account;
   for (const current of document.querySelectorAll('#tree li[aria-current="true"]'))
     current.removeAttribute("aria-current");
+  if (!li) {
+    li = [...document.querySelectorAll("#tree li")].find(
+      (row) => row.dataset.guid === account.guid) || null;
+  }
   if (li) li.setAttribute("aria-current", "true");
   refreshMenuStates();
-  await openRegister(account);
+  await openRegisterTab(account, { guard: false });
 }
 
 async function load() {
@@ -751,6 +1289,10 @@ async function load() {
       if (current) current.setAttribute("aria-current", "true");
     }
     bookLoaded = true;
+
+    // The open register tabs are restored before the URL is read, so the tab
+    // strip is complete when a register URL selects one of its tabs.
+    restoreOpenTabs();
 
     // Reports are rendered by the server and shown in the frame below the
     // tree, so one is a click away and the page never navigates away.
@@ -1261,8 +1803,7 @@ function renderEditAffordances(data) {
 }
 
 async function openAccount(account) {
-  if (!(await guardUnsavedChanges(`open ${account.name}`))) return;
-  await openRegister(account);
+  return selectAccount(account, null);
 }
 
 function closeRegisterDetail(focus = true) {
@@ -1284,7 +1825,10 @@ async function openRegister(account, options = {}) {
   const previousIndex = registerState ? registerState.index : 0;
 
   closeCellEditor(false);
-  section.hidden = false;
+  // The register shows only where its tab is active: a refresh while the
+  // Accounts tab is on screen re-reads the open register without putting a
+  // second copy of it under the tree.
+  section.hidden = activeTab === ACCOUNTS_TAB;
   message.hidden = true;
   closeRegisterDetail(false);
 
@@ -1300,6 +1844,13 @@ async function openRegister(account, options = {}) {
     }
     const data = await response.json();
     if (generation !== registerGeneration) return;
+
+    // A tab opened from a URL starts with the GUID as its label (the tree
+    // has not been read for that account); the register payload names the
+    // account, so the tab takes that name as soon as it is known.  The short
+    // name is the tab's label, as on the desktop; the full name is the
+    // register's heading.
+    renameRegisterTab(account.guid, data.account || data.full_name);
 
     sessionWritable = Boolean(data.editable);
     registerState = {
@@ -1898,7 +2449,10 @@ function reportsWithDescriptors() {
   return nativeNamesPromise;
 }
 
-async function selectReport(name) {
+async function selectReport(name, options = {}) {
+  setPage(PAGE_REPORTS);
+  if (options.navigate !== false)
+    setUrl(reportPath(name), { replace: options.replace });
   const generation = ++formGeneration;
   selectedReport = name;
   selectedSpecId = null;
@@ -2841,7 +3395,10 @@ async function saveSpec(event) {
   }
 }
 
-async function selectSpec(spec, builtin = false) {
+async function selectSpec(spec, builtin = false, options = {}) {
+  setPage(PAGE_REPORTS);
+  if (options.navigate !== false)
+    setUrl(specPath(spec.id), { replace: options.replace });
   const generation = ++formGeneration;
   selectedReport = spec.name;
   selectedSpecId = spec.id;
@@ -2933,10 +3490,10 @@ async function deleteSpec(spec) {
       return;
     }
     if (selectedSpecId === spec.id) {
-      selectedReport = null;
-      selectedSpecId = null;
-      view.hidden = true;
-      optionsSection.hidden = true;
+      // The page URL named the report that no longer exists, so it goes back
+      // to the list; a reload must not ask for the deleted report.
+      clearReportView();
+      setUrl("reports", { replace: true });
     }
     if (designerBase && designerBase.id === spec.id) {
       // The definition on screen has just been deleted; do not leave its
@@ -3135,21 +3692,19 @@ viewName.addEventListener("keydown", (event) => {
 // more: the register is editable in a writable session, so an item that is
 // still unavailable carries the reason that is true in both modes ("no such
 // endpoint") or a reason computed from the session (MENU_NEEDS.canSave).
-const NO_TABS =
-  "There are no tabs in the web tier: a page is a document in this tab, and " +
-  "opening or closing it is the browser's job.";
 const NO_EXPORT =
   "No export endpoint: the web tier serves HTML and JSON, and writing a file " +
   "is a desktop action.";
 
 const PAGE_REASONS = {
   register:
-    "Register page only: the desktop merges this item while a register page " +
-    "is open. The web register edits description, memo and number in a " +
-    "writable session, but this action is not implemented.",
+    "Register tab only: the desktop merges this item while a register page " +
+    "is open.  A register is a tab of the web Book page, but this action is " +
+    "not implemented for it.",
   "account-tree":
-    "Accounts page only: the desktop merges this item while the accounts " +
-    "page is open, and the web tier has no separate accounts page.",
+    "Accounts tab only: the desktop merges this item while the accounts page " +
+    "is open.  The web accounts page is the Book page's pinned Accounts tab, " +
+    "but this action is not implemented for it.",
   invoice:
     "Invoice page only: the desktop merges this item while an invoice, bill " +
     "or voucher page is open, and the web tier has no such page.",
@@ -3180,6 +3735,15 @@ const MENU_NEEDS = {
   // read-only session and in a writable one with nothing to save.
   canSave: { ok: () => sessionWritable && bookDirty,
              reason: () => saveRefusalReason() },
+  // File > Close closes the current page.  On the Book page that is the
+  // active register tab; the Accounts tab is pinned, and the Reports page is
+  // not a tab, so both say why they cannot be closed.
+  closableTab: { ok: () => activePage === PAGE_BOOK && activeTab !== ACCOUNTS_TAB,
+                 reason: () => activePage !== PAGE_BOOK
+                   ? "The Reports page is not a tab: use View > New Accounts " +
+                     "Page to return to the book."
+                   : "The Accounts tab is pinned: it is the Book page's " +
+                     "default tab and cannot be closed." },
 };
 
 // Why File > Save cannot act.  A read-only session says how to start a
@@ -3204,9 +3768,15 @@ function saveRefusalReason() {
 // A contribution is either an array (appended to that menu) or
 // { before: "<item id>", items: [...] } to sit before a named base item.
 const MENU_PAGES = {
-  report: { present: () => selectedReport !== null },
-  register: { present: () => registerState !== null },
-  "account-tree": { present: () => true },
+  // `present()` says whether the page is on screen, which is what the desktop
+  // merges its page-scoped items on: the Book page holds the Accounts tab and
+  // the register tabs, the Reports page holds the open report.  An item whose
+  // page is on screen and whose action is not implemented is disabled by the
+  // ordinary "no web equivalent" sentence; one whose page is absent says
+  // which page it belongs to (PAGE_REASONS).
+  report: { present: () => activePage === PAGE_REPORTS && selectedReport !== null },
+  register: { present: () => activePage === PAGE_BOOK && activeTab !== ACCOUNTS_TAB },
+  "account-tree": { present: () => activePage === PAGE_BOOK },
   invoice: { present: () => false },
   budget: { present: () => false },
   scheduled: { present: () => false },
@@ -3284,7 +3854,8 @@ const MENU_TABLE = [
         reason: "The server publishes only account counts (/api/book); there is " +
                 "no file-properties endpoint." },
       { sep: true },
-      { label: "Close", accel: "Ctrl+W", reason: NO_TABS },
+      { label: "Close", accel: "Ctrl+W", id: "close-page", needs: "closableTab",
+        run: closeActiveTab },
       { label: "Quit", accel: "Ctrl+Q",
         reason: "Quit is the process, not the page: stopping gnc-webd ends the " +
                 "session, and the tab can simply be closed." },
@@ -3362,20 +3933,20 @@ const MENU_TABLE = [
         reason: "There is no status bar: the summary line under the menu bar is " +
                 "the only status, and Summary Bar shows or hides it." },
       { label: "Tab Position", items: [
-        { label: "Top", reason: "No tabs: pages are not a tabbed notebook in the " +
-          "web tier." },
-        { label: "Bottom", reason: "No tabs: pages are not a tabbed notebook in " +
-          "the web tier." },
-        { label: "Left", reason: "No tabs: pages are not a tabbed notebook in " +
-          "the web tier." },
-        { label: "Right", reason: "No tabs: pages are not a tabbed notebook in " +
-          "the web tier." },
+        { label: "Top", reason: "The web tab bar is always at the top of the " +
+          "Book page; there is no other position to choose." },
+        { label: "Bottom", reason: "The web tab bar is fixed at the top of the " +
+          "Book page; it cannot be moved." },
+        { label: "Left", reason: "The web tab bar is fixed at the top of the " +
+          "Book page; it cannot be moved." },
+        { label: "Right", reason: "The web tab bar is fixed at the top of the " +
+          "Book page; it cannot be moved." },
       ] },
       { sep: true },
       { label: "Filter By…",
-        reason: "Page-scoped in the desktop (accounts, budget, owner pages); the " +
-                "web tier has none of those pages and its report list has its " +
-                "own search." },
+        reason: "Page-scoped in the desktop (accounts, budget, owner pages); " +
+                "the web Accounts tab has no filter and its report list has " +
+                "its own search." },
       { label: "Save layout as default", page: "scheduled" },
       { label: "Basic Ledger", page: "register" },
       { label: "Auto-Split Ledger", page: "register" },
@@ -3392,9 +3963,20 @@ const MENU_TABLE = [
       ] },
       { sep: true },
       { id: "refresh", label: "Refresh", accel: "Ctrl+R", run: refreshPage },
-      { label: "New Accounts Page",
-        reason: "The account tree is always on this page; the web tier has no " +
-                "separate accounts page to open." },
+      // The desktop's New Accounts Page opens another accounts page.  The web
+      // Book page has one pinned Accounts tab, so the item shows that tab
+      // instead of opening a second one; this is a changed meaning, recorded
+      // in doc/web-ui-pages.md.  Reports has no desktop counterpart because
+      // on the desktop a report is a tab of the main window, not a page: the
+      // web tier's separate Reports page is a divergence.
+      { id: "new-accounts-page", label: "New Accounts Page",
+        run: showAccountsPage,
+        title: "Show the Book page's pinned Accounts tab (the web tier has one " +
+               "accounts page, not one per window)" },
+      { id: "view-reports", label: "Reports", scope: "web", run: showReportsPage,
+        title: "Go to the Reports page: the web tier's own page for the report " +
+               "list, the report frame and the designer (a divergence: the " +
+               "desktop keeps reports as tabs of the main window)" },
       { sep: true },
       { id: "toggle-designer", label: "Report Designer", scope: "web",
         run: toggleDesigner,
@@ -3519,7 +4101,9 @@ const MENU_TABLE = [
       { label: "Reset Warnings…",
         reason: "No dismissed-warning store: the desktop remembers reset " +
                 "warnings in GSettings, which the page cannot read." },
-      { label: "Rename Page", reason: NO_TABS },
+      { label: "Rename Page",
+        reason: "Not implemented: a register tab's label is its account's " +
+                "name, and the web tier has no rename-page action." },
     ],
   },
   {
@@ -3646,11 +4230,12 @@ const MENU_TABLE = [
     id: "windows", label: "Windows", mnemonic: "W",
     items: [
       { label: "New Window",
-        reason: "The browser owns windows and tabs: a page cannot open, move or " +
-                "enumerate them." },
+        reason: "The desktop's windows are native windows; the web tier is one " +
+                "document, and its Book-page tabs cannot be moved into a " +
+                "browser window." },
       { label: "New Window with Page",
-        reason: "The browser owns windows and tabs: a page cannot move its " +
-                "content into another one." },
+        reason: "A page cannot open a browser window for a tab: the Book page's " +
+                "tabs live inside the one document." },
     ],
   },
   {
@@ -3684,6 +4269,7 @@ function businessReason(kind) {
 /* ------------------------------------------------------- menu actions */
 
 function focusSearch() {
+  showReportsPage();
   searchBox.focus();
   searchBox.select();
 }
@@ -3697,8 +4283,18 @@ function openSelectedAccount() {
   return Promise.resolve();
 }
 
+// File > Close: the desktop closes the current page.  The Book page's current
+// page is its active tab, so this closes a register tab; the pinned Accounts
+// tab and the Reports page refuse with a reason (MENU_NEEDS.closableTab).
+function closeActiveTab() {
+  if (activePage !== PAGE_BOOK || activeTab === ACCOUNTS_TAB) return;
+  return closeRegisterTab(activeTab.slice(REGISTER_TAB_PREFIX.length));
+}
+
 function toggleDesigner() {
-  designer.hidden = !designer.hidden;
+  const wasShowing = activePage === PAGE_REPORTS && !designer.hidden;
+  showReportsPage();
+  designer.hidden = wasShowing;
   if (!designer.hidden)
     designer.scrollIntoView({ block: "start" });
   refreshMenuStates();
@@ -3710,6 +4306,7 @@ function toggleSummaryBar() {
 }
 
 function showReportList() {
+  showReportsPage();
   const section = document.getElementById("reports");
   section.scrollIntoView({ block: "start" });
   const link = [...reportList.querySelectorAll("a")]
@@ -3723,6 +4320,7 @@ function showReportList() {
 }
 
 function showNewReport() {
+  showReportsPage();
   designer.hidden = false;
   newDesignerReport();
   designer.scrollIntoView({ block: "start" });
@@ -3733,10 +4331,13 @@ function saveConfiguration() {
   // The same path as the designer's Save report button: requestSubmit fires
   // the form's submit handler, so validation and the server message are the
   // ones the button would produce.
+  showReportsPage();
+  designer.hidden = false;
   specForm.requestSubmit();
 }
 
 function showReportOptions() {
+  showReportsPage();
   optionsSection.scrollIntoView({ block: "start" });
   const control = optionsSection.querySelector("input, select, textarea, button");
   if (control) control.focus();
@@ -4253,7 +4854,9 @@ function installMenus() {
 
 renderMenus();
 installMenus();
-load();
+// The URL is the page's state: read it only after the book and the report
+// list exist, because a register or report path needs them.
+load().then(() => applyRoute());
 </script>
 </body>
 </html>

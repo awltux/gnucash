@@ -26,6 +26,13 @@
 #                                                 the tokenless URL, the
 #                                                 visible banner, natural
 #                                                 /api/book and /report paths
+#   phase 5  sample1.gnucash  -> pages-ui.mjs     the page URLs: direct
+#                                                 navigation, reload, Back and
+#                                                 Forward, the Book page's tabs,
+#                                                 the menu's page items
+#   phase 6  sample1.gnucash, --debug-port
+#                             -> pages-ui.mjs     the same page checks without a
+#                                                 token, where the base is "/"
 #
 # Needs node and playwright (or playwright-core) on NODE_PATH, and python3 for
 # the demo book.  Set PW_CHANNEL to use an installed browser (e.g.
@@ -49,6 +56,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [ -f "$SRC/web/test/register-ui.mjs" ] || fail "register-ui.mjs not found"
 [ -f "$SRC/web/test/register-edit-ui.mjs" ] || fail "register-edit-ui.mjs not found"
 [ -f "$SRC/web/test/debug-port-ui.mjs" ] || fail "debug-port-ui.mjs not found"
+[ -f "$SRC/web/test/pages-ui.mjs" ] || fail "pages-ui.mjs not found"
 [ -f "$SRC/web/test/make-demo-book.py" ] || fail "make-demo-book.py not found"
 command -v node >/dev/null || fail "node is not installed"
 command -v python3 >/dev/null || fail "python3 is required for the demo book"
@@ -164,5 +172,27 @@ echo "server: $URL"
 grep -q 'WARNING: --debug-port' "$TMP/debug.log" \
     || fail "the debug-port server printed no warning"
 node "$SRC/web/test/debug-port-ui.mjs" "$URL" || STATUS=1
+
+echo
+echo "== the page split: URLs, reload, history, the Book page's tabs"
+start_server "$BOOK" "$TMP/pages.log" "$TMP/pages-reports.json" \
+    || fail "pages server did not start"
+echo "server: $URL"
+node "$SRC/web/test/pages-ui.mjs" "$URL" || STATUS=1
+
+echo
+echo "== the page split under --debug-port: the same checks without a token"
+DEBUG_PORT2=$(python3 -c '
+import socket
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+print(sock.getsockname()[1])
+sock.close()
+')
+start_debug_server "$BOOK" "$TMP/pages-debug.log" \
+    "$TMP/pages-debug-reports.json" "$DEBUG_PORT2" \
+    || fail "tokenless pages server did not start"
+echo "server: $URL"
+node "$SRC/web/test/pages-ui.mjs" "$URL" || STATUS=1
 
 exit "$STATUS"

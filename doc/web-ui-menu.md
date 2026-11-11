@@ -1,8 +1,10 @@
 # The menu bar — the desktop's menus, and what the web tier does with them
 
-Status: scaffolded in `web/ui/index.html`, tested in `web/test/ui-test.mjs`.
-Branch: `webui/engine-server`, at `89e8638dc8` when this was written.
-Related: `doc/web-ui-roadmap.md` (the workstreams this sits inside),
+Status: scaffolded in `web/ui/index.html`, tested in `web/test/ui-test.mjs`;
+the page split is `doc/web-ui-pages.md` and `web/test/pages-ui.mjs`.
+Branch: `webui/engine-server`.
+Related: `doc/web-ui-pages.md` (the pages, tabs and URLs the menu's page items
+now act on), `doc/web-ui-roadmap.md` (the workstreams this sits inside),
 `web/DESIGNER.md` (the report designer the Reports menu drives),
 `doc/adr/0014-register-editing.md` (the stage that made the register editable).
 
@@ -255,15 +257,19 @@ actually builds. Concretely:
 ### 4.2 The table, counted
 
 The single table is `MENU_TABLE` in `web/ui/index.html`. It renders 12 menus
-and 196 leaf items (submenu headings are not counted). Measured by the test on
-a loaded page with a report selected: **9 items can act, 187 are disabled with
-a reason.**
+and 197 leaf items (submenu headings are not counted). Stage 1 added one View
+item (`Reports`); `New Accounts Page` became able to act. Measured by the test
+on the Reports page with a report selected and the menu states refreshed:
+**11 items can act, 186 are disabled with a reason.**  The enabled set depends
+on the page, which tab is active and whether a report is selected; that is what
+`MENU_PAGES` and `MENU_NEEDS` decide, and the item's reason says so when it is
+disabled.
 
 | menu | leaf items | can act today |
 |---|---|---|
-| File | 27 | — |
+| File | 27 | Close (on a register tab; see §4.2b) |
 | Edit | 33 | Find… (and Report Options with a report selected) |
-| View | 23 | Summary Bar, Refresh, Report Designer* |
+| View | 24 | Summary Bar, Refresh, New Accounts Page, Reports*, Report Designer* |
 | Transaction | 14 | — |
 | Actions | 42 | — |
 | Business | 30 | — |
@@ -274,8 +280,9 @@ a reason.**
 | Windows | 2 | — |
 | Help | 4 | About |
 
-`*` marks the three web-tier items. Everything else is a desktop item, named
-as the desktop names it, disabled with a reason.
+`*` marks the web-tier items (now four: Report List, New Report…, Reports, and
+Report Designer). Everything else is a desktop item, named as the desktop names
+it, disabled with a reason.
 
 ### 4.2a What stage 2b changed
 
@@ -297,15 +304,39 @@ register. The page-level dirty state is what File > Save's precondition reads
 (`MENU_NEEDS.canSave`), so the item is enabled exactly when saving would
 write something.
 
+### 4.2b What stage 1, the page split, changed
+
+The pages became URLs and the Book page grew a tab bar (`doc/web-ui-pages.md`).
+No label was invented and no item started claiming a page the web tier does not
+have. Item by item:
+
+| item | before | now |
+|---|---|---|
+| View > New Accounts Page | disabled: "the account tree is always on this page; the web tier has no separate accounts page" | **acts**: it shows the Book page's pinned Accounts tab. The desktop opens another accounts page; the web tier has one, so this is a changed meaning (§4.8), not a new feature. |
+| View > Reports | — (no such desktop item) | a **web-tier item** that goes to the Reports page. On the desktop a report is a tab of the main window, not a page: the separate page is a divergence. |
+| File > Close | disabled with the shared "there are no tabs" sentence | **acts** on a register tab: it closes the active tab. Disabled on the pinned Accounts tab ("pinned") and on the Reports page (not a tab), each with its reason (`MENU_NEEDS.closableTab`). |
+| View > Tab Position (Top/Bottom/Left/Right) | "No tabs: pages are not a tabbed notebook" | still disabled; the reason is now true: the web tab bar is fixed at the top of the Book page and cannot be moved. |
+| View > Filter By… | "the web tier has none of those pages" | still disabled; the reason now names the pages that do exist: the Accounts tab has no filter, and the report list has its own search. |
+| item with `page: "register"` (ledger styles, transaction actions, Account Report, …) | "Register page only: … the web tier has no such page" (or, before stage 2b, "the web register is read-only") | still disabled. The page now exists (a register tab), so the reason changes to `PAGE_REASONS.register` when no register tab is showing and to "No web equivalent: the web tier has no implementation of this action" when one is. The reason follows the page. |
+| item with `page: "account-tree"` (Edit Account, Delete Account, New Account…, …) | "Accounts page only: … the web tier has no separate accounts page" | still disabled, but the reason no longer claims the page is missing: it says the Accounts tab exists and the action is not implemented for it. |
+| Windows > New Window / New Window with Page | "the browser owns windows and tabs" | still disabled; the reason is corrected: the web tier is one document and its Book-page tabs cannot be moved into browser windows. |
+| Actions > Rename Page | shared "there are no tabs" sentence | disabled with its own reason: a register tab's label is its account's name and the web tier has no rename action. |
+| File > Close's old shared reason | "a page is a document in this tab" | removed: Close has a real action, and the sentence was no longer true of the page. |
+
+The honesty rule is unchanged: an item that cannot act still carries the
+sentence naming what is missing, and the sentence now follows the page model
+instead of the old single-page one.
+
 ### 4.3 File
 
 The whole menu is hypothetical in a read-only, single-book server: New File,
-Open…, Save, Save As…, Revert, Close, Quit, Properties, Page Setup, Print,
+Open…, Save, Save As…, Revert, Quit, Properties, Page Setup, Print,
 the nine Import items and the five Export items all have no web path. Their
 reasons are specific rather than "disabled": Open… says the book is a
 command-line argument; Save says the session is read-only; Print says the
 report is an HTML document in a frame, so printing is the browser's own;
-Quit says the process is not the page.
+Quit says the process is not the page. Close is the exception: since stage 1
+it closes the active register tab (§4.2b, §4.8).
 
 Since stage 2b, Save is the exception in a writable session: it calls the same
 `POST /api/book/save` the register's Save control calls, and it is enabled only
@@ -331,10 +362,19 @@ Sheets and Tax Report Options are server/book-level and have no endpoint.
 ### 4.5 View
 
 Summary Bar is a real toggle of the summary line; Refresh is real; Report
-Designer is the web tier's own toggle. Toolbar, Status Bar and Tab Position
-describe chrome the web tier does not have and are disabled. The page-scoped
-view items (ledger styles, Sort By/Filter By, invoice Sort Order, Save layout
-as default) are present and disabled with their page.
+Designer is the web tier's own toggle and brings the Reports page up if it is
+not on screen. **New Accounts Page** now acts: the Book page has a pinned
+Accounts tab, so the desktop item shows that tab instead of opening a second
+accounts page (a changed meaning, §4.8). **Reports** is a web-tier item that
+goes to the Reports page — the desktop has no such page because a report there
+is a tab of the main window (a divergence, `doc/web-ui-pages.md`). Toolbar,
+Status Bar and Tab Position describe chrome the web tier does not have and are
+disabled; Tab Position's reasons now say the web tab bar is fixed at the top of
+the Book page, not that there are no tabs. The page-scoped view items (ledger
+styles, Sort By/Filter By, invoice Sort Order, Save layout as default) are
+present and disabled with their page; a register-scoped one switches from
+`PAGE_REASONS.register` to "No web equivalent" when a register tab is open,
+because its page is then on screen.
 
 ### 4.6 Transaction, Actions, Business, Scheduled
 
@@ -367,10 +407,13 @@ These are the menus whose desktop items presume a page or a write path.
 
 ### 4.7 Windows and the generated menus
 
-Windows has New Window and New Window with Page, both disabled because the
-browser owns windows and tabs and a page cannot enumerate them. The desktop's
-per-window items are generated; the web has one document, so no generated
-entry is invented.
+Windows has New Window and New Window with Page, both disabled. The reason is
+now the true one: the desktop's entries are native windows, the web tier is one
+document, and the Book page's tabs are not browser windows a page can open,
+move or enumerate. The desktop's per-window items are generated; the web has
+one document, so no generated entry is invented. (The Book page's own tab strip
+is not the Windows menu: it lists pages, not OS windows, and it is the tab bar's
+own job — `doc/web-ui-pages.md`.)
 
 The recent-files section under File is generated per recent file
 (`gnc-plugin-file-history.c:425`). The web server has no recent-books list —
@@ -379,6 +422,14 @@ the book is its command-line argument — so there are no entries, and no
 
 ### 4.8 The items that change meaning
 
+- **New Accounts Page**: the desktop opens another accounts page in a new tab.
+  The web Book page has one pinned Accounts tab, so the item shows that tab.
+  The label, position and mnemonic are the desktop's; the meaning is "show the
+  accounts page", not "create a second one".
+- **Close**: the desktop closes the current page (the active tab). The web
+  closes the active register tab. It is disabled on the pinned Accounts tab and
+  on the Reports page, each with a reason; it is not a browser-level "close the
+  window" and does not pretend to be.
 - **Find…** (`Ctrl+F`): the desktop opens the Find Transactions dialog. The web
   focuses the report search box, which filters report names and tags, not
   transactions. The label and the shortcut hint are kept, the target is not;
@@ -559,21 +610,33 @@ The suite grows from 125 checks to 143; the menu adds 18:
 16. Save Report Configuration As… saves a report server-side and the list
     shows it;
 17. every disabled item in the rendered bar carries a reason (and the counts
-    are printed: 196 items, 9 available, 187 disabled);
+    are printed: 197 items, 10 available, 187 disabled in the state the test
+    ends in);
 18. a page module adds an item before a named base item without editing the
     base table.
+
+Stage 1 adds a second browser test, `web/test/pages-ui.mjs`, run in both
+modes (token and `--debug-port`) as phases 5 and 6 of `web/run-ui-test.sh`.
+It checks the page URLs themselves and, for the menu, that
+`View > New Accounts Page` and `View > Reports` go to their pages and write
+their URLs, that a register-scoped item's reason follows its page, and that
+`File > Close` closes a register tab and is disabled with a reason on the
+pinned Accounts tab.
 
 The suite is run three times; each run must exit 0 with no console errors and
 no failed requests.
 
 ## 7. Extensibility
 
-Page modules live in `MENU_PAGES`. A module says whether its page is present
-and may contribute items to existing menus:
+Page modules live in `MENU_PAGES`. A module says whether its page is on screen
+and may contribute items to existing menus.  In stage 1 `present()` is about
+the page the reader is looking at (the Book page's Accounts tab, a register
+tab, the Reports page with a report open), not about whether some page exists
+somewhere:
 
 ```js
 MENU_PAGES.register = {
-    present: () => registerPage !== null,   // flips the page-scoped items live
+    present: () => activeTab !== ACCOUNTS_TAB,   // flips page-scoped items live
     menus: {
         // appended to the menu
         reports: [{ label: "Account Report", page: "register",

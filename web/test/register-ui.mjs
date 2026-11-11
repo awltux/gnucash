@@ -139,7 +139,26 @@ async function gridState() {
     });
 }
 
+// Stage 1: the account tree is the Book page's pinned Accounts tab and a
+// register is a tab of its own, so a tree click needs the Accounts tab on
+// screen first.  This is the page model, not a weaker check: the click still
+// selects the same account and waits for its register.
+const waitForRoute = () => page.waitForFunction(
+    () => document.documentElement.dataset.routeReady === '1',
+    null, { timeout: 30000 });
+await waitForRoute();
+
+async function showAccountsTab() {
+    if (await page.evaluate(() => document.getElementById('register').hidden))
+        return; // the Accounts tab is already showing
+    await page.locator('#tab-accounts').click();
+    await page.waitForFunction(
+        () => document.getElementById('register').hidden,
+        null, { timeout: 15000 });
+}
+
 async function clickAccount(guid) {
+    await showAccountsTab();
     await page.locator(`#tree button.account-name[data-guid="${guid}"]`).click();
     await page.waitForFunction(
         (expected) => {

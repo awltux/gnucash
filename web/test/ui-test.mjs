@@ -183,13 +183,24 @@ const waitForSpecFrame = () => page.waitForFunction(() => {
         doc && doc.body && (!doc.contentType || doc.contentType === 'text/html');
 }, null, { timeout: 15000 });
 
-const servedSpec = (id) => page.evaluate(async (specId) => {
+// Fetch a served spec through the base URL the server printed, not through
+// location.href: stage 1 made the page URL a page path (/reports, /report/…),
+// so a relative URL resolved against it would land under that path.
+const servedSpec = (id) => page.evaluate(async ({ base, specId }) => {
     const response = await fetch(
-        new URL('api/specs/' + encodeURIComponent(specId), location.href));
+        new URL('api/specs/' + encodeURIComponent(specId), base));
     return response.ok ? response.json() : null;
-}, id);
+}, { base: url, specId: id });
+
+// The page applies its URL after the book has loaded; the mark says it has
+// finished, so a reload check reads a settled page rather than racing the
+// route that is about to restore the open report.
+const waitForRoute = () => page.waitForFunction(
+    () => document.documentElement.dataset.routeReady === '1',
+    null, { timeout: 15000 });
 
 await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+await waitForRoute();
 await page.waitForFunction(
     () => document.getElementById('summary')?.textContent.includes('accounts'),
     null, { timeout: 15000 });
@@ -211,6 +222,17 @@ check('account tree rendered', rows > 50, `${rows} rows`);
 
 const firstRow = (await page.locator('#tree li').first().innerText()).replace(/\s+/g, ' ');
 check('balances are formatted', /\$[\d,]+\.\d\d/.test(firstRow), firstRow);
+
+// Stage 1: the report list, the option form, the frame and the designer live
+// on the Reports page, not on the Book page.  The list is rendered before the
+// page is shown, so every click below needs the page on screen; navigate to it
+// by URL, which is also the direct-navigation check for this route.
+await page.goto(new URL('reports', url).href, { waitUntil: 'domcontentloaded' });
+await waitForRoute();
+await page.waitForFunction(
+    () => !document.getElementById('page-reports').hidden &&
+          document.querySelectorAll('#report-list a').length > 0,
+    null, { timeout: 15000 });
 
 // A Guile build lists the Scheme report templates in addition to the native
 // ones; the no-Guile build lists the native fourteen plus the built-in specs.
@@ -447,14 +469,14 @@ const widerSpec = {
     chart: 'line',
     chart_series: ['credit', 'debit'],
 };
-const widerHtml = await page.evaluate(async (spec) => {
-    const response = await fetch(new URL('api/spec/preview', location.href), {
+const widerHtml = await page.evaluate(async ({ base, spec }) => {
+    const response = await fetch(new URL('api/spec/preview', base), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(spec),
     });
     return { status: response.status, text: await response.text() };
-}, widerSpec);
+}, { base: url, spec: widerSpec });
 check('a hand-built period chart previews', widerHtml.status === 200,
       `HTTP ${widerHtml.status}`);
 
@@ -681,6 +703,7 @@ const savedViews = await page.locator(
 check('a named view is saved', savedViews === 1, `${savedViews} matching view`);
 
 await page.reload({ waitUntil: 'domcontentloaded' });
+await waitForRoute();
 await page.waitForFunction(
     () => document.getElementById('summary')?.textContent.includes('accounts'),
     null, { timeout: 15000 });
@@ -893,6 +916,7 @@ check('the saved report renders the same table as the explicit request',
       `${savedRows.length} rows vs ${explicitRows.length}`);
 
 await page.reload({ waitUntil: 'domcontentloaded' });
+await waitForRoute();
 await page.waitForFunction(
     () => document.getElementById('summary')?.textContent.includes('accounts'),
     null, { timeout: 15000 });
@@ -995,14 +1019,14 @@ else {
     if (tbFields.end !== '') tbPayload.end = tbFields.end;
 }
 if (tbFields.currency !== '') tbPayload.currency = tbFields.currency;
-const tbPreview = await page.evaluate(async (spec) => {
-    const response = await fetch(new URL('api/spec/preview', location.href), {
+const tbPreview = await page.evaluate(async ({ base, spec }) => {
+    const response = await fetch(new URL('api/spec/preview', base), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(spec),
     });
     return { status: response.status, text: await response.text() };
-}, tbPayload);
+}, { base: url, spec: tbPayload });
 const tbNativeHtml = await (await fetch(
     new URL('report/Trial%20Balance', url))).text();
 const tbPreviewRows = await tableRowsOfHtml(tbPreview.text);
@@ -1168,11 +1192,11 @@ async function waitForSpecFrameComplete() {
     }, null, { timeout: 15000 });
 }
 
-const savedSpecNamed = (name) => page.evaluate(async (wanted) => {
-    const response = await fetch(new URL('api/specs', location.href));
+const savedSpecNamed = (name) => page.evaluate(async ({ base, wanted }) => {
+    const response = await fetch(new URL('api/specs', base));
     const data = await response.json();
     return data.specs.find((spec) => spec.name === wanted) || null;
-}, name);
+}, { base: url, wanted: name });
 
 // The vocabulary, not just the report list: selectSpec() and the page's own
 // loadDesignerOptions() would otherwise race to build the form.
@@ -1209,6 +1233,7 @@ async function saveSource(name, source) {
 
 async function reopenAfterReload(name, source) {
     await page.reload({ waitUntil: 'domcontentloaded' });
+await waitForRoute();
     await page.waitForFunction(
         () => document.getElementById('summary')
             ?.textContent.includes('accounts'), null, { timeout: 15000 });

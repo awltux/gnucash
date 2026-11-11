@@ -13,6 +13,8 @@ set(doc_noinst_DATA
         report-engine-migration.md
         eguile-decision.md
         report-coverage.md
+        web-ui-menu.md
+        web-ui-pages.md
         web-ui-roadmap.md)
 
 install(FILES ${doc_DATA} DESTINATION  ${CMAKE_INSTALL_DOCDIR})

@@ -66,17 +66,24 @@ per-run token) is unchanged.
 | path | returns |
 |---|---|
 | `/<token>/` | the UI (`web/ui/index.html`) |
+| `/<token>/accounts` | the same UI, opened on the Book page's Accounts tab |
+| `/<token>/register/<acct-guid>` | the same UI on that account's register tab (to a navigation); the standalone register document to a subresource request |
+| `/<token>/reports` | the same UI, opened on the Reports page |
+| `/<token>/report/<name>` | the report's HTML, rendered in this process (to a subresource request); the same UI on the report page (to a navigation) |
+| `/<token>/report/spec/<id>` | a saved report's HTML or the same UI, by the same rule |
 | `/<token>/api/book` | `{"accounts":N,"top_level":M}` |
 | `/<token>/api/accounts` | the account tree with formatted totals |
 | `/<token>/api/reports` | the names of the registered reports |
-| `/<token>/report/<name>` | the report's HTML, rendered in this process |
 | `/<token>/api/book/save` | `POST`: save the book; writable mode only |
 | `/<token>/api/book/selftest` | `POST`: one transaction, to prove the write path; writable mode only |
 
-Report names are URL-decoded, so `/report/Trial%20Balance` works. The UI lists
-`/api/reports` and shows a report in a frame, so it never leaves the page.
-With `--debug-port` the same routes are served without the `/<token>/` segment
-(`/api/book`, `/report/<name>`), and nothing else changes.
+Report names are URL-decoded, so `/report/Trial%20Balance` works. The page
+URLs are the reader's state (direct navigation, reload, Back and Forward); the
+report frame and the harnesses still read the document on the same path, which
+the server tells apart by the request's `Sec-Fetch-Dest` header. The page
+model, the tab bar and that rule are in `doc/web-ui-pages.md`. With
+`--debug-port` the same routes are served without the `/<token>/` segment
+(`/accounts`, `/reports`, `/report/<name>`), and nothing else changes.
 
 `api/book/save` answers `403 read-only` in the default mode, `409 locked` when
 the book's `.LCK` is held, and otherwise reports the path, size and backup the

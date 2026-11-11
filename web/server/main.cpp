@@ -1092,15 +1092,22 @@ std::string
 rewrite_links (const std::string& html, const std::string& token)
 {
     std::string out = html;
+    /* The base every rewritten link is placed under.  With a token it is
+     * "/<token>/"; under --debug-port it is the root.  Concatenating
+     * "/" + token + "/" would give "//" in that mode, which a browser reads as
+     * a protocol-relative URL whose host is the next segment (the Chart.js
+     * script became http://vendor/chart.umd.js and never loaded). */
+    const std::string base = token.empty () ? std::string ("/")
+                                            : "/" + token + "/";
     const std::string register_prefix = "gnc-register:";
-    const std::string register_route = "/" + token + "/register/";
+    const std::string register_route = base + "register/";
     const std::string report_prefix = "gnc-report:";
-    const std::string report_route = "/" + token + "/report-id/";
+    const std::string report_route = base + "report-id/";
     /* The native renderer cannot know the server's token, so it writes the
      * vendored assets with this placeholder and the server fills the token
      * in.  It must not collide with a real URL type (gnc-register:, ...). */
     const std::string webui_prefix = "gnc-webui:";
-    const std::string webui_route = "/" + token + "/";
+    const std::string webui_route = base;
 
     for (size_t pos = out.find (webui_prefix); pos != std::string::npos;
          pos = out.find (webui_prefix, pos))
@@ -1210,6 +1217,16 @@ struct HttpRequest
     std::string path;
     std::string body;
     bool body_too_large = false;
+    /* Fetch metadata.  Every browser sends Sec-Fetch-Dest on a request:
+     * "document" for a top-level navigation, "iframe" when the request is a
+     * frame's navigation, and nothing at all from a script's fetch() or from a
+     * command-line client.  The page routes use it to serve the application
+     * shell to a reader who navigates to a report or register URL, while the
+     * report frame and every harness still receive the document they ask for
+     * on the same path.  A client that sends no fetch metadata (curl, the
+     * harnesses, an older browser) gets the document, which is what those
+     * callers have always received. */
+    bool page_navigation = false;
 };
 
 constexpr size_t max_request_body = 1024 * 1024;
@@ -1268,6 +1285,19 @@ read_request (GSocketConnection* connection)
                 const std::string value = header.substr (colon + 1);
                 content_length = static_cast<size_t> (
                     g_ascii_strtoull (value.c_str (), nullptr, 10));
+            }
+            else if (g_ascii_strcasecmp (name.c_str (), "Sec-Fetch-Dest") == 0)
+            {
+                /* "document" is the only value that means a reader navigated
+                 * the top-level page here; "iframe", "empty", "image" and the
+                 * rest are subresources and keep the document routes. */
+                std::string value = header.substr (colon + 1);
+                const size_t first = value.find_first_not_of (" \t");
+                const size_t last = value.find_last_not_of (" \t");
+                value = first == std::string::npos
+                    ? std::string () : value.substr (first, last - first + 1);
+                result.page_navigation =
+                    g_ascii_strcasecmp (value.c_str (), "document") == 0;
             }
         }
         pos = end + 2;
@@ -2020,6 +2050,16 @@ index_html ()
     if (at == std::string::npos)
         return banner + html;
     return html.insert (at + marker.size (), banner);
+}
+
+/* The application shell: the one document every page URL serves.  The client
+ * router reads the path and puts the page, the tab or the report on screen;
+ * the server does not vary the document by page. */
+void
+serve_shell (GSocketConnection* connection)
+{
+    send_response (connection, "200 OK", "text/html; charset=utf-8",
+                   index_html ());
 }
 
 /* The vendored Chart.js.  It is served straight out of borrowed/ so the tree
@@ -2960,6 +3000,23 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         send_response (connection, "200 OK", "application/json",
                        account_json (g_server.root));
     }
+    else if (route == "accounts" || route == "accounts/")
+    {
+        /* The Book page, Accounts tab.  Every page route serves the same
+         * shell: the client router reads the path and puts the tab, the
+         * report list or the open report on screen.  A reader who navigates
+         * here directly, reloads, or walks back to it gets the page they were
+         * on, which a fragment-only scheme could not promise. */
+        serve_shell (connection);
+    }
+    else if (route == "reports" || route == "reports/")
+    {
+        /* The Reports page: the report list, the option form, the designer
+         * and the frame.  The desktop has report pages as tabs of the main
+         * window; the separate page is a web divergence recorded in
+         * doc/web-ui-pages.md. */
+        serve_shell (connection);
+    }
     else if (route.compare (0, 10, "report-id/") == 0)
     {
 #ifdef GNC_WITH_REPORT
@@ -2987,6 +3044,17 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     }
     else if (route.compare (0, 9, "register/") == 0)
     {
+        /* Two resources on one path.  A reader who navigated here wants the
+         * Book page with this account's register tab; the report frame's
+         * drill-down link (Sec-Fetch-Dest: iframe) and every harness that
+         * reads the route want the standalone register document, which is
+         * what this path has always served.  The document is unchanged. */
+        if (request.page_navigation)
+        {
+            serve_shell (connection);
+            return TRUE;
+        }
+
         /* The drill-down target: an account's register, rendered here so a
          * link inside a report frame can simply navigate to it. */
         const std::string spec = account_spec (url_decode (route.substr (9)));
@@ -3285,6 +3353,15 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     }
     else if (route.compare (0, 12, "report/spec/") == 0)
     {
+        /* The same two-resource path as report/: a reader navigating here
+         * gets the Reports page with this saved report open; the designer's
+         * preview frame and the harnesses get the rendered document. */
+        if (request.page_navigation)
+        {
+            serve_shell (connection);
+            return TRUE;
+        }
+
         /* A saved spec renders through the native layer, exactly like a
          * built-in report; the id is the only thing in the path. */
         const std::string id = url_decode (route.substr (12));
@@ -3360,6 +3437,22 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     }
     else if (route.compare (0, 7, "report/") == 0)
     {
+        /* A reader who navigated here gets the Reports page with this report
+         * open; the page's own frame (Sec-Fetch-Dest: iframe) and the
+         * harnesses get the rendered report document on the same path.  This
+         * is the one path where the page URL and the frame's document URL are
+         * the same, so the distinction is the request's fetch metadata, not a
+         * second route: /report/<name> must keep meaning "the report
+         * document" to every existing caller.  The captured value is the
+         * HttpRequest's, read before the report request below shadows the
+         * name. */
+        const bool page_navigation = request.page_navigation;
+        if (page_navigation)
+        {
+            serve_shell (connection);
+            return TRUE;
+        }
+
         /* Native reports are rendered in this process and need no Guile.
          * When the build also has the Scheme engine, names the native layer
          * does not know fall through to it; without Guile they stay 501.
@@ -3464,8 +3557,7 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     }
     else if (route.empty() || route == "index.html")
     {
-        send_response (connection, "200 OK", "text/html; charset=utf-8",
-                       index_html ());
+        serve_shell (connection);
     }
     else
     {
