@@ -16,6 +16,11 @@
 #                                                 menu bar
 #   phase 2  generated demo   -> register-ui.mjs  register grid, keyboard,
 #                                                 transaction panel, menu items
+#   phase 3  a copy of the demo, --writable
+#                             -> register-edit-ui.mjs
+#                                                 editing a cell, the dirty
+#                                                 markers, Save, reload,
+#                                                 unsaved-changes guard
 #
 # Needs node and playwright (or playwright-core) on NODE_PATH, and python3 for
 # the demo book.  Set PW_CHANNEL to use an installed browser (e.g.
@@ -37,6 +42,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [ -f "$BOOK" ] || fail "fixture book not found at $BOOK"
 [ -f "$SRC/web/test/ui-test.mjs" ] || fail "ui-test.mjs not found"
 [ -f "$SRC/web/test/register-ui.mjs" ] || fail "register-ui.mjs not found"
+[ -f "$SRC/web/test/register-edit-ui.mjs" ] || fail "register-edit-ui.mjs not found"
 [ -f "$SRC/web/test/make-demo-book.py" ] || fail "make-demo-book.py not found"
 command -v node >/dev/null || fail "node is not installed"
 command -v python3 >/dev/null || fail "python3 is required for the demo book"
@@ -99,5 +105,16 @@ start_server "$TMP/demo.gnucash" "$TMP/demo.log" "$TMP/demo-reports.json" \
     || fail "register server did not start"
 echo "server: $URL"
 node "$SRC/web/test/register-ui.mjs" "$URL" || STATUS=1
+
+echo
+echo "== the editable register: editing, dirty state, Save, reload"
+# The edit phase writes, so it gets its own copy of the demo book: phase 2's
+# book must stay exactly as generated, and phase 3 saves.
+cp "$TMP/demo.gnucash" "$TMP/demo-edit.gnucash"
+start_server "$TMP/demo-edit.gnucash" "$TMP/demo-edit.log" \
+    "$TMP/demo-edit-reports.json" --writable \
+    || fail "editable register server did not start"
+echo "server: $URL"
+node "$SRC/web/test/register-edit-ui.mjs" "$URL" || STATUS=1
 
 exit "$STATUS"

@@ -1000,6 +1000,8 @@ set(web_DIST
   web/test/book-save.sh
   web/test/register-api.sh
   web/test/register-ui.mjs
+  web/test/register-edit.sh
+  web/test/register-edit-ui.mjs
   web/test/demo-book-check.sh
   web/test/ui-test.mjs)
 add_subdirectory (bindings)

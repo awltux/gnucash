@@ -25,9 +25,10 @@ What exists today:
 | report list, options form, saved views | works |
 | report rendering (iframe) | works, 45 names in a Guile-free build |
 | register page (server-rendered) | **read-only**, navigable from report links |
+| register grid (content area) | works: keyboard navigation, transaction panel, and three editable text fields in a writable session (`--writable`, ADR 0014) |
 | report designer, built-in specs, tags | works (tags in progress) |
 | book selection | **command-line argument only** |
-| data entry | **absent** — the session is opened read-only |
+| data entry | **partial** — description, memo and number per split, with File > Save and the engine's backup; amounts, new transactions and undo are absent |
 
 ## Long-term goals
 

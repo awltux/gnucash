@@ -3,12 +3,22 @@
 Status: scaffolded in `web/ui/index.html`, tested in `web/test/ui-test.mjs`.
 Branch: `webui/engine-server`, at `89e8638dc8` when this was written.
 Related: `doc/web-ui-roadmap.md` (the workstreams this sits inside),
-`web/DESIGNER.md` (the report designer the Reports menu drives).
+`web/DESIGNER.md` (the report designer the Reports menu drives),
+`doc/adr/0014-register-editing.md` (the stage that made the register editable).
 
 This document is the record of the menu work: what the desktop application's
 menus actually contain, which of those items the web tier can carry out today,
 and what it does with the rest. The inventory in Appendix A is quoted from the
 source, not from memory.
+
+> **Update, stage 2b (ADR 0014).**  The register is editable in a writable
+> session (description, memo and number only), and **File > Save** is now a
+> working item.  The counts and paragraphs below describe the read-only page
+> they were measured on, where nothing has changed: still 9 items can act and
+> 187 are disabled with a reason.  In a writable session with unsaved changes
+> there is a tenth (Save), and the reasons that said "the session is read-only"
+> were reworded so they stay true in both modes.  §4.2a records the delta item
+> by item; the rest of the document is unchanged.
 
 ## 1. What was read, and what was not
 
@@ -267,6 +277,26 @@ a reason.**
 `*` marks the three web-tier items. Everything else is a desktop item, named
 as the desktop names it, disabled with a reason.
 
+### 4.2a What stage 2b changed
+
+The register can be edited in a writable session (description, memo and
+number) and saved; nothing else became possible. Item by item:
+
+| item | before | now |
+|---|---|---|
+| File > Save | disabled: "Read-only session: …" | **acts** when the session is writable *and* a register row has been edited. Disabled with "Nothing to save: …" when the book is clean, and with the read-only sentence, which names `--writable`, when the session is read-only. |
+| File > Save As… | disabled as read-only | still disabled, now because Save As is out of scope: the server serves the one book it was started with. |
+| File > New File | disabled as read-only | still disabled, because the book is the command-line argument. |
+| File > Revert | "the web tier never buffers changes" | still disabled; the reason is now true: unsaved edits live in the engine's copy of the book and no route discards them. |
+| Edit > Cut / Copy / Paste | "the browser owns … the desktop's register widget" | still disabled. The reason now says the register's text cells *are* editable but cut/copy/paste of register cells is not implemented, and that the browser's own cut/copy/paste works inside the cell editor. |
+| Edit > Tax Report Options, the Actions menu, Check & Repair, Business tax/billing tables, Tools price/security editors, Close Book | reasons that named a read-only book or session | reworded to name the missing endpoint or action, which is true in a writable session as well. |
+| Transaction menu note | "the web register is read-only" | "the web register edits description, memo and number only" — the same 14 items stay disabled. |
+
+The honesty rule is unchanged; only the sentences had to keep up with the
+register. The page-level dirty state is what File > Save's precondition reads
+(`MENU_NEEDS.canSave`), so the item is enabled exactly when saving would
+write something.
+
 ### 4.3 File
 
 The whole menu is hypothetical in a read-only, single-book server: New File,
@@ -277,19 +307,26 @@ command-line argument; Save says the session is read-only; Print says the
 report is an HTML document in a frame, so printing is the browser's own;
 Quit says the process is not the page.
 
+Since stage 2b, Save is the exception in a writable session: it calls the same
+`POST /api/book/save` the register's Save control calls, and it is enabled only
+while there are unsaved edits (ADR 0014 §5). The row above describes the
+read-only page, where the item stays disabled with the sentence naming
+`--writable`.
+
 Two File items are page-scoped and are shown that way: Print Checks… (register)
 and Print Report… / Export as PDF… / Export Report… (report).
 
 ### 4.4 Edit
 
 Cut/Copy/Paste are disabled even though the browser has them: the desktop's
-items act on its register widget, and the web register exists but has no
-editable cell yet. The page-scoped account, invoice, budget and owner-tree
-items are all present and disabled with their page. Find… works, with a
-changed meaning (§4.8). Report Options works when a report is selected: it
-scrolls to the options form the page already shows. Preferences, Style Sheets
-and Tax
-Report Options are server/book-level and have no endpoint.
+items act on its register widget, and although the web register now has
+editable cells (stage 2b), cut/copy/paste of those cells is not implemented.
+The reason says exactly that, and points at the browser's own cut/copy/paste
+inside the cell editor. The page-scoped account, invoice, budget and
+owner-tree items are all present and disabled with their page. Find… works,
+with a changed meaning (§4.8). Report Options works when a report is selected:
+it scrolls to the options form the page already shows. Preferences, Style
+Sheets and Tax Report Options are server/book-level and have no endpoint.
 
 ### 4.5 View
 
@@ -306,7 +343,8 @@ These are the menus whose desktop items presume a page or a write path.
 - **Transaction** is register-only and the desktop hides it without one. The
   web keeps it visible, with a note saying "Register page only" and all 14
   items disabled, because the shape of the application is part of what the
-  menu is for (§5.3).
+  menu is for (§5.3). The note now adds that the web register edits only
+  description, memo and number, so the transaction actions stay disabled.
 - **Actions** has three global submenus that need channels the web lacks
   (Online Actions → aqbanking, Scheduled Transactions → a book editor, Budget
   → a budget editor), then the register/accounts actions
@@ -314,13 +352,14 @@ These are the menus whose desktop items presume a page or a write path.
   View Lots…), the invoice entry actions, Check & Repair, Reset Warnings and
   Rename Page. Stock Split… is the case the brief names: it keeps that label,
   is disabled, and says a stock split writes to the book and the web register
-  is read-only (it now exists, as a grid opened from the account tree).
+  has no stock-split action (the register is a grid opened from the account
+  tree, and it edits only its three text fields).
 - **Business** is the largest honest gap. Invoices *do* exist in the web tier,
   but as report documents rendered by the engine; the desktop's Business menu
   is about editing owners, jobs, payments and tax tables, none of which the
   web tier has. Every Business item is present and disabled; the reason says
-  why, per group: no customer/vendor/employee data, no dialogs, the book is
-  read-only, invoices appear only as documents. `New Invoice…`, `Find
+  why, per group: no customer/vendor/employee data, no dialogs, no editor for
+  the records, invoices appear only as documents. `New Invoice…`, `Find
   Invoice…` and `Invoices Due Reminder` are disabled for the same reason —
   they open an editor the web tier does not have, not the report that does.
 - **Scheduled** is the scheduled-transactions page's menu, disabled with that

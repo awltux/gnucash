@@ -23,9 +23,10 @@
   ul.collapsed { display: none; }
   .error { color: #c00; }
 
-  /* The register: a read-only grid in the content area.  The selected row is
-     the focused row (roving tabindex), so the outline is the keyboard focus
-     and the same element carries aria-selected for a screen reader. */
+  /* The register: a grid in the content area, read-only unless the server is
+     writable.  The selected row is the focused row (roving tabindex), so the
+     outline is the keyboard focus and the same element carries aria-selected
+     for a screen reader. */
   #register { border-top: 1px solid #ddd; margin-top: 1.25rem; padding-top: .5rem; }
   #register h2 { font-size: 1.2rem; margin: 0 0 .25rem; }
   #register-meta { color: #555; margin: 0 0 .6rem; display: flex; gap: 1.5rem; }
@@ -44,6 +45,25 @@
   #register-grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
   #register-grid td.description, #register-grid td.memo { white-space: normal; }
   #register-grid tbody tr.voided td { color: #999; text-decoration: line-through; }
+  /* Editable cells (ADR 0014): only the cells whose field the edit route
+     accepts carry .editable, and only while the session is writable.  The
+     cursor marks the cell Enter would edit; focus stays on the row, which
+     keeps the grid's roving-tabindex model. */
+  #register-grid td.editable { cursor: text; }
+  #register-grid td.editable:hover { background: #f4f8fd; }
+  #register-grid td.cell-cursor { outline: 2px solid #0645ad;
+      outline-offset: -2px; }
+  #register-grid td.editing { padding: 0; }
+  #register-grid td .cell-editor { width: 100%; box-sizing: border-box;
+      font: inherit; padding: .3rem .5rem; border: 2px solid #0645ad;
+      background: #fff; color: #222; }
+  #register-grid tbody tr.edited td:first-child::after { content: "•";
+      color: #b8860b; margin-left: .3rem; }
+  #register-actions { display: flex; gap: .75rem; align-items: baseline;
+      margin: 0 0 .5rem; flex-wrap: wrap; }
+  #register-dirty-state { color: #8a5a00; font-weight: 600; }
+  #register-edit-status.error { color: #a00; }
+  #register-readonly { color: #555; margin: 0 0 .5rem; }
   #register-detail { border: 1px solid #b9cfe6; background: #f7fafd;
                      padding: .6rem .8rem; margin-top: .8rem; }
   #register-detail h3 { font-size: 1rem; margin: 0 0 .4rem; }
@@ -201,13 +221,22 @@
 <main id="tree"></main>
 
 <!-- The register opens here, in the content area, not in the report frame.
-     It is read-only: rows can be selected and a transaction inspected, but
-     there is no editing control and no save button. -->
+     It is read-only by default: rows can be selected and a transaction
+     inspected, and there is no editing control.  When the server was started
+     writable the three text cells become editable and a Save control appears
+     (ADR 0014); in a read-only session the cells stay read-only and the
+     paragraph below says why, so no control is silently inert. -->
 <section id="register" hidden aria-labelledby="register-title">
   <h2 id="register-title"></h2>
   <p id="register-meta">
     <span id="register-balance"></span>
     <span id="register-count"></span>
+  </p>
+  <p id="register-readonly" class="hint" hidden></p>
+  <p id="register-actions" hidden>
+    <button id="register-save" type="button">Save</button>
+    <span id="register-dirty-state" hidden>Unsaved changes</span>
+    <span id="register-edit-status" class="hint" role="status"></span>
   </p>
   <p id="register-message" class="error" role="alert" hidden></p>
   <div id="register-grid-wrap">
@@ -494,7 +523,7 @@
   <h2 id="about-title">About GnuCash Web</h2>
   <p>gnc-webd, the web tier of GnuCash. The engine is the same one the
      desktop application uses.</p>
-  <p id="about-session">Read-only session: this page cannot change the book.</p>
+  <p id="about-session">The session's read or write mode is published by the server.</p>
   <p id="about-version">Version: not published by this server</p>
   <p id="about-counts"></p>
   <p id="about-hint" class="hint">The desktop's About shows the application
@@ -676,13 +705,16 @@ function renderAccount(account) {
 
 // Select a tree row and open its register.  Selection is what the Edit >
 // Open Account item acts on; opening on click is the tree's own behaviour.
-function selectAccount(account, li) {
+// The unsaved-changes guard runs first: a refused move must not leave the
+// tree pointing at one account while the register shows another.
+async function selectAccount(account, li) {
+  if (!(await guardUnsavedChanges(`open ${account.name}`))) return;
   selectedAccount = account;
   for (const current of document.querySelectorAll('#tree li[aria-current="true"]'))
     current.removeAttribute("aria-current");
   if (li) li.setAttribute("aria-current", "true");
   refreshMenuStates();
-  openRegister(account);
+  await openRegister(account);
 }
 
 async function load() {
@@ -694,6 +726,17 @@ async function load() {
 
     const root = await (await fetch(api("api/accounts"))).json();
     accountRoot = root;
+
+    // The mode is known before a register is opened, so File > Save and the
+    // About text are right on the first render rather than after the first
+    // account click.
+    try {
+      const session = await (await fetch(api("api/session"))).json();
+      sessionWritable = Boolean(session.writable);
+    } catch (err) {
+      console.error(err); // the register payload still carries the flag
+    }
+
     const tree = document.getElementById("tree");
     tree.replaceChildren();
     const list = el("ul");
@@ -725,20 +768,91 @@ async function load() {
 // and what carries aria-selected to a screen reader.
 let registerGeneration = 0;
 
+// ADR 0014: the register is editable only when the server says so, and the
+// page keeps three things about an edit: which rows carry one, whether any of
+// it has been saved, and the cell editor that is open right now.
+let sessionWritable = false;      // /api/register's `editable`
+let bookDirty = false;            // an edit was committed and not yet saved
+const editedSplits = new Set();   // split GUIDs edited since the last save
+let activeEditor = null;          // { cell, input, rowIndex, field, rowData }
+
+// The fields the edit route accepts, and whether each one belongs to the split
+// or to its transaction.  `amount` is absent on purpose: the server refuses it
+// (ADR 0014 §2), so the page does not offer an edit that would be rejected.
+const EDITABLE_FIELDS = {
+  num: { label: "number", transaction: true },
+  description: { label: "description", transaction: true },
+  memo: { label: "memo", transaction: false },
+};
+
 function registerRowElements() {
   return [...document.querySelectorAll("#register-grid tbody tr")];
 }
 
-function selectRegisterRow(index, focus = true) {
+// The cells in display order: [class, text, editable field or null].  The
+// amount and the balance are never editable, so they name no field.
+function registerCells(row) {
+  return [
+    ["date", row.date, null],
+    ["num", row.num, "num"],
+    ["description", row.description, "description"],
+    ["memo", row.memo, "memo"],
+    ["transfer", row.transfer_account, null],
+    ["reconcile", reconcileLabel(row.reconcile), null],
+    ["num", row.amount, null],
+    ["num", row.running_balance, null],
+  ];
+}
+
+// The column Enter should edit: the preferred one when it has a field,
+// otherwise the row's first editable column, otherwise -1.
+function editableColumnFor(row, preferred) {
+  if (!row) return -1;
+  const cells = registerCells(row);
+  if (preferred >= 0 && preferred < cells.length &&
+      cells[preferred][2] !== null)
+    return preferred;
+  return cells.findIndex(([, , field]) => field !== null);
+}
+
+function markRowEdited(tr) {
+  tr.classList.add("edited");
+  tr.dataset.dirty = "true";
+  tr.title = "Edited in this session; not saved yet";
+}
+
+function clearRowEdited(tr) {
+  tr.classList.remove("edited");
+  delete tr.dataset.dirty;
+  tr.removeAttribute("title");
+}
+
+// The cell cursor is the cell Enter would edit.  It exists only in a writable
+// session; in a read-only one there is nothing to point at.
+function applyCellCursor() {
+  if (!registerState) return;
+  registerRowElements().forEach((row, index) => {
+    [...row.children].forEach((cell, column) => {
+      cell.classList.toggle(
+        "cell-cursor",
+        sessionWritable && index === registerState.index &&
+        column === registerState.cell && Boolean(cell.dataset.field));
+    });
+  });
+}
+
+function selectRegisterRow(index, focus = true, cell) {
   if (!registerState || registerState.rows.length === 0)
     return;
   const rows = registerRowElements();
   const clamped = Math.max(0, Math.min(index, rows.length - 1));
   registerState.index = clamped;
+  if (cell !== undefined) registerState.cell = cell;
   rows.forEach((row, i) => {
     row.setAttribute("aria-selected", i === clamped ? "true" : "false");
     row.tabIndex = i === clamped ? 0 : -1;
   });
+  applyCellCursor();
   if (focus) rows[clamped].focus();
 }
 
@@ -761,28 +875,391 @@ function reconcileLabel(state) {
   }
 }
 
+// Why a cell the register does not edit cannot be edited.  Clicking one says
+// so in the status line rather than doing nothing: a control that is silently
+// inert is the failure mode the menu rules exist to prevent, and the same rule
+// applies to a cell.
+const NON_EDITABLE_HINTS = {
+  0: "The date is not editable in this stage; edit the transaction in the " +
+     "desktop.",
+  4: "The transfer account is not editable in this stage; edit the " +
+     "transaction in the desktop.",
+  5: "The reconcile flag is not editable here; reconciling is a desktop " +
+     "action.",
+  6: "The amount is not editable in this stage: the engine rebalances the " +
+     "transaction's other splits, which the register cannot show yet.",
+  7: "The running balance is computed from the amounts, so it is not " +
+     "editable.",
+};
+
 function renderRegisterRow(row, index) {
   const tr = el("tr");
   tr.setAttribute("role", "row");
   tr.setAttribute("aria-rowindex", String(index + 2)); // row 1 is the header
   tr.setAttribute("aria-selected", "false");
+  tr.setAttribute("aria-readonly", sessionWritable ? "false" : "true");
   tr.dataset.index = String(index);
+  tr.dataset.guid = row.guid;
   tr.tabIndex = -1;
   if (row.voided) tr.classList.add("voided");
 
-  const cells = [
-    ["date", row.date], ["num", row.num],
-    ["description", row.description], ["memo", row.memo],
-    ["transfer", row.transfer_account], ["reconcile", reconcileLabel(row.reconcile)],
-    ["num", row.amount], ["num", row.running_balance],
-  ];
-  for (const [kind, text] of cells) {
+  for (const [column, [kind, text, field]] of registerCells(row).entries()) {
     const cell = el("td", kind, text);
     cell.setAttribute("role", "gridcell");
+    cell.setAttribute("aria-colindex", String(column + 1));
+    if (field && sessionWritable) {
+      cell.classList.add("editable");
+      cell.dataset.field = field;
+      cell.title = `Click or press Enter to edit this ` +
+        EDITABLE_FIELDS[field].label;
+      cell.setAttribute("aria-readonly", "false");
+    } else {
+      cell.setAttribute("aria-readonly", "true");
+      if (sessionWritable && NON_EDITABLE_HINTS[column])
+        cell.title = NON_EDITABLE_HINTS[column];
+    }
     tr.append(cell);
   }
-  tr.addEventListener("click", () => selectRegisterRow(index));
+  tr.addEventListener("click", (event) => {
+    if (event.target.closest(".cell-editor")) return;
+    const cell = event.target.closest("td");
+    const column = cell ? cell.cellIndex : undefined;
+    selectRegisterRow(index, true, column);
+    if (cell && cell.dataset.field) beginCellEdit(index, column);
+    else if (sessionWritable && NON_EDITABLE_HINTS[column])
+      showEditStatus(NON_EDITABLE_HINTS[column]);
+  });
+  if (editedSplits.has(row.guid)) markRowEdited(tr);
   return tr;
+}
+
+// An in-progress edit is cancelled, never written: only Enter and Tab commit,
+// so a value the user did not commit cannot reach the engine.  The cell is put
+// back to the value the server last returned.
+function closeCellEditor(focus = true) {
+  if (!activeEditor) return false;
+  const { cell, rowIndex, field } = activeEditor;
+  activeEditor = null;
+  cell.classList.remove("editing");
+  const rowData = registerState ? registerState.rows[rowIndex] : null;
+  cell.textContent = rowData ? rowData[field] : "";
+  const row = registerRowElements()[rowIndex];
+  if (focus && row) row.focus();
+  return true;
+}
+
+function beginCellEdit(rowIndex, cellIndex) {
+  if (!sessionWritable || activeEditor) return false;
+  const row = registerRowElements()[rowIndex];
+  const cell = row ? row.children[cellIndex] : null;
+  if (!cell || !cell.dataset.field) return false;
+
+  const field = cell.dataset.field;
+  const rowData = registerState.rows[rowIndex];
+  // Editing a cell also makes it the cursor: Enter may have picked the row's
+  // first editable column rather than the one the cursor pointed at, and Tab
+  // must move on from the cell that was actually edited.
+  registerState.cell = cellIndex;
+  showEditStatus(""); // a "why not" hint from another cell no longer applies
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "cell-editor";
+  input.value = cell.textContent;
+  input.setAttribute("aria-label", `Edit the ${EDITABLE_FIELDS[field].label}`);
+  cell.classList.add("editing");
+  cell.replaceChildren(input);
+  activeEditor = { cell, input, rowIndex, field, rowData };
+  input.focus();
+  input.select();
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeCellEditor(true);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      commitCellEdit(0);
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      event.stopPropagation();
+      // Tab commits and carries on into the next editable cell, so a row can
+      // be filled in without touching the mouse (ADR 0014 §4).
+      commitCellEdit(event.shiftKey ? -1 : 1, true);
+    }
+  });
+  input.addEventListener("blur", () => {
+    if (activeEditor && activeEditor.input === input)
+      closeCellEditor(false);
+  });
+  return true;
+}
+
+async function commitCellEdit(move, openNext = false) {
+  if (!activeEditor) return;
+  const { cell, input, rowIndex, field, rowData } = activeEditor;
+  const value = input.value;
+  activeEditor = null;
+  cell.classList.remove("editing");
+  cell.textContent = rowData[field];
+  const row = registerRowElements()[rowIndex];
+  if (row) row.focus();
+
+  if (value !== rowData[field]) await sendEdit(rowData, field, value);
+  if (move === 0) return;
+  const target = moveCell(move);
+  if (openNext && target) beginCellEdit(target.index, target.column);
+}
+
+// Move the cell cursor by ±1 within the editable fields, wrapping to the next
+// or previous row.  Focus follows, and the target is returned so a committing
+// Tab can open an editor there.
+function moveCell(delta) {
+  if (!sessionWritable || !registerState) return null;
+  const rows = registerState.rows;
+  if (rows.length === 0) return null;
+  let index = registerState.index;
+  let column = registerState.cell + delta;
+  for (let step = 0; step < rows.length * 8; step++) {
+    if (column < 0) {
+      index -= 1;
+      column = 7;
+      if (index < 0) return null;
+    } else if (column > 7) {
+      index += 1;
+      column = 0;
+      if (index >= rows.length) return null;
+    }
+    if (registerCells(rows[index])[column][2] !== null) {
+      selectRegisterRow(index, true, column);
+      return { index, column };
+    }
+    column += delta;
+  }
+  return null;
+}
+
+function showEditStatus(text, isError = false) {
+  const status = document.getElementById("register-edit-status");
+  status.textContent = text;
+  status.classList.toggle("error", Boolean(isError));
+  status.hidden = text === "";
+}
+
+function updateDirtyUi() {
+  document.getElementById("register-save").disabled = !bookDirty;
+  const state = document.getElementById("register-dirty-state");
+  state.hidden = !bookDirty;
+  state.textContent = bookDirty ? "Unsaved changes" : "";
+  refreshMenuStates();
+}
+
+// Draw a register payload: the heading, the counts and every row.  Both the
+// first open and the re-read after an edit go through here, so there is one
+// renderer, not two that could disagree.
+function renderRegisterBody(data) {
+  document.getElementById("register-title").textContent =
+    data.full_name || data.account;
+  document.getElementById("register-balance").textContent =
+    `Balance: ${data.balance}`;
+  document.getElementById("register-count").textContent =
+    `${data.row_count} row${data.row_count === 1 ? "" : "s"}`;
+  document.getElementById("register-grid")
+    .setAttribute("aria-rowcount", String(data.splits.length + 1));
+  const tbody = document.querySelector("#register-grid tbody");
+  tbody.replaceChildren();
+  for (const [index, row] of data.splits.entries())
+    tbody.append(renderRegisterRow(row, index));
+}
+
+// The engine's register order is xaccSplitOrder, which compares the number and
+// the description as well as the date, so editing one of those can move the
+// row.  The page therefore re-reads the register after an edit instead of
+// assuming the rows stayed where they were, and keeps the cursor on the split
+// that was edited (its guid is stable; its index is not).
+async function reloadRegisterAfterEdit(focusGuid) {
+  const state = registerState;
+  if (!state) return;
+  let data;
+  try {
+    const response = await fetch(
+      api("api/register/" + encodeURIComponent(state.account.guid)));
+    if (!response.ok) return;
+    data = await response.json();
+  } catch (err) {
+    console.error(err);
+    return; // the edit itself succeeded; the rows stay as they were
+  }
+  if (registerState !== state) return; // another account won meanwhile
+  state.data = data;
+  state.rows = data.splits;
+  const found = data.splits.findIndex((row) => row.guid === focusGuid);
+  state.index = found >= 0 ? found
+    : Math.max(0, Math.min(state.index, data.splits.length - 1));
+  const cell = state.cell;
+  renderRegisterBody(data);
+  selectRegisterRow(state.index, true, cell);
+}
+
+// Every split the edit touched is marked, and the rows are re-read.  A
+// transaction-level field (description, num) changes every row of that
+// transaction this register shows, so they are all marked.
+async function applyEditedRow(rowData, field) {
+  const info = EDITABLE_FIELDS[field];
+  for (const row of registerState.rows) {
+    if (row.guid === rowData.guid ||
+        (info.transaction && row.transaction_guid === rowData.transaction_guid))
+      editedSplits.add(row.guid);
+  }
+  bookDirty = true;
+  await reloadRegisterAfterEdit(rowData.guid);
+  updateDirtyUi();
+}
+
+async function sendEdit(rowData, field, value) {
+  const label = EDITABLE_FIELDS[field].label;
+  const body = {};
+  body[field] = value;
+
+  let response;
+  try {
+    response = await fetch(api("api/split/" + encodeURIComponent(rowData.guid)), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    showEditStatus(`Could not edit the ${label}: ${err}`, true);
+    return false;
+  }
+
+  const text = await response.text();
+  if (!response.ok) {
+    // The server names the failure (ADR 0014 §3); show that name rather than
+    // a generic sentence, so "bad-type" and "locked" are distinguishable.
+    let named = text;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed.error) named = `${parsed.error}: ${parsed.message}`;
+    } catch { /* the raw body is the message */ }
+    showEditStatus(`Could not edit the ${label}: ${named}`, true);
+    return false;
+  }
+
+  let updated;
+  try {
+    updated = JSON.parse(text);
+  } catch (err) {
+    showEditStatus(`Could not edit the ${label}: the server's row is not JSON`, true);
+    return false;
+  }
+  if (updated.guid !== rowData.guid) {
+    showEditStatus(`Could not edit the ${label}: the server answered for a ` +
+                   `different split`, true);
+    return false;
+  }
+  await applyEditedRow(rowData, field);
+  showEditStatus("");
+  return true;
+}
+
+// Save the whole book through the engine (ADR 0013).  On success the dirty
+// markers clear and the result names the path, the backup and the sizes; on a
+// 409/500 the named error is shown and the dirty state is kept, so the user can
+// fix the problem and try again rather than believing the edit is safe.
+async function saveBook() {
+  let response;
+  try {
+    response = await fetch(api("api/book/save"), { method: "POST" });
+  } catch (err) {
+    showEditStatus(`Save failed: ${err}`, true);
+    return false;
+  }
+
+  const text = await response.text();
+  let body = {};
+  try {
+    body = JSON.parse(text);
+  } catch { /* reported below when the status is not ok */ }
+
+  if (!response.ok) {
+    const named = body.error ? `${body.error}: ${body.message || ""}`
+                             : (body.message || text);
+    showEditStatus(`Save failed — ${named}`, true);
+    return false;
+  }
+
+  bookDirty = false;
+  editedSplits.clear();
+  for (const row of registerRowElements()) clearRowEdited(row);
+  updateDirtyUi();
+
+  let message = `Saved ${body.path || "the book"}`;
+  if (body.changed === false) {
+    message += " — no changes to write";
+  } else {
+    message += ` — ${body.bytes} bytes`;
+    message += body.backup ? `; backup ${body.backup}` : "";
+    if (body.backup && body.backup_bytes !== undefined)
+      message += ` (${body.backup_bytes} bytes)`;
+  }
+  showEditStatus(message);
+  return true;
+}
+
+// In-page navigation with unsaved changes: refuse to move until the changes
+// are saved.  OK runs the save and continues only when it succeeded; Cancel
+// stays here.  The engine's copy of the book is what holds the edits, so
+// leaving the register would not lose them, but the page would stop being a
+// place where Save is one click away — and the tab guard below cannot warn
+// about a page that already forgot.
+async function guardUnsavedChanges(action) {
+  if (!bookDirty) return true;
+  const count = editedSplits.size;
+  const message =
+    `This book has unsaved changes (${count} edited ` +
+    `row${count === 1 ? "" : "s"}).\n\n` +
+    `Choose OK to save them before you ${action}, or Cancel to stay here.`;
+  if (!window.confirm(message)) return false;
+  return saveBook();
+}
+
+// Closing or reloading the tab is the one navigation this page cannot refuse;
+// it can only ask the browser to ask.  (Chromium shows this dialog only after
+// the page has had a user interaction, which an edit always is.)
+window.addEventListener("beforeunload", (event) => {
+  if (!bookDirty) return;
+  event.preventDefault();
+  event.returnValue = "This book has unsaved changes.";
+  return event.returnValue;
+});
+
+function renderEditAffordances(data) {
+  const note = document.getElementById("register-readonly");
+  note.hidden = sessionWritable;
+  note.textContent = sessionWritable ? "" :
+    (data.edit_reason ||
+     "this session is read-only, so the register cannot be edited");
+  document.getElementById("register-actions").hidden = !sessionWritable;
+  const grid = document.getElementById("register-grid");
+  if (sessionWritable) {
+    const hint = "Editable columns: Num, Description and Memo. Click a cell " +
+      "or press Enter to edit; Escape cancels; Tab commits and moves on. " +
+      "Amounts and balances are not editable in this stage.";
+    grid.setAttribute("aria-description", hint);
+    grid.title = hint;
+  } else {
+    grid.removeAttribute("aria-description");
+    grid.removeAttribute("title");
+  }
+  showEditStatus("");
+  updateDirtyUi();
+}
+
+async function openAccount(account) {
+  if (!(await guardUnsavedChanges(`open ${account.name}`))) return;
+  await openRegister(account);
 }
 
 function closeRegisterDetail(focus = true) {
@@ -799,12 +1276,11 @@ function closeRegisterDetail(focus = true) {
 
 async function openRegister(account, options = {}) {
   const section = document.getElementById("register");
-  const grid = document.getElementById("register-grid");
-  const tbody = grid.querySelector("tbody");
   const message = document.getElementById("register-message");
   const generation = ++registerGeneration;
   const previousIndex = registerState ? registerState.index : 0;
 
+  closeCellEditor(false);
   section.hidden = false;
   message.hidden = true;
   closeRegisterDetail(false);
@@ -822,24 +1298,20 @@ async function openRegister(account, options = {}) {
     const data = await response.json();
     if (generation !== registerGeneration) return;
 
+    sessionWritable = Boolean(data.editable);
     registerState = {
       account,
       data,
       rows: data.splits,
       index: data.splits.length === 0 ? -1 : 0,
+      // The cursor starts on a cell Enter can edit, so the first keypress of
+      // a keyboard-only edit does something.
+      cell: data.splits.length === 0 ? 0
+        : editableColumnFor(data.splits[0], 0),
     };
 
-    document.getElementById("register-title").textContent =
-      data.full_name || data.account;
-    document.getElementById("register-balance").textContent =
-      `Balance: ${data.balance}`;
-    document.getElementById("register-count").textContent =
-      `${data.row_count} row${data.row_count === 1 ? "" : "s"}`;
-    grid.setAttribute("aria-rowcount", String(data.splits.length + 1));
-
-    tbody.replaceChildren();
-    for (const [index, row] of data.splits.entries())
-      tbody.append(renderRegisterRow(row, index));
+    renderRegisterBody(data);
+    renderEditAffordances(data);
 
     if (data.splits.length > 0) {
       const start = options.preserveIndex === false ? 0 : previousIndex;
@@ -858,6 +1330,8 @@ async function openRegister(account, options = {}) {
 function onRegisterKeydown(event) {
   if (!registerState || registerState.rows.length === 0)
     return;
+  if (event.target.classList.contains("cell-editor"))
+    return; // the editor owns its own keys
   if (!event.target.closest("#register-grid tbody tr"))
     return;
 
@@ -870,8 +1344,27 @@ function onRegisterKeydown(event) {
     case "End": next = last; break;
     case "PageDown": next = registerState.index + registerPageSize(); break;
     case "PageUp": next = registerState.index - registerPageSize(); break;
+    case "ArrowRight":
+    case "ArrowLeft":
+      if (!sessionWritable) return;
+      event.preventDefault();
+      moveCell(event.key === "ArrowRight" ? 1 : -1);
+      return;
     case "Enter":
       event.preventDefault();
+      // Shift+Enter is the transaction panel in a writable session; plain
+      // Enter edits the cursored cell (or the row's first editable cell when
+      // the cursor is on a cell that has no field), and falls back to the
+      // panel when the row has nothing editable.
+      if (event.shiftKey) {
+        openRegisterDetail(registerState.rows[registerState.index]);
+        return;
+      }
+      if (sessionWritable && beginCellEdit(
+            registerState.index,
+            editableColumnFor(registerState.rows[registerState.index],
+                              registerState.cell)))
+        return;
       openRegisterDetail(registerState.rows[registerState.index]);
       return;
     default:
@@ -939,12 +1432,18 @@ document.getElementById("register-grid")
   .addEventListener("keydown", onRegisterKeydown);
 document.getElementById("register-detail-close")
   .addEventListener("click", () => closeRegisterDetail(true));
+document.getElementById("register-save")
+  .addEventListener("click", () => saveBook());
 
-// Escape closes the transaction panel and puts focus back on the selected
-// grid row.  The menu bar has its own Escape handling on #menubar, so this
-// only fires for the register.
+// Escape closes an open cell editor first, then the transaction panel, and
+// puts focus back on the selected grid row.  The menu bar has its own Escape
+// handling on #menubar, so this only fires for the register.
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (closeCellEditor(true)) {
+    event.preventDefault();
+    return;
+  }
   if (closeRegisterDetail(true))
     event.preventDefault();
 });
@@ -2629,9 +3128,10 @@ viewName.addEventListener("keydown", (event) => {
 
 // Reasons shared by several items.  Each names the missing capability, not
 // just "disabled": a reader should learn what the web tier would need.
-const READ_ONLY =
-  "Read-only session: gnc-webd opened the book read-only, so this action " +
-  "cannot be carried out or saved.";
+// A read-only session used to be one shared sentence.  It is not one any
+// more: the register is editable in a writable session, so an item that is
+// still unavailable carries the reason that is true in both modes ("no such
+// endpoint") or a reason computed from the session (MENU_NEEDS.canSave).
 const NO_TABS =
   "There are no tabs in the web tier: a page is a document in this tab, and " +
   "opening or closing it is the browser's job.";
@@ -2642,8 +3142,8 @@ const NO_EXPORT =
 const PAGE_REASONS = {
   register:
     "Register page only: the desktop merges this item while a register page " +
-    "is open. The web register is read-only, so this editing action has no " +
-    "web equivalent yet.",
+    "is open. The web register edits description, memo and number in a " +
+    "writable session, but this action is not implemented.",
   "account-tree":
     "Accounts page only: the desktop merges this item while the accounts " +
     "page is open, and the web tier has no separate accounts page.",
@@ -2672,7 +3172,23 @@ const MENU_NEEDS = {
                    reason: "The report designer's vocabulary has not loaded yet." },
   accountSelected: { ok: () => selectedAccount !== null,
                      reason: "No account is selected in the tree." },
+  // A reason may be a function when it depends on the session instead of on a
+  // static fact: File > Save is refused for different named reasons in a
+  // read-only session and in a writable one with nothing to save.
+  canSave: { ok: () => sessionWritable && bookDirty,
+             reason: () => saveRefusalReason() },
 };
+
+// Why File > Save cannot act.  A read-only session says how to start a
+// writable one; a writable one says there is nothing to save yet.
+function saveRefusalReason() {
+  if (!sessionWritable)
+    return "Read-only session: gnc-webd opened the book read-only, so there " +
+           "is nothing to save. Start it with --writable (or " +
+           "GNC_WEBUI_WRITABLE=1) and edit a register row to save.";
+  return "Nothing to save: no register row has been edited since the last " +
+         "save.";
+}
 
 // Each page module below is the extension point.  `present()` says whether
 // the page is on screen (which decides the page-scoped items' enabled state);
@@ -2698,13 +3214,15 @@ const MENU_TABLE = [
   {
     id: "file", label: "File", mnemonic: "F",
     items: [
-      { label: "New File", accel: "Ctrl+N", reason: READ_ONLY },
+      { label: "New File", accel: "Ctrl+N",
+        reason: "The book is a command-line argument: the web tier serves one " +
+                "book and cannot create another one." },
       { label: "Open…", accel: "Ctrl+O",
         reason: "The book is a command-line argument: gnc-webd serves the book " +
                 "it was started with, and a page cannot choose another one." },
       { label: "Import", items: [
         { label: "Import Bills & Invoices…", reason: "No import path: the web " +
-          "tier has no import endpoint and the session is read-only." },
+          "tier has no import endpoint." },
         { label: "Import Accounts from CSV…", reason: "No import path: the web " +
           "tier has no CSV importer." },
         { label: "Import Transactions from CSV…", reason: "No import path: the " +
@@ -2714,7 +3232,7 @@ const MENU_TABLE = [
         { label: "Import Customers & Vendors…", reason: "No import path: the web " +
           "tier has no customer or vendor data." },
         { label: "Replay GnuCash .log file…", reason: "No import path: replaying " +
-          "a log rewrites the book, and the session is read-only." },
+          "a log rewrites the book, and the web tier has no log replay." },
         { label: "Import QIF…", reason: "No import path: the web tier has no QIF " +
           "importer." },
         { label: "Import using AqBanking", reason: "No import path: aqbanking " +
@@ -2724,11 +3242,16 @@ const MENU_TABLE = [
           "OFX importer." },
       ] },
       { sep: true },
-      { label: "Save", accel: "Ctrl+S", reason: READ_ONLY },
-      { label: "Save As…", accel: "Ctrl+Shift+S", reason: READ_ONLY },
+      { id: "save", label: "Save", accel: "Ctrl+S", needs: "canSave",
+        run: saveBook },
+      { label: "Save As…", accel: "Ctrl+Shift+S",
+        reason: "Save As is out of scope: gnc-webd serves the one book it was " +
+                "started with (ADR 0013 §2), so there is no second path to " +
+                "save to." },
       { label: "Revert",
-        reason: "Nothing to revert: the web tier never buffers changes, so " +
-                "there are none to discard." },
+        reason: "Revert is not implemented: unsaved edits live in the engine's " +
+                "copy of the book, and the web tier has no way to discard " +
+                "them; stop the server without saving to drop them." },
       { sep: true },
       { label: "Print", accel: "Ctrl+P",
         reason: "No print path: a report is an HTML document in a frame, so " +
@@ -2748,8 +3271,9 @@ const MENU_TABLE = [
         { label: "Export Account Tree to CSV…", reason: NO_EXPORT },
         { label: "Export Transactions to CSV…", reason: NO_EXPORT },
         { label: "Export Active Register to CSV…",
-          reason: "There is no active register: the web tier has no register " +
-                  "page, and no export endpoint in any case." },
+          reason: "No export endpoint: a register is open, but the web tier " +
+                  "serves HTML and JSON and writing a CSV file is a desktop " +
+                  "action." },
         { label: "Export Report…", reason: NO_EXPORT },
       ] },
       { sep: true },
@@ -2767,15 +3291,20 @@ const MENU_TABLE = [
     id: "edit", label: "Edit", mnemonic: "E",
     items: [
       { label: "Cut", accel: "Ctrl+X",
-        reason: "The browser owns cut, copy and paste in its own fields; the " +
-                "desktop's Edit menu targets its register widget, which the web " +
-                "tier does not have." },
+        reason: "Not implemented: the register's description, memo and number " +
+                "are editable in a writable session, but cutting a register " +
+                "cell is not; the browser's own cut works inside the cell " +
+                "editor." },
       { label: "Copy", accel: "Ctrl+C",
-        reason: "The browser owns copy on the page; the desktop's Copy targets " +
-                "the register widget, which the web tier does not have." },
+        reason: "Not implemented: the register's description, memo and number " +
+                "are editable in a writable session, but copying a register " +
+                "cell is not; the browser's own copy works inside the cell " +
+                "editor." },
       { label: "Paste", accel: "Ctrl+V",
-        reason: "The browser owns paste in its own fields; the desktop's Paste " +
-                "targets the register widget, which the web tier does not have." },
+        reason: "Not implemented: the register's description, memo and number " +
+                "are editable in a writable session, but pasting into a " +
+                "register cell is not; the browser's own paste works inside " +
+                "the cell editor." },
       { sep: true },
       { label: "Assign as payment…", page: "register" },
       { label: "Edit payment…", page: "register" },
@@ -2813,8 +3342,8 @@ const MENU_TABLE = [
                 "(gnc-plugin-report-system.c) and the web tier has no endpoint " +
                 "for it." },
       { label: "Tax Report Options",
-        reason: "Book-level tax options: the book is read-only and the web tier " +
-                "has no tax-options endpoint." },
+        reason: "Book-level tax options are book data, and the web tier has no " +
+                "tax-options endpoint." },
       { id: "report-options", label: "Report Options", needs: "report",
         run: showReportOptions },
       { label: "Budget Options…", page: "budget" },
@@ -2873,8 +3402,8 @@ const MENU_TABLE = [
   {
     id: "transaction", label: "Transaction", mnemonic: "N",
     note: "Register page only: the desktop hides this menu unless a register " +
-          "page is open. The web register is read-only, so its editing " +
-          "actions stay disabled.",
+          "page is open. The web register edits description, memo and number " +
+          "only, so the transaction actions below stay disabled.",
     items: [
       { label: "Cut Transaction", page: "register" },
       { label: "Copy Transaction", page: "register" },
@@ -2914,9 +3443,11 @@ const MENU_TABLE = [
         { label: "Scheduled Transaction Editor", reason: "Scheduled transactions " +
           "are book data; the web tier has no scheduled-transaction editor." },
         { label: "Since Last Run…", reason: "Running scheduled transactions " +
-          "writes to the book, which is read-only here." },
+          "writes to the book, and the web tier has no scheduled-transaction " +
+          "runner." },
         { label: "Mortgage & Loan Repayment…", reason: "The mortgage assistant " +
-          "writes scheduled transactions to the book, which is read-only here." },
+          "writes scheduled transactions to the book, and the web tier has no " +
+          "such assistant." },
       ] },
       { label: "Budget", items: [
         { label: "New Budget", reason: "Budgets are book data; the web tier has " +
@@ -2932,23 +3463,23 @@ const MENU_TABLE = [
       { label: "New Account…", page: "account-tree" },
       { label: "New Account Hierarchy…", page: "account-tree" },
       { label: "Transfer…", accel: "Ctrl+T",
-        reason: "Register and accounts pages only: the web tier has no register " +
-                "page and its accounts tree is read-only." },
+        reason: "Register and accounts pages only: the web tier has no " +
+                "transfer action, and its accounts tree is read-only." },
       { label: "Reconcile…",
-        reason: "Register and accounts pages only: reconciling writes to the " +
-                "book, and the web tier has no register page." },
+        reason: "Register and accounts pages only: the web register has no " +
+                "reconcile action." },
       { label: "Auto-clear…",
-        reason: "Register and accounts pages only: auto-clear writes to the " +
-                "book, and the web tier has no register page." },
+        reason: "Register and accounts pages only: the web register has no " +
+                "auto-clear action." },
       { label: "Stock Assistant…",
         reason: "Register and accounts pages only: the assistant writes to the " +
-                "book, and the web tier has no register page." },
+                "book, and the web tier has no such assistant." },
       { id: "stock-split", label: "Stock Split…",
         reason: "Register and accounts pages only: a stock split writes to the " +
-                "book, and the web tier has no register page." },
+                "book, and the web tier has no stock-split action." },
       { label: "View Lots…",
         reason: "Register and accounts pages only: the lot viewer is a desktop " +
-                "dialog and the web tier has no register page." },
+                "dialog and the web tier has no lot viewer." },
       { sep: true },
       { label: "Enter", page: "invoice" },
       { label: "Cancel", page: "invoice" },
@@ -2967,15 +3498,19 @@ const MENU_TABLE = [
       { label: "Check & Repair", items: [
         { label: "Check & Repair Account",
           reason: "Accounts and register pages only: repair writes to the book, " +
-                  "and the web tier is read-only." },
+                  "and the web tier has no repair action." },
         { label: "Check & Repair Subaccounts",
-          reason: "Repair writes to the book, and the web tier is read-only." },
+          reason: "Repair writes to the book, and the web tier has no repair " +
+                  "action." },
         { label: "Check & Repair All",
-          reason: "Repair writes to the book, and the web tier is read-only." },
+          reason: "Repair writes to the book, and the web tier has no repair " +
+                  "action." },
         { label: "All Transactions",
-          reason: "Repair writes to the book, and the web tier is read-only." },
+          reason: "Repair writes to the book, and the web tier has no repair " +
+                  "action." },
         { label: "This transaction",
-          reason: "Repair writes to the book, and the web tier is read-only." },
+          reason: "Repair writes to the book, and the web tier has no repair " +
+                  "action." },
       ] },
       { sep: true },
       { label: "Reset Warnings…",
@@ -3023,11 +3558,9 @@ const MENU_TABLE = [
                 "document-link endpoint." },
       { sep: true },
       { label: "Sales Tax Table",
-        reason: "Book-level table: the web tier has no table editor and the book " +
-                "is read-only." },
+        reason: "Book-level table: the web tier has no table editor." },
       { label: "Billing Terms Editor",
-        reason: "Book-level table: the web tier has no table editor and the book " +
-                "is read-only." },
+        reason: "Book-level table: the web tier has no table editor." },
       { sep: true },
       { label: "Manage Document Link…", page: "invoice" },
       { label: "Open Linked Document", page: "invoice" },
@@ -3075,16 +3608,15 @@ const MENU_TABLE = [
         reason: "No online-banking channel: aqbanking needs a configured " +
                 "backend and write access." },
       { label: "Price Database",
-        reason: "The book is read-only and the web tier publishes no price " +
-                "editor." },
+        reason: "The web tier publishes no price editor." },
       { label: "Security Editor",
-        reason: "The book is read-only and the web tier publishes no commodity " +
-                "editor." },
+        reason: "The web tier publishes no commodity editor." },
       { label: "Loan Repayment Calculator",
         reason: "Not implemented: the calculator is a desktop dialog, and the " +
                 "web tier has no calculator yet." },
       { label: "Close Book…",
-        reason: "Closing the book writes the file; the web tier is read-only." },
+        reason: "Closing the book ends the session; the web tier has no " +
+                "close-book action (stopping the server closes it)." },
       { label: "Import Map Editor",
         reason: "The Bayesian import data is written by the importer, and the " +
                 "web tier has no importer." },
@@ -3139,10 +3671,10 @@ const MENU_TABLE = [
 
 function businessReason(kind) {
   if (kind === "jobs")
-    return "No jobs: the web tier has no job data or dialog, and the book " +
-           "cannot be written.";
+    return "No jobs: the web tier has no job data or dialog, and no endpoint " +
+           "for them.";
   return "No " + kind + " data or dialogs in the web tier: " + kind +
-         " records live in the book, which is opened read-only here, and " +
+         " records live in the book, the web tier has no editor for them, and " +
          "invoices appear only as report documents.";
 }
 
@@ -3158,7 +3690,8 @@ function focusSearch() {
 // desktop's path and gives keyboard users a named action.)
 function openSelectedAccount() {
   if (selectedAccount)
-    openRegister(selectedAccount);
+    return openAccount(selectedAccount);
+  return Promise.resolve();
 }
 
 function toggleDesigner() {
@@ -3213,9 +3746,12 @@ function showAbout() {
   aboutCounts.textContent =
     `${reportNames.length} reports in the list, ${savedSpecs.length} ` +
     `saved report${savedSpecs.length === 1 ? "" : "s"}.`;
-  aboutSession.textContent = bookLoaded
-    ? "Read-only session: this page cannot change the book."
-    : "The book is not loaded, so the page cannot reach the book at all.";
+  aboutSession.textContent = !bookLoaded
+    ? "The book is not loaded, so the page cannot reach the book at all."
+    : sessionWritable
+      ? "Writable session: the register's description, memo and number can be " +
+        "edited and saved (File > Save)."
+      : "Read-only session: this page cannot change the book.";
   aboutDialog.showModal();
   aboutClose.focus();
 }
@@ -3265,9 +3801,11 @@ function itemIsAvailable(item) {
       "Page-scoped item: its page does not exist in the web tier." };
   if (item.needs) {
     const need = MENU_NEEDS[item.needs];
-    if (!need || !need.ok())
-      return { enabled: false, reason: need ? need.reason
-                                            : "Unavailable in this state." };
+    if (!need || !need.ok()) {
+      const reason = !need ? "Unavailable in this state."
+        : typeof need.reason === "function" ? need.reason() : need.reason;
+      return { enabled: false, reason };
+    }
   }
   if (typeof item.run === "function") return { enabled: true, reason: "" };
   return { enabled: false, reason: "No web equivalent: the web tier has no " +

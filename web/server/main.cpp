@@ -903,6 +903,57 @@ register_rows (Account* account)
 }
 
 std::string
+register_row_json (const RegisterRow& row)
+{
+    std::string out = "{\"guid\":\"" + json_escape (row.guid.c_str ()) + "\"";
+    out += ",\"transaction_guid\":\"" +
+           json_escape (row.transaction_guid.c_str ()) + "\"";
+    out += ",\"date\":\"" + json_escape (row.date.c_str ()) + "\"";
+    out += ",\"date_iso\":\"" + json_escape (row.date_iso.c_str ()) + "\"";
+    out += ",\"num\":\"" + json_escape (row.num.c_str ()) + "\"";
+    out += ",\"description\":\"" +
+           json_escape (row.description.c_str ()) + "\"";
+    out += ",\"memo\":\"" + json_escape (row.memo.c_str ()) + "\"";
+    out += ",\"action\":\"" + json_escape (row.action.c_str ()) + "\"";
+    out += ",\"transfer_account\":\"" +
+           json_escape (row.transfer_account.c_str ()) + "\"";
+    out += ",\"transfer_account_guid\":\"" +
+           json_escape (row.transfer_account_guid.c_str ()) + "\"";
+    out += ",\"reconcile\":\"" + json_escape (row.reconcile.c_str ()) + "\"";
+    out += ",\"reconciled\":";
+    out += row.reconciled ? "true" : "false";
+    out += ",\"voided\":";
+    out += row.voided ? "true" : "false";
+    out += ",\"amount\":\"" + json_escape (row.amount.c_str ()) + "\"";
+    out += ",\"running_balance\":\"" +
+           json_escape (row.running_balance.c_str ()) + "\"";
+    out += "}";
+    return out;
+}
+
+/* Whether this register may be edited, and for a read-only session the
+ * sentence that says why.  This is the same mode gate the write routes use
+ * (ADR 0013 §1), so the page cannot offer an edit a route would refuse. */
+bool
+register_editable (std::string& reason)
+{
+    if (g_server.writable && !qof_book_is_readonly (g_server.book))
+        return true;
+
+    if (g_server.locked)
+        reason = "the book is locked by another GnuCash process ("
+                 + g_server.lock_path + "), so this session opened read-only; "
+                 "close the other process and restart the server to edit";
+    else if (!g_server.writable)
+        reason = "this session is read-only; start the server with "
+                 "--writable (or GNC_WEBUI_WRITABLE=1) to edit the register";
+    else
+        reason = "the book is marked read-only, so this register cannot be "
+                 "edited";
+    return false;
+}
+
+std::string
 register_json (Account* account)
 {
     const GNCPrintAmountInfo info = gnc_account_print_info (account, TRUE);
@@ -924,6 +975,12 @@ register_json (Account* account)
                                                                    : "false";
     out += ",\"row_count\":";
     out += std::to_string (rows.size ());
+    out += ",\"editable\":";
+    std::string edit_reason;
+    const bool editable = register_editable (edit_reason);
+    out += editable ? "true" : "false";
+    out += ",\"edit_reason\":";
+    out += editable ? "\"\"" : "\"" + json_escape (edit_reason.c_str ()) + "\"";
     out += ",\"splits\":[";
 
     bool first = true;
@@ -932,30 +989,7 @@ register_json (Account* account)
         if (!first)
             out += ",";
         first = false;
-
-        out += "{\"guid\":\"" + json_escape (row.guid.c_str ()) + "\"";
-        out += ",\"transaction_guid\":\"" +
-               json_escape (row.transaction_guid.c_str ()) + "\"";
-        out += ",\"date\":\"" + json_escape (row.date.c_str ()) + "\"";
-        out += ",\"date_iso\":\"" + json_escape (row.date_iso.c_str ()) + "\"";
-        out += ",\"num\":\"" + json_escape (row.num.c_str ()) + "\"";
-        out += ",\"description\":\"" +
-               json_escape (row.description.c_str ()) + "\"";
-        out += ",\"memo\":\"" + json_escape (row.memo.c_str ()) + "\"";
-        out += ",\"action\":\"" + json_escape (row.action.c_str ()) + "\"";
-        out += ",\"transfer_account\":\"" +
-               json_escape (row.transfer_account.c_str ()) + "\"";
-        out += ",\"transfer_account_guid\":\"" +
-               json_escape (row.transfer_account_guid.c_str ()) + "\"";
-        out += ",\"reconcile\":\"" + json_escape (row.reconcile.c_str ()) + "\"";
-        out += ",\"reconciled\":";
-        out += row.reconciled ? "true" : "false";
-        out += ",\"voided\":";
-        out += row.voided ? "true" : "false";
-        out += ",\"amount\":\"" + json_escape (row.amount.c_str ()) + "\"";
-        out += ",\"running_balance\":\"" +
-               json_escape (row.running_balance.c_str ()) + "\"";
-        out += "}";
+        out += register_row_json (row);
     }
 
     out += "]}";
@@ -2256,6 +2290,306 @@ handle_book_save (GSocketConnection* connection, const HttpRequest& request)
         send_save_success (connection, outcome, path);
 }
 
+/* --------------------------------------------------------- split editing
+ *
+ * ADR 0014.  The three editable fields are strings and are set with the
+ * engine's own setters -- never by writing XML.  None of them can change an
+ * amount, so an edit cannot move a balance: `description` and `num` belong to
+ * the transaction (so every row of it in every account changes) and `memo`
+ * belongs to the split.
+ *
+ * `amount` is not accepted here.  xaccSplitSetAmount() maintains the
+ * transaction's balance by rewriting the *other* splits (Split.h:236-240), so
+ * one cell edit could change rows in other accounts; this slice has no way to
+ * show the user which rows moved, and a "safe" subset (two same-commodity
+ * splits) would be a second rule the register cannot explain.  The body is
+ * checked before anything is written, so a bad field changes nothing. */
+
+constexpr size_t max_edit_text = 2048;
+
+struct SplitEdit
+{
+    bool has_memo = false;
+    bool has_description = false;
+    bool has_num = false;
+    std::string memo;
+    std::string description;
+    std::string num;
+};
+
+const char*
+json_type_name (const web::json::Value& value)
+{
+    switch (value.type)
+    {
+    case web::json::Type::Null: return "null";
+    case web::json::Type::Bool: return "a boolean";
+    case web::json::Type::Number: return "a number";
+    case web::json::Type::String: return "a string";
+    case web::json::Type::Array: return "an array";
+    case web::json::Type::Object: return "an object";
+    }
+    return "unknown";
+}
+
+void
+send_edit_refusal (GSocketConnection* connection, const char* status,
+                   const char* slug, const std::string& message,
+                   const std::string& field = "")
+{
+    std::string body = "{\"error\":" + json_string (slug);
+    body += ",\"message\":" + json_string (message);
+    if (!field.empty ())
+        body += ",\"field\":" + json_string (field);
+    body += "}";
+    send_json (connection, status, body);
+}
+
+/* One string field: a string, short enough, valid UTF-8, no control
+ * characters.  Anything else is a named refusal, never a silent trim. */
+bool
+edit_text_field (const web::json::Value& value, const char* field,
+                 std::string& out, std::string& slug, std::string& message)
+{
+    const std::string name (field);
+    if (!value.is_string ())
+    {
+        slug = "bad-type";
+        message = "field '" + name + "' must be a string, not " +
+                  json_type_name (value) + ".";
+        return false;
+    }
+    if (value.string.size () > max_edit_text)
+    {
+        slug = "too-long";
+        message = "field '" + name + "' is " +
+                  std::to_string (value.string.size ()) + " bytes; the limit is " +
+                  std::to_string (max_edit_text) + ".";
+        return false;
+    }
+    for (const unsigned char byte : value.string)
+    {
+        if (byte < 0x20 || byte == 0x7f)
+        {
+            slug = "bad-value";
+            message = "field '" + name + "' contains a control character; the "
+                      "register stores plain text.";
+            return false;
+        }
+    }
+    if (!g_utf8_validate (value.string.c_str (), -1, nullptr))
+    {
+        slug = "bad-value";
+        message = "field '" + name + "' is not valid UTF-8.";
+        return false;
+    }
+    out = value.string;
+    return true;
+}
+
+/* The row a split shows up as, recomputed the way the register computes it, so
+ * the edit response is the row the page will draw and not a second shape. */
+bool
+register_row_for_split (Split* split, RegisterRow& row)
+{
+    Account* account = xaccSplitGetAccount (split);
+    if (account == nullptr)
+        return false;
+
+    const std::string guid = guid_text (xaccSplitGetGUID (split));
+    for (const RegisterRow& candidate : register_rows (account))
+    {
+        if (candidate.guid == guid)
+        {
+            row = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The parse-and-validate stage of an edit, with no HTTP side effects: either
+ * it fills `edit`, or it fills `refusal` and the caller answers with it.  The
+ * whole body is checked before the engine is touched, so a refused request
+ * cannot apply half of itself. */
+struct EditRefusal
+{
+    const char* status = "400 Bad Request";
+    std::string slug;
+    std::string message;
+    std::string field;
+};
+
+bool
+parse_split_edit (const std::string& body, SplitEdit& edit, EditRefusal& refusal)
+{
+    web::json::Value object;
+    std::string parse_error;
+    if (!web::json::parse (body, object, parse_error))
+    {
+        refusal = {"400 Bad Request", "bad-json",
+                   "the body is not valid JSON: " + parse_error, ""};
+        return false;
+    }
+    if (!object.is_object ())
+    {
+        refusal = {"400 Bad Request", "bad-body",
+                   "the body must be a JSON object of the fields being "
+                   "changed, not " + std::string (json_type_name (object)), ""};
+        return false;
+    }
+    if (object.object.empty ())
+    {
+        refusal = {"400 Bad Request", "no-fields",
+                   "the body names no field to change; the editable fields are "
+                   "description, memo and num", ""};
+        return false;
+    }
+
+    for (const auto& [name, value] : object.object)
+    {
+        if (name == "amount")
+        {
+            refusal = {"400 Bad Request", "unsupported-field",
+                       "the amount is not editable in this stage: the engine "
+                       "rebalances the transaction's other splits, which this "
+                       "register cannot show yet; edit the transaction in the "
+                       "desktop", name};
+            return false;
+        }
+
+        bool* has = nullptr;
+        std::string* target = nullptr;
+        if (name == "memo")
+        {
+            has = &edit.has_memo;
+            target = &edit.memo;
+        }
+        else if (name == "description")
+        {
+            has = &edit.has_description;
+            target = &edit.description;
+        }
+        else if (name == "num")
+        {
+            has = &edit.has_num;
+            target = &edit.num;
+        }
+        else
+        {
+            refusal = {"400 Bad Request", "unknown-field",
+                       "unknown field '" + name + "'; the editable fields are "
+                       "description, memo and num", name};
+            return false;
+        }
+
+        if (!edit_text_field (value, name.c_str (), *target, refusal.slug,
+                              refusal.message))
+        {
+            refusal.status = "400 Bad Request";
+            refusal.field = name;
+            return false;
+        }
+        *has = true;
+    }
+    return true;
+}
+
+/* POST /api/split/<guid> with a JSON object of the fields being changed.
+ * Answers with the updated row (the same object the register's `splits` array
+ * holds), or a named 4xx/5xx. */
+void
+handle_split_edit (GSocketConnection* connection, const HttpRequest& request,
+                   const std::string& spec)
+{
+    if (request.method != "POST")
+    {
+        send_json (connection, "405 Method Not Allowed",
+                   "{\"error\":\"method\",\"message\":\"editing a split needs "
+                   "POST\"}");
+        return;
+    }
+    if (refuse_write (connection))
+        return;
+
+    /* The second line of defence (ADR 0013 §1): a book this process marked
+     * read-only refuses the edit even if a gate were forgotten. */
+    if (qof_book_is_readonly (g_server.book))
+    {
+        send_edit_refusal (connection, "403 Forbidden", "book-readonly",
+                           "the book is marked read-only in this process, so "
+                           "it cannot be edited");
+        return;
+    }
+
+    GncGUID guid;
+    Split* split = nullptr;
+    if (string_to_guid (spec.c_str (), &guid))
+        split = xaccSplitLookup (&guid, gnc_account_get_book (g_server.root));
+    if (split == nullptr)
+    {
+        send_edit_refusal (connection, "400 Bad Request", "unknown-split",
+                           "no such split: " + spec);
+        return;
+    }
+
+    if (request.body_too_large)
+    {
+        send_edit_refusal (connection, "413 Payload Too Large", "body-too-large",
+                           "the edit body is larger than 1 MiB");
+        return;
+    }
+
+    SplitEdit edit;
+    EditRefusal refusal;
+    if (!parse_split_edit (request.body, edit, refusal))
+    {
+        send_edit_refusal (connection, refusal.status, refusal.slug.c_str (),
+                           refusal.message, refusal.field);
+        return;
+    }
+
+    Transaction* transaction = xaccSplitGetParent (split);
+    const gchar* current_description = xaccTransGetDescription (transaction);
+    const gchar* current_num = xaccTransGetNum (transaction);
+    const gchar* current_memo = xaccSplitGetMemo (split);
+
+    const bool changed =
+        (edit.has_description
+         && edit.description != (current_description != nullptr
+                                     ? current_description : ""))
+        || (edit.has_num
+            && edit.num != (current_num != nullptr ? current_num : ""))
+        || (edit.has_memo
+            && edit.memo != (current_memo != nullptr ? current_memo : ""));
+
+    /* An edit that sets the value it already had is not a change: the book is
+     * left clean, so a later Save can honestly answer changed:false. */
+    if (changed)
+    {
+        xaccTransBeginEdit (transaction);
+        if (edit.has_memo)
+            xaccSplitSetMemo (split, edit.memo.c_str ());
+        if (edit.has_description)
+            xaccTransSetDescription (transaction, edit.description.c_str ());
+        if (edit.has_num)
+            xaccTransSetNum (transaction, edit.num.c_str ());
+        xaccTransCommitEdit (transaction);
+    }
+
+    RegisterRow row;
+    if (!register_row_for_split (split, row))
+    {
+        send_edit_refusal (connection, "500 Internal Server Error",
+                           "row-unavailable",
+                           "the split was edited but its register row could not "
+                           "be recomputed");
+        return;
+    }
+
+    send_json (connection, "200 OK", register_row_json (row));
+}
+
 /* Accounts the self-test may use: real accounts (not placeholders, not the
  * root) that carry a commodity. */
 void
@@ -2428,6 +2762,27 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
     {
         handle_book_save (connection, request);
     }
+    else if (route == "api/session")
+    {
+        /* What a page needs before it opens a register: the mode this process
+         * was started in, why writes are refused when they are, and the book.
+         * A new route rather than new fields on /api/book, because ADR 0013
+         * keeps the read-only bodies of the existing routes byte-identical. */
+        std::string reason;
+        const bool editable = register_editable (reason);
+        std::string body = "{\"writable\":";
+        body += editable ? "true" : "false";
+        body += ",\"locked\":";
+        body += g_server.locked ? "true" : "false";
+        body += ",\"lock\":";
+        body += g_server.locked ? json_string (g_server.lock_path) : "null";
+        body += ",\"book\":";
+        body += json_string (g_server.book_path);
+        body += ",\"edit_reason\":";
+        body += editable ? "\"\"" : json_string (reason);
+        body += "}";
+        send_json (connection, "200 OK", body);
+    }
     else if (route == "api/book/selftest")
     {
         handle_book_selftest (connection, request);
@@ -2522,6 +2877,12 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
 
         send_response (connection, "200 OK", "application/json",
                        transaction_json (transaction));
+    }
+    else if (route.compare (0, 10, "api/split/") == 0)
+    {
+        /* The edit route ADR 0014 adds: one split at a time, a JSON object of
+         * the fields being changed, the updated row back. */
+        handle_split_edit (connection, request, url_decode (route.substr (10)));
     }
     else if (route == "api/reports")
     {

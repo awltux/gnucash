@@ -124,8 +124,17 @@ async function gridState() {
                 ? rows[0].children[0].getAttribute('role') : '',
             editable: [...document.querySelectorAll(
                 '#register input, #register textarea, #register select, ' +
-                '#register button')].map((node) => node.textContent.trim())
+                '#register button')]
+                .filter((node) => node.offsetParent !== null)
+                .map((node) => node.textContent.trim())
                 .filter((text) => /save|edit|new|delete/i.test(text)),
+            actionsHidden: document.getElementById('register-actions').hidden,
+            readonlyHidden: document.getElementById('register-readonly').hidden,
+            readonlyText: document.getElementById('register-readonly').textContent.trim(),
+            editableCells: document.querySelectorAll('#register-grid td.editable').length,
+            contentEditableCells: document.querySelectorAll(
+                '#register-grid [contenteditable="true"]').length,
+            cellEditors: document.querySelectorAll('#register-grid .cell-editor').length,
         };
     });
 }
@@ -173,8 +182,23 @@ check('exactly one row is selected and it is the focused row',
       `selected=${state.selected} active=${state.activeIndex}`);
 check('the selected row has a visible focus outline',
       state.outline !== '0px' && state.outline !== '', state.outline);
-check('the register is read-only: no save or edit control',
-      state.editable.length === 0, state.editable.join(', '));
+check('the register is read-only: no visible save or edit control',
+      state.editable.length === 0 && state.actionsHidden,
+      state.editable.join(', '));
+check('the read-only session says why the cells cannot be edited',
+      !state.readonlyHidden && /read-only/i.test(state.readonlyText) &&
+      /--writable/.test(state.readonlyText),
+      state.readonlyText);
+check('no cell offers an editor in a read-only session',
+      state.editableCells === 0 && state.contentEditableCells === 0 &&
+      state.cellEditors === 0,
+      `${state.editableCells} editable cells`);
+
+// A click on an editable-looking cell must not start an editor either.
+await page.locator('#register-grid tbody tr').first().locator('td').nth(2).click();
+await page.waitForTimeout(150);
+check('clicking a cell in a read-only session opens no editor',
+      (await page.locator('#register-grid .cell-editor').count()) === 0);
 
 /* ------------------------------------------------------------ keyboard */
 
