@@ -1509,6 +1509,325 @@ check('a document starting point carries its source and its layout',
       `${await page.inputValue('#spec-source')} / ` +
       `${await page.inputValue('#spec-document')}`);
 
+// ---------------------------------------------------------------- the menu
+// The menu bar is the desktop application's, rendered from one table: same
+// twelve top-level menus in the same order, the desktop's labels and
+// accelerator hints, page-scoped items present but disabled with the page
+// they belong to, and every item that cannot work disabled with a reason.
+// Checks below: the shape, opening/closing, keyboard navigation, two working
+// items, a disabled item that reports why and does not act, a submenu, About,
+// and a menu action that really writes to the server.
+
+const menuRoot = (id) => `#menubar .menu[data-menu="${id}"]`;
+const menuPopup = (id) => `${menuRoot(id)} > .menu-popup`;
+
+async function openMenu(id) {
+    await page.click(`${menuRoot(id)} > .menu-title`);
+    await page.waitForSelector(`${menuPopup(id)}:not([hidden])`);
+}
+
+async function menuItemLabels(id) {
+    return page.evaluate((selector) =>
+        [...document.querySelectorAll(`${selector} > .menu-item .menu-label,
+            ${selector} > .menu-sub > .menu-item .menu-label`)]
+            .map((node) => node.textContent.trim()), menuPopup(id));
+}
+
+const topLevelLabels = await page.evaluate(() =>
+    [...document.querySelectorAll('#menubar > .menu > .menu-title')]
+        .map((button) => button.textContent.trim()));
+check('the menu bar has the desktop application\'s twelve menus in order',
+      JSON.stringify(topLevelLabels) === JSON.stringify(
+          ['File', 'Edit', 'View', 'Transaction', 'Actions', 'Business',
+           'Scheduled', 'Reports', 'Tools', 'Extensions', 'Windows', 'Help']),
+      topLevelLabels.join(', '));
+
+const menuRoles = await page.evaluate(() => {
+    const bar = document.getElementById('menubar');
+    const titles = [...document.querySelectorAll('#menubar > .menu > .menu-title')];
+    return {
+        bar: bar.getAttribute('role'),
+        titlesAreItems: titles.every((button) =>
+            button.getAttribute('role') === 'menuitem' &&
+            button.getAttribute('aria-haspopup') === 'true' &&
+            button.getAttribute('aria-expanded') === 'false'),
+        popupsAreMenus: [...document.querySelectorAll('#menubar .menu-popup')]
+            .every((popup) => popup.getAttribute('role') === 'menu' && popup.hidden),
+        oneTabStop: titles.filter((button) => button.tabIndex === 0).length,
+        total: titles.length,
+    };
+});
+check('the menu bar is a menubar of closed menus with one tab stop',
+      menuRoles.bar === 'menubar' && menuRoles.titlesAreItems &&
+      menuRoles.popupsAreMenus && menuRoles.oneTabStop === 1 &&
+      menuRoles.total === 12,
+      `role=${menuRoles.bar} menus=${menuRoles.total} ` +
+      `tabstops=${menuRoles.oneTabStop}`);
+
+await openMenu('file');
+const fileLabels = await menuItemLabels('file');
+check('opening File shows the desktop\'s items and its two submenus',
+      ['New File', 'Open…', 'Save', 'Save As…', 'Revert', 'Print',
+       'Page Setup', 'Properties', 'Close', 'Quit', 'Import', 'Export']
+          .every((label) => fileLabels.includes(label)),
+      fileLabels.join(' | '));
+
+await page.keyboard.press('Escape');
+const afterEscape = await page.evaluate(() => ({
+    hidden: document.querySelector('#menubar .menu[data-menu="file"] > .menu-popup').hidden,
+    expanded: document.getElementById('menubar-file').getAttribute('aria-expanded'),
+    focus: document.activeElement.id,
+}));
+check('Escape closes the open menu and returns focus to its title',
+      afterEscape.hidden && afterEscape.expanded === 'false' &&
+      afterEscape.focus === 'menubar-file',
+      `hidden=${afterEscape.hidden} focus=${afterEscape.focus}`);
+
+// The keyboard model: ArrowDown opens the menu on its first item, arrows move
+// between items, ArrowRight/Left move between menus.
+await page.focus('#menubar-file');
+await page.keyboard.press('ArrowDown');
+const firstItemFocus = await page.evaluate(() => document.activeElement.dataset.item);
+await page.keyboard.press('ArrowDown');
+const secondItemFocus = await page.evaluate(() => document.activeElement.dataset.item);
+await page.keyboard.press('ArrowUp');
+const backToFirst = await page.evaluate(() => document.activeElement.dataset.item);
+check('ArrowDown opens a menu and the arrows move between its items',
+      firstItemFocus === 'new-file' && secondItemFocus === 'open' &&
+      backToFirst === 'new-file',
+      `${firstItemFocus} -> ${secondItemFocus} -> ${backToFirst}`);
+
+await page.keyboard.press('ArrowRight');
+const movedMenu = await page.evaluate(() => ({
+    menu: document.activeElement.closest('.menu')?.dataset.menu,
+    expanded: document.getElementById('menubar-edit').getAttribute('aria-expanded'),
+}));
+await page.keyboard.press('ArrowLeft');
+const movedBack = await page.evaluate(() =>
+    document.activeElement.closest('.menu')?.dataset.menu);
+check('ArrowRight and ArrowLeft move between top-level menus',
+      movedMenu.menu === 'edit' && movedMenu.expanded === 'true' &&
+      movedBack === 'file',
+      `${movedMenu.menu} -> ${movedBack}`);
+await page.keyboard.press('Escape');
+
+// A submenu opens with ArrowRight into its first item and closes with Escape
+// back onto its trigger, leaving the parent menu open.
+await openMenu('actions');
+await page.keyboard.press('ArrowRight');
+const submenuState = await page.evaluate(() => {
+    const trigger = document.querySelector(
+        '#menubar .menu[data-menu="actions"] .menu-sub > .menu-item');
+    return {
+        open: trigger.getAttribute('aria-expanded'),
+        focus: document.activeElement.textContent.trim(),
+    };
+});
+await page.keyboard.press('Escape');
+const submenuClosed = await page.evaluate(() => {
+    const trigger = document.querySelector(
+        '#menubar .menu[data-menu="actions"] .menu-sub > .menu-item');
+    return {
+        closed: trigger.getAttribute('aria-expanded'),
+        focus: document.activeElement.textContent.trim(),
+        parentOpen: !document.querySelector(
+            '#menubar .menu[data-menu="actions"] > .menu-popup').hidden,
+    };
+});
+check('a submenu opens into its first item and Escape returns to its trigger',
+      submenuState.open === 'true' && /Get Balance/.test(submenuState.focus) &&
+      submenuClosed.closed === 'false' &&
+      /Online Actions/.test(submenuClosed.focus) && submenuClosed.parentOpen,
+      `${submenuState.focus} -> ${submenuClosed.focus}`);
+
+// The desktop's Stock Split item is a register item.  It must keep its name,
+// report the page it belongs to, and do nothing when activated.
+const stockSplit = await page.evaluate(() => {
+    const button = document.querySelector(
+        '#menubar .menu[data-menu="actions"] [data-item="stock-split"]');
+    return {
+        label: button.querySelector('.menu-label').textContent.trim(),
+        disabled: button.getAttribute('aria-disabled'),
+        description: button.getAttribute('aria-description') || '',
+        title: button.title,
+        focusable: button.tabIndex === -1,
+    };
+});
+// A disabled menuitem is not "enabled" to Playwright either, so dispatch the
+// activation directly: the page's own handler must ignore it.
+await page.locator('#menubar .menu[data-menu="actions"] [data-item="stock-split"]')
+    .dispatchEvent('click');
+const afterDisabledClick = await page.evaluate(() => ({
+    menuOpen: !document.querySelector(
+        '#menubar .menu[data-menu="actions"] > .menu-popup').hidden,
+    dialogOpen: document.getElementById('about-dialog').open,
+    designerHidden: document.getElementById('designer').hidden,
+}));
+check('a desktop item the web cannot do keeps its label and states the reason',
+      stockSplit.label === 'Stock Split…' && stockSplit.disabled === 'true' &&
+      /writes to the book/.test(stockSplit.description) &&
+      stockSplit.title === stockSplit.description && stockSplit.focusable,
+      `${stockSplit.label}: ${stockSplit.description}`);
+check('activating a disabled item performs no action',
+      afterDisabledClick.menuOpen && !afterDisabledClick.dialogOpen &&
+      !afterDisabledClick.designerHidden,
+      'the menu stayed open and nothing changed');
+await page.keyboard.press('Escape');
+
+// A whole page-scoped menu: the desktop hides Transaction without a register
+// page; the web keeps it visible and says why, with every item disabled.
+await openMenu('transaction');
+const transactionMenu = await page.evaluate(() => {
+    const popup = document.querySelector(
+        '#menubar .menu[data-menu="transaction"] > .menu-popup');
+    const items = [...popup.querySelectorAll('[data-item]')];
+    return {
+        note: popup.querySelector('.menu-note')?.textContent || '',
+        items: items.length,
+        allDisabled: items.every((item) =>
+            item.getAttribute('aria-disabled') === 'true'),
+    };
+});
+check('a page-scoped menu shows its items disabled and names its page',
+      transactionMenu.items > 10 && transactionMenu.allDisabled &&
+      /Register page only/.test(transactionMenu.note),
+      `${transactionMenu.items} items: ${transactionMenu.note}`);
+await page.keyboard.press('Escape');
+
+// Working items: Find focuses the report search, Summary Bar toggles the
+// summary, Report Designer toggles the designer.
+await openMenu('edit');
+await page.click('#menubar .menu[data-menu="edit"] [data-item="find"]');
+check('Edit > Find… focuses the report search box',
+      await page.evaluate(() => document.activeElement.id) === 'report-search',
+      await page.evaluate(() => document.activeElement.id));
+
+await openMenu('view');
+await page.click('#menubar .menu[data-menu="view"] [data-item="toggle-summary"]');
+const summaryHidden = await page.evaluate(() =>
+    document.getElementById('summary').hidden);
+await openMenu('view');
+const summaryChecked = await page.evaluate(() => document.querySelector(
+    '#menubar .menu[data-menu="view"] [data-item="toggle-summary"]')
+    .getAttribute('aria-checked'));
+await page.click('#menubar .menu[data-menu="view"] [data-item="toggle-summary"]');
+const summaryShown = await page.evaluate(() =>
+    !document.getElementById('summary').hidden);
+check('View > Summary Bar hides and shows the summary, and reports its state',
+      summaryHidden && summaryChecked === 'false' && summaryShown,
+      `hidden=${summaryHidden} checked=${summaryChecked} shown=${summaryShown}`);
+
+await openMenu('view');
+await page.click('#menubar .menu[data-menu="view"] [data-item="toggle-designer"]');
+const designerHidden = await page.evaluate(() =>
+    document.getElementById('designer').hidden);
+await openMenu('view');
+await page.click('#menubar .menu[data-menu="view"] [data-item="toggle-designer"]');
+const designerShown = await page.evaluate(() =>
+    !document.getElementById('designer').hidden);
+check('View > Report Designer hides and shows the designer',
+      designerHidden && designerShown, `hidden=${designerHidden} shown=${designerShown}`);
+
+// Reports > Report List goes to the list the desktop generates its Reports
+// menu from, and focuses it.
+await openMenu('reports');
+await page.click('#menubar .menu[data-menu="reports"] [data-item="report-list"]');
+check('Reports > Report List focuses the report list',
+      await page.evaluate(() =>
+          Boolean(document.activeElement.closest('#report-list'))),
+      await page.evaluate(() => document.activeElement.textContent.trim()));
+
+// Help > About must not invent a version: it shows the report store version
+// the server publishes and says the session is read-only.
+await openMenu('help');
+await page.click('#menubar .menu[data-menu="help"] [data-item="about"]');
+const about = await page.evaluate(() => ({
+    open: document.getElementById('about-dialog').open,
+    version: document.getElementById('about-version').textContent,
+    session: document.getElementById('about-session').textContent,
+    hint: document.getElementById('about-hint').textContent,
+}));
+await page.keyboard.press('Escape');
+const aboutClosed = await page.evaluate(() =>
+    !document.getElementById('about-dialog').open);
+check('Help > About opens a dialog that says which version it can show',
+      about.open &&
+      (/Report store version: [0-9]+/.test(about.version) ||
+       /not published by this server/.test(about.version)) &&
+      /read-only/i.test(about.session) && /build ID/.test(about.hint) &&
+      aboutClosed,
+      `${about.version.trim()}; closed=${aboutClosed}`);
+
+// A menu action that really writes: Save Report Configuration As… submits the
+// designer's form, the report is saved server-side and appears in the list.
+const menuReportName = 'Menu gate report';
+await page.fill('#spec-name', menuReportName);
+await openMenu('reports');
+await page.click('#menubar .menu[data-menu="reports"] [data-item="save-config-as"]');
+await page.waitForFunction((wanted) =>
+    [...document.querySelectorAll('#report-list a.saved-report-link')]
+        .some((link) => link.textContent === wanted), menuReportName,
+    { timeout: 15000 });
+const menuSaved = await savedSpecNamed(menuReportName);
+check('Reports > Save Report Configuration As… saves the designer report',
+      Boolean(menuSaved) && menuSaved.name === menuReportName,
+      menuSaved ? `saved ${menuSaved.name}` : 'not saved');
+await deleteSaved(menuReportName);
+
+// Nothing is silently inert: every disabled item in the rendered bar carries
+// a reason in its title and its ARIA description.
+const menuStats = await page.evaluate(() => {
+    const items = [...document.querySelectorAll('#menubar [data-item]')];
+    const disabled = items.filter((item) =>
+        item.getAttribute('aria-disabled') === 'true');
+    return {
+        total: items.length,
+        available: items.length - disabled.length,
+        disabled: disabled.length,
+        withoutReason: disabled.filter((item) =>
+            !(item.getAttribute('aria-description') || '').trim() ||
+            !(item.title || '').trim()).map((item) => item.textContent.trim()),
+    };
+});
+check('every disabled menu item carries a reason',
+      menuStats.withoutReason.length === 0 && menuStats.disabled > 40 &&
+      menuStats.available > 0,
+      `${menuStats.total} items: ${menuStats.available} available, ` +
+      `${menuStats.disabled} disabled`);
+if (menuStats.withoutReason.length)
+    console.log(`items without a reason: ${menuStats.withoutReason.join(', ')}`);
+
+// Extensibility: a page module adds its own item to an existing menu, before
+// a named base item, without the base table changing.  This is the hook a
+// register or business page will use.
+const pageModuleWorked = await page.evaluate(() => {
+    MENU_PAGES.test_page = {
+        present: () => true,
+        menus: {
+            view: {
+                before: 'refresh',
+                items: [{ label: 'Page Added Item', run: () => {} }],
+            },
+        },
+    };
+    renderMenus();
+    const labels = [...document.querySelectorAll(
+        '#menubar .menu[data-menu="view"] .menu-label')]
+        .map((node) => node.textContent);
+    const addedAt = labels.indexOf('Page Added Item');
+    const refreshAt = labels.indexOf('Refresh');
+    const correctPlace = addedAt >= 0 && refreshAt > addedAt;
+    delete MENU_PAGES.test_page;
+    renderMenus();
+    const gone = ![...document.querySelectorAll('#menubar .menu-label')]
+        .some((node) => node.textContent === 'Page Added Item');
+    return { correctPlace, gone, labels: labels.slice(0, 4) };
+});
+check('a page module adds an item without editing the base table',
+      pageModuleWorked.correctPlace && pageModuleWorked.gone,
+      `inserted before Refresh: ${pageModuleWorked.correctPlace}; ` +
+      `removed again: ${pageModuleWorked.gone}`);
+
 if (screenshotPath) {
     await page.screenshot({ path: screenshotPath });
     console.log(`screenshot: ${screenshotPath}`);

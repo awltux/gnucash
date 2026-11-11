@@ -105,9 +105,58 @@
                    padding: .4rem .6rem; margin: .5rem 0; }
   #native-source h3 { font-size: .95rem; margin: .2rem 0; }
   #native-source p { margin: .2rem 0; }
+
+  /* The menu bar.  Every menu and item comes from MENU_TABLE in the script;
+     the markup here is only the container.  The bar is full-bleed so it reads
+     as application chrome above the page, not as part of it. */
+  #menubar { display: flex; align-items: stretch; gap: 0; margin: -1rem -2rem 1rem;
+             padding: 0 2rem; border-bottom: 1px solid #c4c4c4;
+             background: #f2f2f2; position: relative; z-index: 10; }
+  #menubar .menu { position: relative; }
+  #menubar .menu-title { font: inherit; color: #222; background: none; border: 0;
+                         padding: .4rem .7rem; cursor: default; }
+  #menubar .menu-title:hover { background: #e2e9f4; }
+  #menubar .menu-title[aria-expanded="true"] { background: #d6e2f3; }
+  .menu-popup { position: absolute; top: 100%; left: 0; min-width: 17rem;
+                max-width: 27rem; background: #fff; border: 1px solid #b9b9b9;
+                box-shadow: 0 2px 7px rgba(0,0,0,.18); padding: .25rem 0;
+                z-index: 20; overflow: visible; }
+  .menu-popup .menu-popup { top: -.3rem; left: 100%; }
+  .menu-sub { position: relative; }
+  .menu-item { display: flex; align-items: baseline; gap: 1rem; width: 100%;
+               font: inherit; line-height: 1.2; color: #222; text-align: left;
+               background: none; border: 0;
+               padding: .2rem .9rem .2rem 1.3rem; cursor: default; }
+  .menu-item:focus { outline: none; background: #e8f0fb; }
+  .menu-item[aria-disabled="true"] { color: #8a8a8a; }
+  .menu-item[aria-disabled="true"]:focus { background: #f2f2f2;
+                                           outline: 1px dotted #9a9a9a; }
+  .menu-item .menu-label { flex: 1 1 auto; }
+  .menu-item .accel { color: #6f6f6f; font-size: .82rem; white-space: nowrap; }
+  .menu-item[aria-disabled="true"] .accel { color: #aaa; }
+  .menu-item .web-badge { font-size: .7rem; color: #0645ad;
+                          border: 1px solid #c6d7ef; border-radius: .6rem;
+                          padding: 0 .3rem; }
+  .menu-arrow { color: #666; font-size: .8rem; }
+  .menu-sep { border-top: 1px solid #e2e2e2; margin: .25rem 0; }
+  .menu-note { margin: .15rem .9rem .35rem 1.3rem; color: #8a5a00;
+               font-size: .8rem; max-width: 22rem; }
+  #about-dialog { width: min(34rem, calc(100vw - 4rem)); padding: 1rem 1.25rem;
+                  border: 1px solid #999; border-radius: .3rem;
+                  box-shadow: 0 6px 24px rgba(0,0,0,.3); }
+  #about-dialog::backdrop { background: rgba(0,0,0,.28); }
+  #about-dialog h2 { margin: 0 0 .5rem; font-size: 1.2rem; }
+  #about-dialog p { margin: .4rem 0; }
+  #about-dialog form { margin-top: .75rem; }
 </style>
 </head>
 <body>
+<!-- The desktop application's menu bar.  Items, labels and accelerator hints
+     are the desktop's own; see doc/web-ui-menu.md for the inventory and for
+     why each unavailable item is disabled.  The bar is built by renderMenus()
+     from MENU_TABLE, not by hand. -->
+<nav id="menubar" role="menubar" aria-label="Main menu"
+     aria-description="Modelled on the GnuCash desktop application. Shortcut hints are the desktop's accelerators and are not bound in the browser; Escape, the arrow keys, Home, End, Enter and Space operate the menus."></nav>
 <header>
   <h1>GnuCash</h1>
   <p id="summary">Loading…</p>
@@ -354,6 +403,27 @@
     </div>
   </form>
 </section>
+
+<!-- Help ▸ About.  The desktop's About dialog reads the application version
+     and build ID from the build (gnc-main-window.cpp:5548-5551); gnc-webd
+     publishes neither, so this dialog shows what the server does publish and
+     says so, instead of printing a number it would have to guess. -->
+<dialog id="about-dialog" aria-labelledby="about-title">
+  <h2 id="about-title">About GnuCash Web</h2>
+  <p>gnc-webd, the web tier of GnuCash. The engine is the same one the
+     desktop application uses.</p>
+  <p id="about-session">Read-only session: this page cannot change the book.</p>
+  <p id="about-version">Version: not published by this server</p>
+  <p id="about-counts"></p>
+  <p id="about-hint" class="hint">The desktop's About shows the application
+     version and build ID, which it reads from its build
+     (gnc-main-window.cpp:5548-5551). gnc-webd publishes neither, so this
+     dialog says so instead of printing a number the page would have to
+     guess. The report store's version is shown when the server reports it.</p>
+  <form method="dialog">
+    <button id="about-close">Close</button>
+  </form>
+</dialog>
 <script>
 "use strict";
 
@@ -381,6 +451,10 @@ let savedSpecs = [];       // designer reports, from /api/specs
 let builtinSpecs = [];     // built-in designer reports, from /api/specs
 let specFields = null;     // the designer vocabulary, from /api/spec/options
 let activeTag = "";        // the tag chip currently applied to the report list
+let bookLoaded = false;    // true once /api/book and /api/accounts have answered
+let reportStoreVersion = ""; // "version" from /api/specs *when the server
+                             // includes it* — it does not today, so About says
+                             // the server publishes no version
 // The spec the populated designer was loaded from, when there is one.  A
 // built-in or saved report is its definition; a native report's starting
 // point is not, and designerBase stays null for it.
@@ -464,6 +538,13 @@ const designerProvenance = document.getElementById("designer-provenance");
 const designerSource = document.getElementById("designer-source");
 const nativeSource = document.getElementById("native-source");
 const nativeSourceText = document.getElementById("native-source-text");
+const designer = document.getElementById("designer");
+const summaryEl = document.getElementById("summary");
+const aboutDialog = document.getElementById("about-dialog");
+const aboutVersion = document.getElementById("about-version");
+const aboutSession = document.getElementById("about-session");
+const aboutCounts = document.getElementById("about-counts");
+const aboutClose = document.getElementById("about-close");
 
 /* ------------------------------------------------------------- the book */
 
@@ -485,6 +566,7 @@ function renderAccount(account) {
 }
 
 async function load() {
+  bookLoaded = false;
   try {
     const book = await (await fetch(api("api/book"))).json();
     document.getElementById("summary").textContent =
@@ -493,9 +575,11 @@ async function load() {
     const root = await (await fetch(api("api/accounts"))).json();
     accountRoot = root;
     const tree = document.getElementById("tree");
+    tree.replaceChildren();
     const list = el("ul");
     for (const account of root.children) list.append(renderAccount(account));
     tree.append(list);
+    bookLoaded = true;
 
     // Reports are rendered by the server and shown in the frame below the
     // tree, so one is a click away and the page never navigates away.
@@ -651,9 +735,13 @@ async function loadSpecs() {
     const data = await response.json();
     savedSpecs = Array.isArray(data.specs) ? data.specs : [];
     builtinSpecs = Array.isArray(data.builtin) ? data.builtin : [];
+    // /api/specs is the only route that names a version (the report store's
+    // schema).  Keep it for Help ▸ About rather than inventing a build number.
+    reportStoreVersion = typeof data.version === "string" ? data.version : "";
   } catch (err) {
     savedSpecs = [];
     builtinSpecs = [];
+    reportStoreVersion = "";
     showSpecError(`Could not load the saved reports: ${err.message}`);
   }
   renderReportList();
@@ -2168,6 +2256,1025 @@ viewName.addEventListener("keydown", (event) => {
   }
 });
 
+/* ---------------------------------------------------------------- menus */
+
+// The desktop's menu bar, one item at a time.  Labels, accelerator hints and
+// the shape of every menu come from gnucash/ui/gnc-main-window.ui and the
+// plugin UI files it merges (the inventory in doc/web-ui-menu.md cites each
+// one).  Nothing here is a web-only menu item except the three marked
+// scope: "web": the report list, the report designer, and the About dialog's
+// content, which have no desktop menu counterpart because they are the web
+// tier's own surfaces.
+//
+// An item works only when `run` is a function and its preconditions hold.  An
+// item that cannot work keeps the desktop's label and carries a `reason` —
+// a sentence naming what is missing — which the renderer puts in the item's
+// title and aria-description.  No item is silently inert and none is dropped.
+
+// Reasons shared by several items.  Each names the missing capability, not
+// just "disabled": a reader should learn what the web tier would need.
+const READ_ONLY =
+  "Read-only session: gnc-webd opened the book read-only, so this action " +
+  "cannot be carried out or saved.";
+const NO_TABS =
+  "There are no tabs in the web tier: a page is a document in this tab, and " +
+  "opening or closing it is the browser's job.";
+const NO_EXPORT =
+  "No export endpoint: the web tier serves HTML and JSON, and writing a file " +
+  "is a desktop action.";
+
+const PAGE_REASONS = {
+  register:
+    "Register page only: the desktop merges this item while a register page " +
+    "is open, and the web tier has no register page yet.",
+  "account-tree":
+    "Accounts page only: the desktop merges this item while the accounts " +
+    "page is open, and the web tier has no separate accounts page.",
+  invoice:
+    "Invoice page only: the desktop merges this item while an invoice, bill " +
+    "or voucher page is open, and the web tier has no such page.",
+  budget:
+    "Budget page only: the desktop merges this item while a budget page is " +
+    "open, and the web tier has no budget page.",
+  scheduled:
+    "Scheduled Transactions page only: the desktop merges this item while " +
+    "that page is open, and the web tier has no such page.",
+  owner:
+    "Customer, vendor and employee pages only: the desktop merges this item " +
+    "there, and the web tier has no owner page.",
+};
+
+// What the page knows about itself.  These are the only preconditions an item
+// can name; adding one is adding a line here and a `needs` in the table.
+const MENU_NEEDS = {
+  book: { ok: () => bookLoaded,
+          reason: "No book is loaded: the page has not reached /api/book." },
+  report: { ok: () => selectedReport !== null,
+            reason: "No report is selected." },
+  designerReady: { ok: () => specFields !== null,
+                   reason: "The report designer's vocabulary has not loaded yet." },
+};
+
+// Each page module below is the extension point.  `present()` says whether
+// the page is on screen (which decides the page-scoped items' enabled state);
+// `menus` optionally contributes items to existing menus.  A later register
+// or business page therefore adds its own table here — with `present`
+// returning true once it exists and `menus` holding whatever the base table
+// does not already declare — and its items appear in the desktop's menus
+// without editing MENU_TABLE.
+//
+// A contribution is either an array (appended to that menu) or
+// { before: "<item id>", items: [...] } to sit before a named base item.
+const MENU_PAGES = {
+  report: { present: () => selectedReport !== null },
+  register: { present: () => false },
+  "account-tree": { present: () => false },
+  invoice: { present: () => false },
+  budget: { present: () => false },
+  scheduled: { present: () => false },
+  owner: { present: () => false },
+};
+
+const MENU_TABLE = [
+  {
+    id: "file", label: "File", mnemonic: "F",
+    items: [
+      { label: "New File", accel: "Ctrl+N", reason: READ_ONLY },
+      { label: "Open…", accel: "Ctrl+O",
+        reason: "The book is a command-line argument: gnc-webd serves the book " +
+                "it was started with, and a page cannot choose another one." },
+      { label: "Import", items: [
+        { label: "Import Bills & Invoices…", reason: "No import path: the web " +
+          "tier has no import endpoint and the session is read-only." },
+        { label: "Import Accounts from CSV…", reason: "No import path: the web " +
+          "tier has no CSV importer." },
+        { label: "Import Transactions from CSV…", reason: "No import path: the " +
+          "web tier has no CSV importer." },
+        { label: "Import Prices from a CSV file…", reason: "No import path: the " +
+          "web tier has no CSV importer." },
+        { label: "Import Customers & Vendors…", reason: "No import path: the web " +
+          "tier has no customer or vendor data." },
+        { label: "Replay GnuCash .log file…", reason: "No import path: replaying " +
+          "a log rewrites the book, and the session is read-only." },
+        { label: "Import QIF…", reason: "No import path: the web tier has no QIF " +
+          "importer." },
+        { label: "Import using AqBanking", reason: "No import path: aqbanking " +
+          "needs a configured online-banking backend, which the web tier does " +
+          "not have." },
+        { label: "Import OFX/QFX…", reason: "No import path: the web tier has no " +
+          "OFX importer." },
+      ] },
+      { sep: true },
+      { label: "Save", accel: "Ctrl+S", reason: READ_ONLY },
+      { label: "Save As…", accel: "Ctrl+Shift+S", reason: READ_ONLY },
+      { label: "Revert",
+        reason: "Nothing to revert: the web tier never buffers changes, so " +
+                "there are none to discard." },
+      { sep: true },
+      { label: "Print", accel: "Ctrl+P",
+        reason: "No print path: a report is an HTML document in a frame, so " +
+                "printing it is the browser's own print, not a server action." },
+      { label: "Print Checks…", accel: "Ctrl+P", page: "register" },
+      { label: "Print Report…", accel: "Ctrl+P",
+        reason: "No print path: the report is an HTML document in a frame, so " +
+                "printing it is the browser's own print." },
+      { label: "Page Setup", accel: "Ctrl+Shift+P",
+        reason: "No print path: page size and orientation are the browser's " +
+                "print settings, not the server's." },
+      { label: "Export as PDF…", page: "report",
+        reason: "No PDF path: the web tier serves the report as HTML and has no " +
+                "PDF writer." },
+      { label: "Export", items: [
+        { label: "Export Accounts", reason: NO_EXPORT },
+        { label: "Export Account Tree to CSV…", reason: NO_EXPORT },
+        { label: "Export Transactions to CSV…", reason: NO_EXPORT },
+        { label: "Export Active Register to CSV…",
+          reason: "There is no active register: the web tier has no register " +
+                  "page, and no export endpoint in any case." },
+        { label: "Export Report…", reason: NO_EXPORT },
+      ] },
+      { sep: true },
+      { label: "Properties", accel: "Alt+Return",
+        reason: "The server publishes only account counts (/api/book); there is " +
+                "no file-properties endpoint." },
+      { sep: true },
+      { label: "Close", accel: "Ctrl+W", reason: NO_TABS },
+      { label: "Quit", accel: "Ctrl+Q",
+        reason: "Quit is the process, not the page: stopping gnc-webd ends the " +
+                "session, and the tab can simply be closed." },
+    ],
+  },
+  {
+    id: "edit", label: "Edit", mnemonic: "E",
+    items: [
+      { label: "Cut", accel: "Ctrl+X",
+        reason: "The browser owns cut, copy and paste in its own fields; the " +
+                "desktop's Edit menu targets its register widget, which the web " +
+                "tier does not have." },
+      { label: "Copy", accel: "Ctrl+C",
+        reason: "The browser owns copy on the page; the desktop's Copy targets " +
+                "the register widget, which the web tier does not have." },
+      { label: "Paste", accel: "Ctrl+V",
+        reason: "The browser owns paste in its own fields; the desktop's Paste " +
+                "targets the register widget, which the web tier does not have." },
+      { sep: true },
+      { label: "Assign as payment…", page: "register" },
+      { label: "Edit payment…", page: "register" },
+      { label: "Edit Account", accel: "Ctrl+E", page: "account-tree" },
+      { label: "Delete Account", accel: "Delete", page: "account-tree" },
+      { label: "Find Account", accel: "Ctrl+I", page: "account-tree" },
+      { label: "Cascade Account Properties…", page: "account-tree" },
+      { label: "Renumber Subaccounts…", page: "account-tree" },
+      { label: "Open Account", page: "account-tree" },
+      { label: "Open SubAccounts", page: "account-tree" },
+      { label: "Edit Invoice", page: "invoice" },
+      { label: "Duplicate Invoice", page: "invoice" },
+      { label: "Post Invoice", page: "invoice" },
+      { label: "Unpost Invoice", page: "invoice" },
+      { label: "Estimate Budget…", page: "budget" },
+      { label: "All Periods…", page: "budget" },
+      { label: "Delete Budget…", page: "budget" },
+      { label: "Edit Note", page: "budget" },
+      { label: "Budget Report", page: "budget" },
+      { label: "Edit Customer", accel: "Ctrl+E", page: "owner" },
+      { label: "New Customer…", page: "owner" },
+      { label: "Edit Vendor", accel: "Ctrl+E", page: "owner" },
+      { label: "New Vendor…", page: "owner" },
+      { label: "Edit Employee", accel: "Ctrl+E", page: "owner" },
+      { label: "New Employee…", page: "owner" },
+      { sep: true },
+      { id: "find", label: "Find…", accel: "Ctrl+F", run: focusSearch },
+      { sep: true },
+      { label: "Preferences",
+        reason: "Preferences are the server's GSettings; a browser page can " +
+                "neither read nor write them." },
+      { label: "Style Sheets",
+        reason: "The style-sheet editor is a desktop dialog " +
+                "(gnc-plugin-report-system.c) and the web tier has no endpoint " +
+                "for it." },
+      { label: "Tax Report Options",
+        reason: "Book-level tax options: the book is read-only and the web tier " +
+                "has no tax-options endpoint." },
+      { id: "report-options", label: "Report Options", needs: "report",
+        run: showReportOptions },
+      { label: "Budget Options…", page: "budget" },
+    ],
+  },
+  {
+    id: "view", label: "View", mnemonic: "V",
+    items: [
+      { label: "Toolbar",
+        reason: "The web tier has no toolbar; the menu bar is its only chrome." },
+      { id: "toggle-summary", label: "Summary Bar", run: toggleSummaryBar },
+      { label: "Status Bar",
+        reason: "There is no status bar: the summary line under the menu bar is " +
+                "the only status, and Summary Bar shows or hides it." },
+      { label: "Tab Position", items: [
+        { label: "Top", reason: "No tabs: pages are not a tabbed notebook in the " +
+          "web tier." },
+        { label: "Bottom", reason: "No tabs: pages are not a tabbed notebook in " +
+          "the web tier." },
+        { label: "Left", reason: "No tabs: pages are not a tabbed notebook in " +
+          "the web tier." },
+        { label: "Right", reason: "No tabs: pages are not a tabbed notebook in " +
+          "the web tier." },
+      ] },
+      { sep: true },
+      { label: "Filter By…",
+        reason: "Page-scoped in the desktop (accounts, budget, owner pages); the " +
+                "web tier has none of those pages and its report list has its " +
+                "own search." },
+      { label: "Save layout as default", page: "scheduled" },
+      { label: "Basic Ledger", page: "register" },
+      { label: "Auto-Split Ledger", page: "register" },
+      { label: "Transaction Journal", page: "register" },
+      { label: "Double Line", page: "register" },
+      { label: "Sort By…", page: "register" },
+      { label: "Sort Order", page: "invoice", items: [
+        { label: "Standard", page: "invoice" },
+        { label: "Date", page: "invoice" },
+        { label: "Date of Entry", page: "invoice" },
+        { label: "Quantity", page: "invoice" },
+        { label: "Price", page: "invoice" },
+        { label: "Description", page: "invoice" },
+      ] },
+      { sep: true },
+      { id: "refresh", label: "Refresh", accel: "Ctrl+R", run: refreshPage },
+      { label: "New Accounts Page",
+        reason: "The account tree is always on this page; the web tier has no " +
+                "separate accounts page to open." },
+      { sep: true },
+      { id: "toggle-designer", label: "Report Designer", scope: "web",
+        run: toggleDesigner,
+        title: "The web tier's report designer is the desktop's report options " +
+               "and saved configurations, made editable" },
+    ],
+  },
+  {
+    id: "transaction", label: "Transaction", mnemonic: "N",
+    note: "Register page only: the desktop hides this menu unless a register " +
+          "page is open, and the web tier has no register page yet.",
+    items: [
+      { label: "Cut Transaction", page: "register" },
+      { label: "Copy Transaction", page: "register" },
+      { label: "Paste Transaction", page: "register" },
+      { label: "Duplicate Transaction", page: "register" },
+      { label: "Delete Transaction", page: "register" },
+      { label: "Remove Other Splits", page: "register" },
+      { sep: true },
+      { label: "Enter Transaction", page: "register" },
+      { label: "Cancel Transaction", page: "register" },
+      { sep: true },
+      { label: "Void Transaction", page: "register" },
+      { label: "Unvoid Transaction", page: "register" },
+      { label: "Add Reversing Transaction", page: "register" },
+      { sep: true },
+      { label: "Manage Document Link…", page: "register" },
+      { label: "Open Linked Document", page: "register" },
+      { label: "Jump to Business item", page: "register" },
+    ],
+  },
+  {
+    id: "actions", label: "Actions", mnemonic: "A",
+    items: [
+      { label: "Online Actions", items: [
+        { label: "Get Balance", reason: "No online-banking channel: aqbanking " +
+          "needs a configured backend and write access, and the web tier has " +
+          "neither." },
+        { label: "Get Transactions…", reason: "No online-banking channel." },
+        { label: "Issue SEPA Transaction…", reason: "No online-banking channel." },
+        { label: "Issue SEPA Internal Transaction…", reason: "No online-banking " +
+          "channel." },
+        { label: "Internal Transaction…", reason: "No online-banking channel." },
+        { label: "Issue SEPA Direct Debit…", reason: "No online-banking channel." },
+        { label: "Show log window", reason: "No online-banking channel." },
+      ] },
+      { label: "Scheduled Transactions", items: [
+        { label: "Scheduled Transaction Editor", reason: "Scheduled transactions " +
+          "are book data; the web tier has no scheduled-transaction editor." },
+        { label: "Since Last Run…", reason: "Running scheduled transactions " +
+          "writes to the book, which is read-only here." },
+        { label: "Mortgage & Loan Repayment…", reason: "The mortgage assistant " +
+          "writes scheduled transactions to the book, which is read-only here." },
+      ] },
+      { label: "Budget", items: [
+        { label: "New Budget", reason: "Budgets are book data; the web tier has " +
+          "no budget editor." },
+        { label: "Open Budget", reason: "Budgets are book data; the web tier has " +
+          "no budget page." },
+        { label: "Copy Budget", reason: "Budgets are book data; the web tier has " +
+          "no budget editor." },
+        { label: "Delete Budget", reason: "Budgets are book data; the web tier " +
+          "has no budget editor." },
+      ] },
+      { sep: true },
+      { label: "New Account…", page: "account-tree" },
+      { label: "New Account Hierarchy…", page: "account-tree" },
+      { label: "Transfer…", accel: "Ctrl+T",
+        reason: "Register and accounts pages only: the web tier has no register " +
+                "page and its accounts tree is read-only." },
+      { label: "Reconcile…",
+        reason: "Register and accounts pages only: reconciling writes to the " +
+                "book, and the web tier has no register page." },
+      { label: "Auto-clear…",
+        reason: "Register and accounts pages only: auto-clear writes to the " +
+                "book, and the web tier has no register page." },
+      { label: "Stock Assistant…",
+        reason: "Register and accounts pages only: the assistant writes to the " +
+                "book, and the web tier has no register page." },
+      { id: "stock-split", label: "Stock Split…",
+        reason: "Register and accounts pages only: a stock split writes to the " +
+                "book, and the web tier has no register page." },
+      { label: "View Lots…",
+        reason: "Register and accounts pages only: the lot viewer is a desktop " +
+                "dialog and the web tier has no register page." },
+      { sep: true },
+      { label: "Enter", page: "invoice" },
+      { label: "Cancel", page: "invoice" },
+      { label: "Delete", page: "invoice" },
+      { label: "Blank", page: "invoice" },
+      { label: "Duplicate Entry", page: "invoice" },
+      { label: "Move Entry Up", page: "invoice" },
+      { label: "Move Entry Down", page: "invoice" },
+      { label: "Blank Transaction", accel: "Ctrl+B", page: "register" },
+      { label: "Go to Date", accel: "Ctrl+G", page: "register" },
+      { label: "Split Transaction", page: "register" },
+      { label: "Edit Exchange Rate", page: "register" },
+      { label: "Schedule…", page: "register" },
+      { label: "Jump to the other account", page: "register" },
+      { sep: true },
+      { label: "Check & Repair", items: [
+        { label: "Check & Repair Account",
+          reason: "Accounts and register pages only: repair writes to the book, " +
+                  "and the web tier is read-only." },
+        { label: "Check & Repair Subaccounts",
+          reason: "Repair writes to the book, and the web tier is read-only." },
+        { label: "Check & Repair All",
+          reason: "Repair writes to the book, and the web tier is read-only." },
+        { label: "All Transactions",
+          reason: "Repair writes to the book, and the web tier is read-only." },
+        { label: "This transaction",
+          reason: "Repair writes to the book, and the web tier is read-only." },
+      ] },
+      { sep: true },
+      { label: "Reset Warnings…",
+        reason: "No dismissed-warning store: the desktop remembers reset " +
+                "warnings in GSettings, which the page cannot read." },
+      { label: "Rename Page", reason: NO_TABS },
+    ],
+  },
+  {
+    id: "business", label: "Business", mnemonic: "B",
+    items: [
+      { label: "Customer", items: [
+        { label: "Customers Overview", reason: businessReason("customer") },
+        { label: "New Customer…", reason: businessReason("customer") },
+        { label: "Find Customer…", reason: businessReason("customer") },
+        { label: "New Invoice…", reason: businessReason("customer") },
+        { label: "Find Invoice…", reason: businessReason("customer") },
+        { label: "New Job…", reason: businessReason("jobs") },
+        { label: "Find Job…", reason: businessReason("jobs") },
+        { label: "Process Payment…", reason: businessReason("customer") },
+        { label: "Invoices Due Reminder", reason: businessReason("customer") },
+      ] },
+      { label: "Vendor", items: [
+        { label: "Vendors Overview", reason: businessReason("vendor") },
+        { label: "New Vendor…", reason: businessReason("vendor") },
+        { label: "Find Vendor…", reason: businessReason("vendor") },
+        { label: "New Bill…", reason: businessReason("vendor") },
+        { label: "Find Bill…", reason: businessReason("vendor") },
+        { label: "New Job…", reason: businessReason("jobs") },
+        { label: "Find Job…", reason: businessReason("jobs") },
+        { label: "Process Payment…", reason: businessReason("vendor") },
+        { label: "Bills Due Reminder", reason: businessReason("vendor") },
+      ] },
+      { label: "Employee", items: [
+        { label: "Employees Overview", reason: businessReason("employee") },
+        { label: "New Employee…", reason: businessReason("employee") },
+        { label: "Find Employee…", reason: businessReason("employee") },
+        { label: "New Expense Voucher…", reason: businessReason("employee") },
+        { label: "Find Expense Voucher…", reason: businessReason("employee") },
+        { label: "Process Payment…", reason: businessReason("employee") },
+      ] },
+      { sep: true },
+      { label: "Business Linked Documents",
+        reason: "Document links are book data and the web tier exposes no " +
+                "document-link endpoint." },
+      { sep: true },
+      { label: "Sales Tax Table",
+        reason: "Book-level table: the web tier has no table editor and the book " +
+                "is read-only." },
+      { label: "Billing Terms Editor",
+        reason: "Book-level table: the web tier has no table editor and the book " +
+                "is read-only." },
+      { sep: true },
+      { label: "Manage Document Link…", page: "invoice" },
+      { label: "Open Linked Document", page: "invoice" },
+      { label: "Pay Invoice", page: "invoice" },
+    ],
+  },
+  {
+    id: "scheduled", label: "Scheduled", mnemonic: "S",
+    note: "Scheduled Transactions page only: the desktop hides this menu unless " +
+          "that page is open, and the web tier has no such page yet.",
+    items: [
+      { label: "New Schedule", page: "scheduled" },
+      { label: "Edit Schedule", page: "scheduled" },
+      { label: "Delete Schedule", page: "scheduled" },
+      { label: "Run Schedule", page: "scheduled" },
+    ],
+  },
+  {
+    id: "reports", label: "Reports", mnemonic: "R",
+    items: [
+      { id: "report-list", label: "Report List", scope: "web",
+        run: showReportList,
+        title: "The desktop's Reports menu is generated from the report " +
+               "definitions; the web tier already lists them, so this goes to " +
+               "the list instead of duplicating it in the menu" },
+      { id: "new-report", label: "New Report…", scope: "web", run: showNewReport,
+        title: "Start a new saved report in the report designer" },
+      { sep: true },
+      { label: "Save Report Configuration", accel: "Ctrl+Alt+S",
+        reason: "No update-in-place: a saved report is immutable, so saving " +
+                "forks a copy — use Save Report Configuration As…." },
+      { id: "save-config-as", label: "Save Report Configuration As…",
+        accel: "Ctrl+Alt+Shift+S", run: saveConfiguration,
+        needs: "designerReady" },
+      { sep: true },
+      { label: "Company Report", page: "invoice" },
+      { label: "Account Report", page: "register" },
+      { label: "Account Report - Single Transaction", page: "register" },
+    ],
+  },
+  {
+    id: "tools", label: "Tools", mnemonic: "T",
+    items: [
+      { label: "Online Banking Setup…",
+        reason: "No online-banking channel: aqbanking needs a configured " +
+                "backend and write access." },
+      { label: "Price Database",
+        reason: "The book is read-only and the web tier publishes no price " +
+                "editor." },
+      { label: "Security Editor",
+        reason: "The book is read-only and the web tier publishes no commodity " +
+                "editor." },
+      { label: "Loan Repayment Calculator",
+        reason: "Not implemented: the calculator is a desktop dialog, and the " +
+                "web tier has no calculator yet." },
+      { label: "Close Book…",
+        reason: "Closing the book writes the file; the web tier is read-only." },
+      { label: "Import Map Editor",
+        reason: "The Bayesian import data is written by the importer, and the " +
+                "web tier has no importer." },
+      { label: "Transaction Linked Documents",
+        reason: "No document-link endpoint in the web tier." },
+      { label: "General Journal", page: "register" },
+    ],
+  },
+  {
+    id: "extensions", label: "Extensions", mnemonic: "X",
+    note: "Developer test actions: this menu only has content in test builds " +
+          "of the desktop application.",
+    items: [
+      { label: "Business", items: [
+        { label: "Test Search Dialog",
+          reason: "Developer test action; it exists only in the desktop's test " +
+                  "build." },
+        { label: "Initialize Test Data",
+          reason: "Developer test action; it writes test data to the book." },
+      ] },
+    ],
+  },
+  {
+    id: "windows", label: "Windows", mnemonic: "W",
+    items: [
+      { label: "New Window",
+        reason: "The browser owns windows and tabs: a page cannot open, move or " +
+                "enumerate them." },
+      { label: "New Window with Page",
+        reason: "The browser owns windows and tabs: a page cannot move its " +
+                "content into another one." },
+    ],
+  },
+  {
+    id: "help", label: "Help", mnemonic: "H",
+    items: [
+      { label: "Tutorial and Concepts Guide", accel: "Ctrl+H",
+        reason: "The manual lives in the gnucash-docs repository, not in this " +
+                "tree, and gnc-webd serves no help documents." },
+      { label: "Tips Of The Day",
+        reason: "The tips are compiled into the desktop application " +
+                "(gnucash/tip_of_the_day.list.c); the web tier has no tips " +
+                "dialog." },
+      { label: "Contents", accel: "F1",
+        reason: "No help documents are served: the desktop opens its " +
+                "installed manual, which the web tier does not have." },
+      { sep: true },
+      { id: "about", label: "About", run: showAbout },
+    ],
+  },
+];
+
+function businessReason(kind) {
+  if (kind === "jobs")
+    return "No jobs: the web tier has no job data or dialog, and the book " +
+           "cannot be written.";
+  return "No " + kind + " data or dialogs in the web tier: " + kind +
+         " records live in the book, which is opened read-only here, and " +
+         "invoices appear only as report documents.";
+}
+
+/* ------------------------------------------------------- menu actions */
+
+function focusSearch() {
+  searchBox.focus();
+  searchBox.select();
+}
+
+function toggleDesigner() {
+  designer.hidden = !designer.hidden;
+  if (!designer.hidden)
+    designer.scrollIntoView({ block: "start" });
+  refreshMenuStates();
+}
+
+function toggleSummaryBar() {
+  summaryEl.hidden = !summaryEl.hidden;
+  refreshMenuStates();
+}
+
+function showReportList() {
+  const section = document.getElementById("reports");
+  section.scrollIntoView({ block: "start" });
+  const link = [...reportList.querySelectorAll("a")]
+    .find((anchor) => !anchor.closest("li").hidden);
+  if (link) {
+    link.focus();
+  } else {
+    reportList.tabIndex = -1;
+    reportList.focus();
+  }
+}
+
+function showNewReport() {
+  designer.hidden = false;
+  newDesignerReport();
+  designer.scrollIntoView({ block: "start" });
+  refreshMenuStates();
+}
+
+function saveConfiguration() {
+  // The same path as the designer's Save report button: requestSubmit fires
+  // the form's submit handler, so validation and the server message are the
+  // ones the button would produce.
+  specForm.requestSubmit();
+}
+
+function showReportOptions() {
+  optionsSection.scrollIntoView({ block: "start" });
+  const control = optionsSection.querySelector("input, select, textarea, button");
+  if (control) control.focus();
+}
+
+function showAbout() {
+  aboutVersion.textContent = reportStoreVersion
+    ? "Report store version: " + reportStoreVersion
+    : "Version: not published by this server";
+  aboutCounts.textContent =
+    `${reportNames.length} reports in the list, ${savedSpecs.length} ` +
+    `saved report${savedSpecs.length === 1 ? "" : "s"}.`;
+  aboutSession.textContent = bookLoaded
+    ? "Read-only session: this page cannot change the book."
+    : "The book is not loaded, so the page cannot reach the book at all.";
+  aboutDialog.showModal();
+  aboutClose.focus();
+}
+
+async function refreshPage() {
+  // The desktop's View > Refresh re-reads the page's data.  Here that means
+  // the book, the accounts and the report list, and the report frame if one
+  // is open (the frame is a separate document and does not re-fetch by
+  // itself).
+  const frame = view;
+  const frameSrc = !frame.hidden ? frame.getAttribute("src") : null;
+  await load();
+  if (frameSrc) {
+    frame.removeAttribute("src");
+    frame.src = frameSrc;
+  }
+}
+
+/* ------------------------------------------------------- menu rendering */
+
+const menuItemIndex = new Map(); // button element -> { menu, item }
+const menuElementIds = new Set();
+let openMenuElement = null;
+
+function uniqueMenuId(base) {
+  let id = base;
+  let suffix = 2;
+  while (menuElementIds.has(id)) id = `${base}-${suffix++}`;
+  menuElementIds.add(id);
+  return id;
+}
+
+function itemIsAvailable(item) {
+  if (typeof item.reason === "string" && item.reason !== "")
+    return { enabled: false, reason: item.reason };
+  if (item.page && !(MENU_PAGES[item.page] && MENU_PAGES[item.page].present()))
+    return { enabled: false, reason: PAGE_REASONS[item.page] ||
+      "Page-scoped item: its page does not exist in the web tier." };
+  if (item.needs) {
+    const need = MENU_NEEDS[item.needs];
+    if (!need || !need.ok())
+      return { enabled: false, reason: need ? need.reason
+                                            : "Unavailable in this state." };
+  }
+  if (typeof item.run === "function") return { enabled: true, reason: "" };
+  return { enabled: false, reason: "No web equivalent: the web tier has no " +
+                                   "implementation of this action." };
+}
+
+function slug(text) {
+  return text.toLowerCase().replace(/…/g, "").replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function menuItemsFor(menu) {
+  let items = menu.items.slice();
+  for (const page of Object.values(MENU_PAGES)) {
+    const contribution = page.menus && page.menus[menu.id];
+    if (!contribution) continue;
+    if (Array.isArray(contribution)) {
+      items = items.concat(contribution);
+      continue;
+    }
+    const additions = Array.isArray(contribution.items)
+      ? contribution.items : [];
+    const index = contribution.before
+      ? items.findIndex((item) => item.id === contribution.before) : -1;
+    if (index >= 0) items.splice(index, 0, ...additions);
+    else items = items.concat(additions);
+  }
+  return items;
+}
+
+function buildItems(container, menu, items) {
+  const used = new Set();
+  for (const item of items) {
+    if (item.sep) {
+      const separator = el("div", "menu-sep");
+      separator.setAttribute("role", "separator");
+      container.append(separator);
+      continue;
+    }
+    if (Array.isArray(item.items)) {
+      const wrap = el("div", "menu-sub");
+      const trigger = el("button", "menu-item");
+      trigger.type = "button";
+      trigger.setAttribute("role", "menuitem");
+      trigger.setAttribute("aria-haspopup", "true");
+      trigger.setAttribute("aria-expanded", "false");
+      trigger.tabIndex = -1;
+      const label = el("span", "menu-label", item.label);
+      label.title = item.title || "";
+      trigger.append(label, el("span", "menu-arrow", "▸"));
+      const sub = el("div", "menu-popup menu-submenu");
+      sub.setAttribute("role", "menu");
+      sub.hidden = true;
+      buildItems(sub, menu, item.items);
+      wrap.append(trigger, sub);
+      container.append(wrap);
+      continue;
+    }
+    let key = item.id || slug(item.label);
+    while (used.has(key)) key += "-2";
+    used.add(key);
+    const button = el("button", "menu-item");
+    button.type = "button";
+    button.dataset.item = key;
+    button.id = uniqueMenuId(`menu-${menu.id}-${key}`);
+    button.setAttribute("role", /^toggle-/.test(key) ? "menuitemcheckbox"
+                                                     : "menuitem");
+    button.tabIndex = -1;
+    const label = el("span", "menu-label", item.label);
+    if (item.title) label.title = item.title;
+    button.append(label);
+    if (item.scope === "web") {
+      const badge = el("span", "web-badge", "web");
+      badge.title = "A web-tier item: the desktop has no menu item for this";
+      button.append(badge);
+    }
+    if (item.accel)
+      button.append(el("span", "accel", item.accel));
+    menuItemIndex.set(button, { menu, item });
+    container.append(button);
+  }
+}
+
+function refreshMenuStates() {
+  for (const [button, entry] of menuItemIndex) {
+    const availability = itemIsAvailable(entry.item);
+    button.setAttribute("aria-disabled", availability.enabled ? "false" : "true");
+    if (availability.enabled) {
+      button.removeAttribute("title");
+      button.removeAttribute("aria-description");
+      button.removeAttribute("data-reason");
+    } else {
+      button.title = availability.reason;
+      button.setAttribute("aria-description", availability.reason);
+      button.dataset.reason = availability.reason;
+    }
+    if (entry.item.id === "toggle-designer")
+      button.setAttribute("aria-checked", designer.hidden ? "false" : "true");
+    if (entry.item.id === "toggle-summary")
+      button.setAttribute("aria-checked", summaryEl.hidden ? "false" : "true");
+  }
+}
+
+function knownTopLevelMenus() {
+  return [...document.querySelectorAll("#menubar > .menu")];
+}
+
+function menuPopup(menuElement) {
+  return menuElement.querySelector(":scope > .menu-popup");
+}
+
+function menuButton(menuElement) {
+  return menuElement.querySelector(":scope > .menu-title");
+}
+
+function itemsOf(popup) {
+  const out = [];
+  for (const child of popup.children) {
+    if (child.classList.contains("menu-item")) out.push(child);
+    else if (child.classList.contains("menu-sub"))
+      out.push(child.querySelector(":scope > .menu-item"));
+  }
+  return out;
+}
+
+function closeSubmenus(popup) {
+  for (const sub of popup.querySelectorAll(".menu-submenu")) {
+    sub.hidden = true;
+  }
+  for (const trigger of popup.querySelectorAll("[aria-haspopup='true']")) {
+    trigger.setAttribute("aria-expanded", "false");
+  }
+}
+
+function closeMenus(returnFocus) {
+  const top = openMenuElement;
+  for (const menuElement of knownTopLevelMenus()) {
+    const popup = menuPopup(menuElement);
+    if (!popup || popup.hidden) continue;
+    closeSubmenus(popup);
+    popup.hidden = true;
+    menuButton(menuElement).setAttribute("aria-expanded", "false");
+  }
+  openMenuElement = null;
+  if (returnFocus && top) menuButton(top).focus();
+}
+
+function openMenu(menuElement, focusFirst) {
+  const popup = menuPopup(menuElement);
+  if (!popup) return;
+  closeMenus(false);
+  refreshMenuStates();
+  openMenuElement = menuElement;
+  popup.hidden = false;
+  menuButton(menuElement).setAttribute("aria-expanded", "true");
+  if (focusFirst) {
+    const first = itemsOf(popup)[0];
+    if (first) first.focus();
+  }
+}
+
+function focusTopMenu(menuElement) {
+  const title = menuButton(menuElement);
+  for (const other of knownTopLevelMenus()) menuButton(other).tabIndex = -1;
+  title.tabIndex = 0;
+  title.focus();
+}
+
+function moveTopMenu(offset) {
+  const menus = knownTopLevelMenus();
+  const index = menus.indexOf(openMenuElement ||
+    document.activeElement.closest(".menu"));
+  const next = menus[(index + offset + menus.length) % menus.length];
+  if (openMenuElement) openMenu(next, true);
+  else focusTopMenu(next);
+}
+
+function openSubmenu(trigger) {
+  const wrap = trigger.parentElement;
+  const sub = wrap.querySelector(":scope > .menu-popup");
+  if (!sub) return;
+  sub.hidden = false;
+  trigger.setAttribute("aria-expanded", "true");
+  const first = itemsOf(sub)[0];
+  if (first) first.focus();
+}
+
+function closeSubmenu(trigger) {
+  const sub = trigger.parentElement.querySelector(":scope > .menu-popup");
+  if (!sub) return;
+  sub.hidden = true;
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.focus();
+}
+
+function activateMenuItem(button) {
+  const entry = menuItemIndex.get(button);
+  if (!entry) return;
+  const availability = itemIsAvailable(entry.item);
+  if (!availability.enabled) return; // disabled: no action, menu stays open
+  // Give focus back to the bar before the action runs; the action may then
+  // move it (the search box, the designer, the About dialog), and focus never
+  // stays on a menu item that is no longer visible.
+  closeMenus(true);
+  try {
+    entry.item.run();
+  } catch (err) {
+    // A wired action must not take the page down; surface it in the page's
+    // own error slot where one exists, never as an unhandled rejection.
+    if (typeof showSpecError === "function")
+      showSpecError(`The menu action failed: ${err.message}`);
+  }
+}
+
+function renderMenus() {
+  const bar = document.getElementById("menubar");
+  bar.replaceChildren();
+  menuItemIndex.clear();
+  menuElementIds.clear();
+  for (const menu of MENU_TABLE) {
+    const menuElement = el("div", "menu");
+    menuElement.dataset.menu = menu.id;
+    const title = el("button", "menu-title", menu.label);
+    title.type = "button";
+    title.id = `menubar-${menu.id}`;
+    title.tabIndex = -1;
+    title.setAttribute("role", "menuitem");
+    title.setAttribute("aria-haspopup", "true");
+    title.setAttribute("aria-expanded", "false");
+    if (menu.mnemonic) title.title = `${menu.label} (Alt+${menu.mnemonic})`;
+    if (menu.note) title.setAttribute("aria-description", menu.note);
+    const popup = el("div", "menu-popup");
+    popup.setAttribute("role", "menu");
+    popup.setAttribute("aria-labelledby", title.id);
+    popup.hidden = true;
+    if (menu.note) {
+      const note = el("p", "menu-note", menu.note);
+      // Menus may only contain items, so the note is presentational; the same
+      // sentence is the title button's aria-description above.
+      note.setAttribute("role", "presentation");
+      popup.append(note);
+    }
+    buildItems(popup, menu, menuItemsFor(menu));
+    menuElement.append(title, popup);
+    bar.append(menuElement);
+  }
+  const first = bar.querySelector(".menu-title");
+  if (first) first.tabIndex = 0;
+  refreshMenuStates();
+}
+
+function onMenubarKeydown(event) {
+  const title = event.target.closest(".menu-title");
+  if (title) {
+    const menuElement = title.closest(".menu");
+    switch (event.key) {
+      case "ArrowRight": event.preventDefault(); moveTopMenu(1); break;
+      case "ArrowLeft": event.preventDefault(); moveTopMenu(-1); break;
+      case "ArrowDown":
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        openMenu(menuElement, true);
+        break;
+      case "Home": event.preventDefault();
+        focusTopMenu(knownTopLevelMenus()[0]); break;
+      case "End": event.preventDefault();
+        focusTopMenu(knownTopLevelMenus().slice(-1)[0]); break;
+      case "Escape": event.preventDefault(); closeMenus(true); break;
+    }
+    return;
+  }
+  const item = event.target.closest(".menu-item");
+  if (!item || !document.getElementById("menubar").contains(item)) return;
+  const popup = item.closest(".menu-popup");
+  const siblings = itemsOf(popup);
+  const index = siblings.indexOf(item);
+  const isSubmenuTrigger = item.getAttribute("aria-haspopup") === "true";
+  const inSubmenu = popup.classList.contains("menu-submenu");
+
+  switch (event.key) {
+    case "ArrowDown": {
+      event.preventDefault();
+      const next = siblings[(index + 1) % siblings.length];
+      if (next === item && siblings.length === 1) return;
+      if (next) next.focus();
+      break;
+    }
+    case "ArrowUp": {
+      event.preventDefault();
+      const prev = siblings[(index - 1 + siblings.length) % siblings.length];
+      if (prev) prev.focus();
+      break;
+    }
+    case "Home":
+      event.preventDefault();
+      if (siblings[0]) siblings[0].focus();
+      break;
+    case "End":
+      event.preventDefault();
+      if (siblings.length) siblings[siblings.length - 1].focus();
+      break;
+    case "ArrowRight":
+      event.preventDefault();
+      if (isSubmenuTrigger) openSubmenu(item);
+      else moveTopMenu(1);
+      break;
+    case "ArrowLeft":
+      event.preventDefault();
+      if (inSubmenu) closeSubmenu(item.closest(".menu-sub").querySelector(
+        ":scope > .menu-item"));
+      else moveTopMenu(-1);
+      break;
+    case "Enter":
+    case " ": {
+      event.preventDefault();
+      if (isSubmenuTrigger) {
+        const sub = item.parentElement.querySelector(":scope > .menu-popup");
+        if (sub.hidden) openSubmenu(item);
+        else closeSubmenu(item);
+      } else {
+        activateMenuItem(item);
+      }
+      break;
+    }
+    case "Escape":
+      event.preventDefault();
+      if (inSubmenu) {
+        closeSubmenu(item.closest(".menu-sub").querySelector(
+          ":scope > .menu-item"));
+      } else {
+        closeMenus(true);
+      }
+      break;
+    case "Tab":
+      // Focus stays inside the open menu while it is open.
+      event.preventDefault();
+      if (siblings.length) {
+        const step = event.shiftKey ? -1 : 1;
+        const next = siblings[(index + step + siblings.length) %
+                              siblings.length];
+        if (next) next.focus();
+      }
+      break;
+  }
+}
+
+function installMenus() {
+  const bar = document.getElementById("menubar");
+  bar.addEventListener("keydown", onMenubarKeydown);
+  bar.addEventListener("click", (event) => {
+    const title = event.target.closest(".menu-title");
+    if (title) {
+      const menuElement = title.closest(".menu");
+      if (menuElement === openMenuElement) closeMenus(true);
+      else openMenu(menuElement, true);
+      return;
+    }
+    const item = event.target.closest(".menu-item");
+    if (!item) return;
+    if (item.getAttribute("aria-haspopup") === "true") {
+      const sub = item.parentElement.querySelector(":scope > .menu-popup");
+      if (sub.hidden) openSubmenu(item);
+      else closeSubmenu(item);
+      return;
+    }
+    activateMenuItem(item);
+  });
+  bar.addEventListener("mouseover", (event) => {
+    if (!openMenuElement) return;
+    const title = event.target.closest(".menu-title");
+    if (!title) return;
+    const menuElement = title.closest(".menu");
+    if (menuElement && menuElement !== openMenuElement)
+      openMenu(menuElement, false);
+  });
+  document.addEventListener("click", (event) => {
+    if (openMenuElement && !document.getElementById("menubar").contains(event.target))
+      closeMenus(false);
+  });
+  aboutClose.addEventListener("click", () => aboutDialog.close());
+}
+
+renderMenus();
+installMenus();
 load();
 </script>
 </body>
