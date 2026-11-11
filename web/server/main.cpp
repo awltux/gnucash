@@ -883,6 +883,12 @@ struct RegisterRow
 {
     std::string guid;
     std::string transaction_guid;
+    /* How many splits the transaction has.  The page uses it to tell a
+     * two-split row (whose transfer is one account) from a split transaction
+     * (whose transfer cell must offer the panel instead of naming an
+     * account).  The engine's placeholder text would say the same thing, but
+     * matching a display string is not a contract; the count is. */
+    int split_count = 0;
     std::string date;
     std::string date_iso;
     std::string num;
@@ -918,6 +924,7 @@ register_rows (Account* account)
 
         row.guid = guid_text (xaccSplitGetGUID (split));
         row.transaction_guid = guid_text (xaccTransGetGUID (transaction));
+        row.split_count = xaccTransCountSplits (transaction);
 
         char date[16] = {0};
         qof_print_date_buff (date, sizeof date, xaccTransGetDate (transaction));
@@ -972,6 +979,7 @@ register_row_json (const RegisterRow& row)
     std::string out = "{\"guid\":\"" + json_escape (row.guid.c_str ()) + "\"";
     out += ",\"transaction_guid\":\"" +
            json_escape (row.transaction_guid.c_str ()) + "\"";
+    out += ",\"split_count\":" + std::to_string (row.split_count);
     out += ",\"date\":\"" + json_escape (row.date.c_str ()) + "\"";
     out += ",\"date_iso\":\"" + json_escape (row.date_iso.c_str ()) + "\"";
     out += ",\"num\":\"" + json_escape (row.num.c_str ()) + "\"";
@@ -1093,10 +1101,22 @@ register_json (Account* account)
 
 /* The read-only transaction panel's data: every split of one transaction, so
  * a register row can show what it is part of without inventing a second
- * register model. */
+ * register model.
+ *
+ * The panel also says what the transaction adds up to.  The total is the sum
+ * of the debit (positive) values in the transaction's own currency: summing
+ * the per-split `amount` strings would add figures from different account
+ * commodities, which is not a total.  `balanced` is the engine's answer
+ * (xaccTransIsBalanced, so trading accounts are respected); when it is false
+ * the imbalance is printed too, in the same currency, rather than hiding the
+ * difference. */
 std::string
 transaction_json (Transaction* transaction)
 {
+    gnc_commodity* currency = xaccTransGetCurrency (transaction);
+    const GNCPrintAmountInfo currency_info =
+        gnc_commodity_print_info (currency, TRUE);
+
     std::string out = "{\"guid\":\"";
     out += json_escape (guid_text (xaccTransGetGUID (transaction)).c_str ());
     out += "\",\"date\":\"";
@@ -1112,10 +1132,14 @@ transaction_json (Transaction* transaction)
     out += json_escape (num != nullptr ? num : "");
     out += "\",\"description\":\"";
     out += json_escape (xaccTransGetDescription (transaction));
+    out += "\",\"currency\":\"";
+    out += json_escape (currency != nullptr
+                        ? gnc_commodity_get_mnemonic (currency) : "");
     out += "\",\"voided\":";
     out += xaccTransGetVoidStatus (transaction) ? "true" : "false";
     out += ",\"splits\":[";
 
+    gnc_numeric total = gnc_numeric_zero ();
     bool first = true;
     for (GList* node = xaccTransGetSplitList (transaction); node != nullptr;
          node = node->next)
@@ -1125,6 +1149,11 @@ transaction_json (Transaction* transaction)
         if (!first)
             out += ",";
         first = false;
+
+        const gnc_numeric value = xaccSplitGetValue (split);
+        if (gnc_numeric_positive_p (value))
+            total = gnc_numeric_add (total, value, GNC_DENOM_AUTO,
+                                     GNC_HOW_DENOM_EXACT);
 
         out += "{\"guid\":\"" +
                json_escape (guid_text (xaccSplitGetGUID (split)).c_str ()) + "\"";
@@ -1149,7 +1178,16 @@ transaction_json (Transaction* transaction)
         out += "\"}";
     }
 
-    out += "]}";
+    const gchar* total_text = xaccPrintAmount (total, currency_info);
+    out += "],\"total\":\"";
+    out += json_escape (total_text != nullptr ? total_text : "");
+    out += "\",\"balanced\":";
+    out += xaccTransIsBalanced (transaction) ? "true" : "false";
+    const gchar* imbalance_text = xaccPrintAmount (
+        xaccTransGetImbalanceValue (transaction), currency_info);
+    out += ",\"imbalance\":\"";
+    out += json_escape (imbalance_text != nullptr ? imbalance_text : "");
+    out += "\"}";
     return out;
 }
 

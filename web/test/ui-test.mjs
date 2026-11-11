@@ -2,7 +2,9 @@
 //
 //   node web/test/ui-test.mjs <url> [screenshot.png]
 //
-// <url> is the address gnc-webd prints (it includes the token). The script
+// <url> is the address gnc-webd prints (it includes the token) for
+// sample1.gnucash, the book this phase's FIXTURE declares (104 accounts); a
+// server with another book is refused before a check runs.  The script
 // drives a real browser, asserts on the DOM, opens a report and checks the
 // rendered document, and fails on any console error or failed request.
 //
@@ -19,10 +21,13 @@
 //   NODE_PATH=./node_modules node web/test/ui-test.mjs <url>
 
 import { createRequire } from 'node:module';
+import { requireFixture } from './fixture.mjs';
 
 // CommonJS resolution, so NODE_PATH works and the harness can live in the repo
 // while playwright-core stays a dev dependency somewhere outside it.
 const { chromium } = createRequire(import.meta.url)('playwright-core');
+
+export const FIXTURE = { book: 'sample1', writable: false };
 
 const url = process.argv[2];
 if (!url) {
@@ -30,6 +35,9 @@ if (!url) {
     process.exit(2);
 }
 const screenshotPath = process.argv[3];
+
+// Refuse a server that is not the declared fixture before a single check.
+await requireFixture('ui-test.mjs', FIXTURE, url);
 
 const browser = await chromium.launch({
     // PW_CHANNEL=chrome drives an installed browser (no download); without it
@@ -71,6 +79,14 @@ function check(name, ok, detail = '') {
     console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`);
     if (!ok) failures++;
 }
+
+// A deliberate navigation aborts whatever the old document still has in
+// flight (a report's Chart.js is the usual one).  Let the page settle first,
+// so the intentional navigation is not reported as a failed request.  The
+// timeout is not a check: the navigation happens either way and every real
+// failure is still counted by the handlers above.
+const settleNetwork = () =>
+    page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
 // The designer's controls as the form would send them.  This is the browser
 // half of "the field values equal the spec": every field, not just the name.
@@ -264,6 +280,7 @@ check('balances are formatted', /\$[\d,]+\.\d\d/.test(firstRow), firstRow);
 // on the Reports page, not on the Book page.  The list is rendered before the
 // page is shown, so every click below needs the page on screen; navigate to it
 // by URL, which is also the direct-navigation check for this route.
+await settleNetwork();
 await page.goto(new URL('reports', url).href, { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(
@@ -740,6 +757,7 @@ const savedViews = await page.locator(
     '#saved-views button.apply-view', { hasText: 'End of 2009' }).count();
 check('a named view is saved', savedViews === 1, `${savedViews} matching view`);
 
+await settleNetwork();
 await page.reload({ waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(
@@ -953,6 +971,7 @@ check('the saved report renders the same table as the explicit request',
       JSON.stringify(savedRows) === JSON.stringify(explicitRows),
       `${savedRows.length} rows vs ${explicitRows.length}`);
 
+await settleNetwork();
 await page.reload({ waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(
@@ -1196,6 +1215,14 @@ check('the designer lists every source /api/spec/options publishes',
 // source's still-complete document.  The predicate and the read of the text
 // happen in one page task for the same reason.
 async function previewSource(name) {
+    // The next line replaces the frame's document.  Wait for the current one
+    // to finish its subresources (a preview with a chart loads Chart.js), so
+    // the intentional replacement does not abort one.
+    await page.waitForFunction(() => {
+        const frame = document.getElementById('view');
+        const doc = frame && frame.contentDocument;
+        return !doc || doc.readyState === 'complete';
+    }, null, { timeout: 15000 });
     await page.evaluate(() => {
         const frame = document.getElementById('view');
         window.__previewDocument = frame.contentDocument;
@@ -1273,8 +1300,9 @@ async function saveSource(name, source) {
 }
 
 async function reopenAfterReload(name, source) {
+    await settleNetwork();
     await page.reload({ waitUntil: 'domcontentloaded' });
-await waitForRoute();
+    await waitForRoute();
     await page.waitForFunction(
         () => document.getElementById('summary')
             ?.textContent.includes('accounts'), null, { timeout: 15000 });

@@ -4,8 +4,10 @@
 //
 // <url> is a gnc-webd address with its token, or the tokenless
 // --debug-port address; the same checks run in both modes because the page
-// URLs are built from the same base the server printed.  web/run-ui-test.sh
-// runs this as its fifth and sixth phases.
+// URLs are built from the same base the server printed.  The FIXTURE below
+// declares sample1.gnucash (104 accounts) and a server with another book is
+// refused before a check runs.  web/run-ui-test.sh runs this as its fifth and
+// sixth phases.
 //
 // It checks the pages as URLs, not only as clicks:
 //
@@ -34,14 +36,20 @@
 // Needs playwright-core on NODE_PATH, exactly like ui-test.mjs.
 
 import { createRequire } from 'node:module';
+import { requireFixture } from './fixture.mjs';
 
 const { chromium } = createRequire(import.meta.url)('playwright-core');
+
+export const FIXTURE = { book: 'sample1', writable: false };
 
 const url = process.argv[2];
 if (!url) {
     console.error('usage: node pages-ui.mjs <url>');
     process.exit(2);
 }
+
+// Refuse a server that is not the declared fixture before a single check.
+await requireFixture('pages-ui.mjs', FIXTURE, url);
 
 const browser = await chromium.launch({
     ...(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {}),
@@ -91,6 +99,14 @@ async function gotoWithRetry(target, options) {
         }
     }
 }
+
+// A deliberate navigation aborts whatever the old document still has in
+// flight (a register read, or a report's Chart.js).  Let the page settle
+// first, so the intentional navigation is not reported as a failed request.
+// The timeout is not a check: the navigation happens either way and every
+// real failure is still counted by the handlers above.
+const settleNetwork = () =>
+    page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
 async function getJson(path) {
     for (let attempt = 0; ; attempt++) {
@@ -214,6 +230,7 @@ async function waitForReportFrame(match) {
 
 /* ------------------------------------------------ direct navigation: /accounts */
 
+await settleNetwork();
 await gotoWithRetry(pageUrl('accounts'), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(
@@ -241,6 +258,7 @@ check('the Accounts tab is a pinned ARIA tab',
 
 /* -------------------------------------- direct navigation: /register/<guid> */
 
+await settleNetwork();
 await gotoWithRetry(pageUrl(`register/${first.account.guid}`),
                 { waitUntil: 'domcontentloaded' });
 await page.waitForFunction((title) =>
@@ -259,6 +277,7 @@ check('a direct navigation to /register/<guid> opens that register tab',
       `${state.path}: rows=${state.rows} tab=${state.tabs[1]?.text} ` +
       `selected=${state.tabs[1]?.selected}`);
 
+await settleNetwork();
 await page.reload({ waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction((title) =>
@@ -274,6 +293,7 @@ check('a reload of a register URL lands on the same register tab',
 
 /* ------------------------------------------------ direct navigation: /reports */
 
+await settleNetwork();
 await gotoWithRetry(pageUrl('reports'), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(
@@ -298,6 +318,7 @@ check('opening a report from the list puts it in the URL',
       `${state.path} frame=${state.frameSrc}`);
 
 // The same page URL, reached directly rather than by a click.
+await settleNetwork();
 await gotoWithRetry(pageUrl('report/Trial%20Balance'), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await waitForReportFrame(/\/report\/Trial%20Balance$/);
@@ -337,6 +358,7 @@ check('/report/<name> still answers the report document to a direct read',
 
 /* ------------------------------------- direct navigation: /report/spec/<id> */
 
+await settleNetwork();
 await gotoWithRetry(pageUrl(`report/spec/${builtin.id}`), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction((id) => {
@@ -354,6 +376,7 @@ check('a direct navigation to /report/spec/<id> opens that saved report',
       state.reports && !state.frameHidden && state.specName === builtin.name,
       `${state.path}: spec=${JSON.stringify(state.specName)}`);
 
+await settleNetwork();
 await page.reload({ waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction((id) => {
@@ -382,6 +405,7 @@ check('/report/spec/<id> still answers the document to a direct read',
 
 /* ------------------------------------------------------------- back/forward */
 
+await settleNetwork();
 await gotoWithRetry(pageUrl('accounts'), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(() => document.querySelectorAll('#tree li').length > 0);
@@ -392,6 +416,7 @@ check('the Accounts tab and a register tab are two URLs in history',
       state.path === pathOf(pageUrl('accounts')) && state.tabs.length === 2,
       `${state.path}: tabs=${state.tabs.length}`);
 
+await settleNetwork();
 await page.goBack({ waitUntil: 'domcontentloaded' });
 await page.waitForFunction((title) =>
     !document.getElementById('register').hidden &&
@@ -403,6 +428,7 @@ check('Back returns to the register URL',
       !state.registerHidden && state.tabs[1].selected === 'true',
       `${state.path}: selected=${state.tabs[1]?.selected}`);
 
+await settleNetwork();
 await page.goForward({ waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => document.getElementById('register').hidden,
                            null, { timeout: 30000 });
@@ -524,6 +550,7 @@ check('closing the active register tab falls back to the Accounts tab',
 /* ------------------------------------------- the tab strip across a reload */
 
 await openFromTree(first);
+await settleNetwork();
 await page.reload({ waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction((title) =>
@@ -582,8 +609,9 @@ const ledgerOffPage = await page.evaluate(() => {
 });
 await page.keyboard.press('Escape');
 const ledgerOnPage = await (async () => {
+    await settleNetwork();
     await gotoWithRetry(pageUrl(`register/${first.account.guid}`),
-                    { waitUntil: 'domcontentloaded' });
+                        { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !document.getElementById('register').hidden,
                                null, { timeout: 30000 });
     await openMenu('view');
@@ -662,6 +690,7 @@ const paneGeometry = () => page.evaluate(() => {
     };
 });
 
+await settleNetwork();
 await gotoWithRetry(pageUrl('reports'), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(
@@ -680,6 +709,7 @@ check('the Reports page has a rail, a document and an inspector',
 await page.focus('#rail-resizer');
 await page.keyboard.press('ArrowLeft');
 const resizedWidth = (await paneGeometry()).rail.width;
+await settleNetwork();
 await page.reload({ waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(
@@ -725,6 +755,7 @@ check('`]` again restores the inspector',
 // The common case: change the dates with the options beside the document.
 // Neither the page nor the report frame may jump back to the top when the
 // reader had scrolled; when they were at the top they must stay there.
+await settleNetwork();
 await gotoWithRetry(pageUrl('report/Trial%20Balance'),
                 { waitUntil: 'domcontentloaded' });
 await waitForRoute();
@@ -864,6 +895,7 @@ check('the designer opens as a full-window mode of the Reports page',
 // The mode is URL state: a reload lands in the designer with the report's
 // spec still in the form.
 const designerName = await page.inputValue('#spec-name');
+await settleNetwork();
 await page.reload({ waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction((wanted) => {
@@ -919,6 +951,7 @@ check('leaving the designer with OK returns to the report list',
 /* ------------------------------- the layout at ~800px */
 
 await page.setViewportSize({ width: 800, height: 900 });
+await settleNetwork();
 await gotoWithRetry(pageUrl('report/Trial%20Balance'),
                 { waitUntil: 'domcontentloaded' });
 await waitForRoute();

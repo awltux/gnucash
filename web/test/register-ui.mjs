@@ -2,23 +2,33 @@
 //
 //   node web/test/register-ui.mjs <url>
 //
-// <url> is a gnc-webd address (with token) whose book has an account with
-// enough rows to page through.  web/run-ui-test.sh generates the demo book
-// with web/test/make-demo-book.py for this phase.  The test drives a real
-// browser and checks the grid, the row model, keyboard navigation, the
-// read-only transaction panel, and the two menu actions this stage enables.
+// <url> is a gnc-webd address (with token) whose book is the generated demo
+// book: its account with the most rows must have at least twenty, which the
+// keyboard checks (PageDown/PageUp, End/Home) need.  web/run-ui-test.sh
+// generates that book with web/test/make-demo-book.py for this phase.  The
+// FIXTURE below is checked before any check runs, so a sample1 server is
+// refused with one line instead of failing the checks that need rows.  The
+// test drives a real browser and checks the grid, the row model, keyboard
+// navigation, the read-only transaction panel, and the two menu actions this
+// stage enables.
 //
 // Needs playwright-core on NODE_PATH, exactly like ui-test.mjs.
 
 import { createRequire } from 'node:module';
+import { requireFixture } from './fixture.mjs';
 
 const { chromium } = createRequire(import.meta.url)('playwright-core');
+
+export const FIXTURE = { book: 'demo', writable: false };
 
 const url = process.argv[2];
 if (!url) {
     console.error('usage: node register-ui.mjs <url>');
     process.exit(2);
 }
+
+// Refuse a server that is not the declared fixture before a single check.
+await requireFixture('register-ui.mjs', FIXTURE, url);
 
 const browser = await chromium.launch({
     ...(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {}),
@@ -332,6 +342,249 @@ state = await gridState();
 check('Escape closes the panel and returns focus to the selected row',
       state.selected === 1 && state.activeIndex === 1,
       `selected=${state.selected} active=${state.activeIndex}`);
+
+/* ------------------------------------- split transactions: the way in */
+
+// The demo book has both kinds of row: two-split transactions (Transfer names
+// the other account) and split transactions (the engine's placeholder).  The
+// row model says which is which with split_count, so the checks do not depend
+// on a display string.
+const registerRows = populated.register.splits;
+const multiIndex = registerRows.findIndex((row) => row.split_count > 2);
+const singleIndex = registerRows.findIndex((row) => row.split_count === 2);
+check('the register has a split transaction to open', multiIndex >= 0,
+      multiIndex >= 0 ? `row ${multiIndex}` : 'none');
+check('the register also has a two-split row to compare with',
+      singleIndex >= 0, singleIndex >= 0 ? `row ${singleIndex}` : 'none');
+
+async function clickRow(index) {
+    await page.locator('#register-grid tbody tr').nth(index).locator('td').first()
+        .click();
+    await page.waitForFunction(
+        (i) => document.querySelectorAll('#register-grid tbody tr')[i]
+            ?.getAttribute('aria-selected') === 'true',
+        index, { timeout: 15000 });
+}
+
+// Click the transfer control on `index`, the way a reader opens the panel,
+// and wait for the panel to have content.
+async function openSplitPanel(index) {
+    await page.locator('#register-grid tbody tr').nth(index)
+        .locator('td').nth(4).locator('button.split-link').click();
+    await page.waitForFunction(
+        () => !document.getElementById('register-detail').hidden,
+        null, { timeout: 15000 });
+}
+
+async function waitForPanelClosed() {
+    await page.waitForFunction(
+        () => document.getElementById('register-detail').hidden,
+        null, { timeout: 15000 });
+}
+
+const transfers = await page.evaluate(() =>
+    [...document.querySelectorAll('#register-grid tbody tr')].map((tr) => {
+        const cell = tr.children[4];
+        const button = cell.querySelector('button.split-link');
+        return {
+            hasButton: Boolean(button),
+            text: cell.textContent.trim(),
+            label: button ? button.getAttribute('aria-label') : '',
+        };
+    }));
+check('only a split transaction\'s transfer cell is a control',
+      transfers.every((cell, index) =>
+          cell.hasButton === (registerRows[index].split_count > 2)),
+      `${transfers.filter((cell) => cell.hasButton).length} controls, ` +
+      `${registerRows.filter((row) => row.split_count > 2).length} ` +
+      `split transactions`);
+check('the control keeps the placeholder and says how many splits it opens',
+      transfers[multiIndex] &&
+      transfers[multiIndex].text === '-- Split Transaction --' &&
+      transfers[multiIndex].label.includes(
+          String(registerRows[multiIndex].split_count)),
+      `${transfers[multiIndex]?.text} / ${transfers[multiIndex]?.label}`);
+
+const multiRow = registerRows[multiIndex];
+const multiTransaction = await getJson(
+    `api/transaction/${multiRow.transaction_guid}`);
+
+await clickRow(multiIndex);
+await openSplitPanel(multiIndex);
+
+const splitPanel = await page.evaluate(() => {
+    const panel = document.getElementById('register-detail');
+    const table = document.getElementById('register-detail-table');
+    return {
+        open: !panel.hidden,
+        role: panel.getAttribute('role'),
+        labelledby: panel.getAttribute('aria-labelledby'),
+        meta: document.getElementById('register-detail-meta').textContent.trim(),
+        total: document.getElementById('register-detail-total')
+            .textContent.trim(),
+        tableRole: table.getAttribute('role'),
+        tableLabel: table.getAttribute('aria-label'),
+        rowcount: table.getAttribute('aria-rowcount'),
+        rows: [...document.querySelectorAll('#register-detail-body tr')]
+            .map((tr) => ({
+                account: tr.children[0].textContent.trim(),
+                accountGuid: tr.children[0].querySelector('a')
+                    ?.dataset.accountGuid || '',
+                href: tr.children[0].querySelector('a')
+                    ?.getAttribute('href') || '',
+                memo: tr.children[1].textContent.trim(),
+                amount: tr.children[4].textContent.trim(),
+            })),
+    };
+});
+check('clicking the transfer control opens the panel with every split',
+      splitPanel.open &&
+      splitPanel.rows.length === multiTransaction.splits.length,
+      `${splitPanel.rows.length} splits, expected ` +
+      `${multiTransaction.splits.length}`);
+check('the panel names the whole transaction',
+      splitPanel.meta.includes(multiTransaction.date) &&
+      splitPanel.meta.includes(multiTransaction.num) &&
+      splitPanel.meta.includes(multiTransaction.description),
+      splitPanel.meta);
+check('every split shows its account, memo and amount',
+      splitPanel.rows.every((row, index) =>
+          row.account === multiTransaction.splits[index].account &&
+          row.memo === multiTransaction.splits[index].memo &&
+          row.amount === multiTransaction.splits[index].amount),
+      splitPanel.rows.map((row) => `${row.account} ${row.amount}`).join('; '));
+check('each split account links to its own register',
+      splitPanel.rows.every((row, index) =>
+          row.accountGuid === multiTransaction.splits[index].account_guid &&
+          row.href.endsWith(
+              `/register/${multiTransaction.splits[index].account_guid}`)),
+      splitPanel.rows.map((row) => row.href).join(' '));
+check('the panel says the total and whether the transaction balances',
+      splitPanel.total.includes(multiTransaction.total) &&
+      splitPanel.total.includes(multiTransaction.balanced
+          ? 'balances' : 'does not balance') &&
+      (multiTransaction.balanced ||
+       splitPanel.total.includes(multiTransaction.imbalance)),
+      splitPanel.total);
+check('the panel and its split table carry their roles and names',
+      splitPanel.role === 'region' &&
+      splitPanel.labelledby === 'register-detail-title' &&
+      splitPanel.tableRole === 'table' &&
+      splitPanel.tableLabel.includes(multiTransaction.num) &&
+      splitPanel.rowcount === String(splitPanel.rows.length + 1),
+      `panel ${splitPanel.role}, table ${splitPanel.tableRole} ` +
+      `${splitPanel.tableLabel}, rows ${splitPanel.rowcount}`);
+
+// A split's account link is the way into the other legs: it opens that
+// account's own register tab (or switches to it) and the panel closes.
+const otherSplitIndex = multiTransaction.splits.findIndex(
+    (split) => split.account_guid !== populated.account.guid);
+const otherSplit = multiTransaction.splits[otherSplitIndex];
+const otherRegister = await getJson(`api/register/${otherSplit.account_guid}`);
+await page.locator('#register-detail-body tr').nth(otherSplitIndex)
+    .locator('a.account-link').click();
+await page.waitForFunction(
+    (expected) => {
+        const section = document.getElementById('register');
+        return !section.hidden &&
+            document.getElementById('register-detail').hidden &&
+            document.getElementById('register-title').textContent.trim() ===
+                expected.title &&
+            document.querySelectorAll('#register-grid tbody tr').length ===
+                expected.rows;
+    },
+    { title: otherRegister.full_name, rows: otherRegister.splits.length },
+    { timeout: 30000 });
+check('a split account link opens that account\'s register tab',
+      new URL(page.url()).pathname.endsWith(
+          `/register/${otherSplit.account_guid}`),
+      `${otherRegister.full_name}: ${page.url()}`);
+
+// Escape returns focus to the row the panel came from, not just to whatever
+// row happens to be selected after the link navigation.
+await clickAccount(populated.account.guid);
+await clickRow(multiIndex);
+await openSplitPanel(multiIndex);
+await page.keyboard.press('Escape');
+await waitForPanelClosed();
+state = await gridState();
+check('Escape returns focus to the row the panel was opened from',
+      state.selected === multiIndex && state.activeIndex === multiIndex,
+      `selected=${state.selected} active=${state.activeIndex}, ` +
+      `expected ${multiIndex}`);
+
+// Tab moves through the split links, so the panel is usable without a mouse.
+await openSplitPanel(multiIndex);
+const focusAt = () => page.evaluate(() => {
+    const node = document.activeElement;
+    return {
+        tag: node?.tagName || '',
+        guid: node?.dataset?.accountGuid || '',
+    };
+});
+await page.keyboard.press('Tab');
+const firstLink = await focusAt();
+check('Tab moves from the panel to the first split link',
+      firstLink.tag === 'A' &&
+      firstLink.guid === multiTransaction.splits[0].account_guid,
+      `${firstLink.tag} ${firstLink.guid}`);
+await page.keyboard.press('Tab');
+const secondLink = await focusAt();
+check('Tab reaches the next split link',
+      secondLink.tag === 'A' &&
+      secondLink.guid === multiTransaction.splits[1].account_guid,
+      `${secondLink.tag} ${secondLink.guid}`);
+await page.keyboard.press('Escape');
+await waitForPanelClosed();
+
+// A two-split row has nothing to disclose: its cell stays a label, and a
+// click on it selects the row without opening the panel.
+await clickRow(singleIndex);
+const singleTransfer = await page.evaluate((index) => {
+    const cell = document.querySelectorAll('#register-grid tbody tr')[index]
+        .children[4];
+    return { buttons: cell.querySelectorAll('button').length,
+             text: cell.textContent.trim() };
+}, singleIndex);
+check('a two-split row keeps the transfer cell as plain text',
+      singleTransfer.buttons === 0 &&
+      singleTransfer.text === registerRows[singleIndex].transfer_account,
+      `${singleTransfer.buttons} controls, "${singleTransfer.text}"`);
+await page.locator('#register-grid tbody tr').nth(singleIndex)
+    .locator('td').nth(4).click();
+await page.waitForTimeout(150);
+check('clicking a two-split row\'s transfer cell opens no panel',
+      await page.evaluate(
+          () => document.getElementById('register-detail').hidden));
+
+// The demo book is balanced, so the unbalanced branch is shown one substituted
+// response rather than a specially broken book: the panel must say it does
+// not balance, and by how much, instead of claiming it does.
+const unbalancedIndex = registerRows.findIndex((row, index) =>
+    row.split_count > 2 && index !== multiIndex);
+check('the register has a second split transaction for the unbalanced case',
+      unbalancedIndex >= 0,
+      unbalancedIndex >= 0 ? `row ${unbalancedIndex}` : 'none');
+if (unbalancedIndex >= 0) {
+    const unbalancedGuid = registerRows[unbalancedIndex].transaction_guid;
+    const unbalancedPattern = `**/api/transaction/${unbalancedGuid}`;
+    await page.route(unbalancedPattern, async (route) => {
+        const body = await (await route.fetch()).json();
+        body.balanced = false;
+        body.imbalance = '$0.01';
+        await route.fulfill({ json: body });
+    });
+    await clickRow(unbalancedIndex);
+    await openSplitPanel(unbalancedIndex);
+    const unbalancedText =
+        await page.locator('#register-detail-total').textContent();
+    check('the panel says when a transaction does not balance, and by how much',
+          unbalancedText.includes('does not balance') &&
+          unbalancedText.includes('$0.01'), unbalancedText);
+    await page.unroute(unbalancedPattern);
+    await page.keyboard.press('Escape');
+    await waitForPanelClosed();
+}
 
 /* --------------------------------------------------------- menu actions */
 

@@ -3,8 +3,9 @@
 //   node web/test/register-edit-ui.mjs <url>
 //
 // <url> is a gnc-webd started with --writable on a copy of the demo book.
-// web/run-ui-test.sh runs this as its third phase.  The test drives a real
-// browser and checks:
+// The FIXTURE below declares exactly that (the demo book, writable), and a
+// mismatch is refused before a check runs.  web/run-ui-test.sh runs this as
+// its third phase.  The test drives a real browser and checks:
 //
 //   * a writable session shows the Save control, says nothing about being
 //     read-only, and makes exactly the number, description and memo cells
@@ -30,14 +31,22 @@
 // Needs playwright-core on NODE_PATH, exactly like ui-test.mjs.
 
 import { createRequire } from 'node:module';
+import { requireFixture } from './fixture.mjs';
 
 const { chromium } = createRequire(import.meta.url)('playwright-core');
+
+export const FIXTURE = { book: 'demo', writable: true };
 
 const url = process.argv[2];
 if (!url) {
     console.error('usage: node register-edit-ui.mjs <url>');
     process.exit(2);
 }
+
+// Refuse a server that is not the demo book in a writable session, before a
+// single check: this phase saves, so a read-only server would fail every edit
+// check for the wrong reason.
+await requireFixture('register-edit-ui.mjs', FIXTURE, url);
 
 const browser = await chromium.launch({
     ...(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {}),

@@ -3,8 +3,10 @@
 //   node web/test/debug-port-ui.mjs <url>
 //
 // <url> is a gnc-webd started with --debug-port on a fixed loopback port, so
-// the page is served at "/" with no token segment.  web/run-ui-test.sh runs
-// this as its fourth phase.  It checks:
+// the page is served at "/" with no token segment.  The FIXTURE below
+// declares sample1.gnucash (104 accounts); a server with another book is
+// refused before a check runs.  web/run-ui-test.sh runs this as its fourth
+// phase.  It checks:
 //
 //   * the page loads at "/" and /api/book + /api/accounts answer without a
 //     token (the summary shows the book);
@@ -16,14 +18,20 @@
 // Needs playwright-core on NODE_PATH, exactly like ui-test.mjs.
 
 import { createRequire } from 'node:module';
+import { requireFixture } from './fixture.mjs';
 
 const { chromium } = createRequire(import.meta.url)('playwright-core');
+
+export const FIXTURE = { book: 'sample1', writable: false };
 
 const url = process.argv[2];
 if (!url) {
     console.error('usage: node debug-port-ui.mjs <url>');
     process.exit(2);
 }
+
+// Refuse a server that is not the declared fixture before a single check.
+await requireFixture('debug-port-ui.mjs', FIXTURE, url);
 
 const browser = await chromium.launch({
     ...(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {}),

@@ -12,6 +12,9 @@
 # temporary directory that the trap removes; nothing under ~/.local/share is
 # read or written.  The URL of each phase is printed.
 #
+#   phase 0  (no browser) run register-ui.mjs against phase 1's sample1
+#                         server; it must refuse with one line.  This is the
+#                         guard for the fixture declarations itself.
 #   phase 1  sample1.gnucash  -> ui-test.mjs      the page, reports, designer,
 #                                                 menu bar
 #   phase 2  generated demo   -> register-ui.mjs  register grid, keyboard,
@@ -34,6 +37,11 @@
 #                             -> pages-ui.mjs     the same page checks without a
 #                                                 token, where the base is "/"
 #
+# Every .mjs phase declares its FIXTURE and refuses a server that does not
+# have that book (and, for register-edit-ui.mjs, a writable session) before it
+# runs a single check.  GNC_UI_DEMO_ACCOUNTS carries the generated demo
+# book's account count, read from the <book>.expect.json the generator wrote.
+#
 # Needs node and playwright (or playwright-core) on NODE_PATH, and python3 for
 # the demo book.  Set PW_CHANNEL to use an installed browser (e.g.
 # PW_CHANNEL=chrome) instead of the bundled Chromium, and PW_NO_SANDBOX=1 in
@@ -45,6 +53,7 @@ SRC=${2:?usage: run-ui-test.sh <build-dir> <source-dir> [screenshot.png]}
 SHOT=${3:-}
 
 BOOK="$SRC/libgnucash/backend/xml/test/test-files/load-save/sample1.gnucash"
+SAMPLE1_ACCOUNTS=104
 SCHEMAS="$BUILD/share/glib-2.0/schemas"
 CCACHE=$(ls -d "$BUILD"/lib/*/guile/3.0/site-ccache 2>/dev/null | head -1)
 
@@ -57,6 +66,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [ -f "$SRC/web/test/register-edit-ui.mjs" ] || fail "register-edit-ui.mjs not found"
 [ -f "$SRC/web/test/debug-port-ui.mjs" ] || fail "debug-port-ui.mjs not found"
 [ -f "$SRC/web/test/pages-ui.mjs" ] || fail "pages-ui.mjs not found"
+[ -f "$SRC/web/test/fixture.mjs" ] || fail "fixture.mjs not found"
 [ -f "$SRC/web/test/make-demo-book.py" ] || fail "make-demo-book.py not found"
 command -v node >/dev/null || fail "node is not installed"
 command -v python3 >/dev/null || fail "python3 is required for the demo book"
@@ -73,6 +83,19 @@ cleanup() {
     rm -rf "$TMP"
 }
 trap cleanup EXIT
+
+# The demo book is generated once, before the phases, so its expectation (the
+# account count the generator's own arithmetic produced) is available to the
+# fixture guard as well as to phase 2.  The expect file is written next to the
+# book by make-demo-book.py.
+python3 "$SRC/web/test/make-demo-book.py" "$TMP/demo.gnucash" >/dev/null \
+    || fail "could not generate the demo book"
+DEMO_ACCOUNTS=$(python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["accounts"])
+' "$TMP/demo.gnucash.expect.json") || fail "could not read the demo book's expectations"
+export GNC_UI_DEMO_ACCOUNTS="$DEMO_ACCOUNTS"
 
 # start_server <book> <log> <store> [extra gnc-webd args...] -- sets URL.
 start_server() {
@@ -138,9 +161,31 @@ echo "server: $URL"
 node "$SRC/web/test/ui-test.mjs" "$URL" ${SHOT:+"$SHOT"} || STATUS=1
 
 echo
+echo "== the fixture guard: the demo-register phase must refuse sample1"
+# The same phase that phase 2 runs against the demo book is pointed at this
+# sample1 server.  It must refuse with one line naming the expected fixture
+# and the found account count, and must print no check.
+REFUSAL_LOG="$TMP/refusal.log"
+REFUSAL_RC=0
+node "$SRC/web/test/register-ui.mjs" "$URL" >"$REFUSAL_LOG" 2>&1 \
+    || REFUSAL_RC=$?
+REFUSED_LINE="REFUSED: register-ui.mjs needs the demo fixture ($DEMO_ACCOUNTS accounts), but the server has $SAMPLE1_ACCOUNTS accounts"
+if [ "$REFUSAL_RC" -eq 0 ]; then
+    echo "FAIL the demo-register phase accepted a sample1 server"
+    STATUS=1
+elif ! grep -qFx "$REFUSED_LINE" "$REFUSAL_LOG"; then
+    echo "FAIL the refusal did not name the expected fixture and the found book"
+    sed 's/^/     /' "$REFUSAL_LOG"
+    STATUS=1
+elif grep -qE '^(ok  |FAIL )' "$REFUSAL_LOG"; then
+    echo "FAIL the refused phase still ran checks"
+    STATUS=1
+else
+    echo "ok  a demo phase refuses a sample1 server before any check"
+fi
+
+echo
 echo "== the read-only register: grid, keyboard, transaction panel"
-python3 "$SRC/web/test/make-demo-book.py" "$TMP/demo.gnucash" >/dev/null \
-    || fail "could not generate the demo book"
 start_server "$TMP/demo.gnucash" "$TMP/demo.log" "$TMP/demo-reports.json" \
     || fail "register server did not start"
 echo "server: $URL"

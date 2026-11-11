@@ -72,6 +72,15 @@
   #register-grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
   #register-grid td.description, #register-grid td.memo { white-space: normal; }
   #register-grid tbody tr.voided td { color: #999; text-decoration: line-through; }
+  /* A split transaction's transfer cell is a control, not a label: it opens
+     the panel that lists the other legs.  A two-split row keeps the plain
+     text, so the difference is visible at a glance. */
+  #register-grid button.split-link { font: inherit; padding: 0;
+      border: 0; background: none; color: #0645ad; text-decoration: underline;
+      text-underline-offset: 2px; cursor: pointer; }
+  #register-grid button.split-link:hover { background: #eef3fb; }
+  #register-grid button.split-link:focus-visible { outline: 2px solid #0645ad;
+      outline-offset: 1px; }
   /* Editable cells (ADR 0014): only the cells whose field the edit route
      accepts carry .editable, and only while the session is writable.  The
      cursor marks the cell Enter would edit; focus stays on the row, which
@@ -98,6 +107,12 @@
   #register-detail th, #register-detail td { padding: .25rem .5rem;
       border-bottom: 1px solid #dde6ef; text-align: left; }
   #register-detail td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  #register-detail .detail-meta { margin: 0 0 .4rem; color: #333; }
+  #register-detail .detail-total { margin: .5rem 0 0; font-weight: 600; }
+  #register-detail .detail-total.unbalanced { color: #a00; }
+  #register-detail a.account-link { color: #0645ad; }
+  #register-detail a.account-link:focus-visible { outline: 2px solid #0645ad;
+      outline-offset: 1px; }
   #register-detail .actions { margin: .5rem 0 0; }
   /* The Reports page: rail, document, inspector (doc/web-ui-reports-layout.md).
      The page is a grid that owns the remaining viewport height, so the three
@@ -454,18 +469,22 @@
     <tbody></tbody>
   </table>
   </div>
-  <section id="register-detail" hidden tabindex="-1"
-           aria-labelledby="register-detail-title">
+  <section id="register-detail" hidden tabindex="-1" role="region"
+           aria-labelledby="register-detail-title"
+           aria-describedby="register-detail-meta">
     <h3 id="register-detail-title"></h3>
+    <p id="register-detail-meta" class="detail-meta"></p>
     <p id="register-detail-status" class="hint" hidden></p>
-    <table>
+    <table id="register-detail-table" role="table"
+           aria-label="Splits of this transaction">
       <thead>
-        <tr><th scope="col">Account</th><th scope="col">Memo</th>
+        <tr role="row"><th scope="col">Account</th><th scope="col">Memo</th>
             <th scope="col">Action</th><th scope="col">R</th>
             <th scope="col">Amount</th></tr>
       </thead>
       <tbody id="register-detail-body"></tbody>
     </table>
+    <p id="register-detail-total" class="detail-total"></p>
     <p class="actions"><button id="register-detail-close" type="button">Close</button></p>
   </section>
 </section>
@@ -1997,6 +2016,10 @@ let sessionWritable = false;      // /api/register's `editable`
 let bookDirty = false;            // an edit was committed and not yet saved
 const editedSplits = new Set();   // split GUIDs edited since the last save
 let activeEditor = null;          // { cell, input, rowIndex, field, rowData }
+// The register row the open transaction panel came from.  Escape returns
+// focus there, even if the pending row selection moved while the panel had
+// focus (a click, or the account changing).  -1 means no panel is open.
+let detailOriginIndex = -1;
 
 // The fields the edit route accepts, and whether each one belongs to the split
 // or to its transaction.  `amount` is absent on purpose: the server refuses it
@@ -2151,6 +2174,28 @@ function renderRegisterRow(row, index) {
     else if (sessionWritable && NON_EDITABLE_HINTS[column])
       showEditStatus(NON_EDITABLE_HINTS[column]);
   });
+  // A split transaction's transfer cell is the way into its other legs: the
+  // engine's placeholder becomes a button, and Enter on it opens the panel.
+  // A two-split row keeps the plain account name, so only the rows with more
+  // to show carry the affordance.  The button stops the click from also
+  // selecting the cell under it; it selects the row itself first, so Escape
+  // still has a row to return to.
+  if (row.split_count > 2) {
+    const transfer = tr.children[4];
+    const button = el("button", "split-link",
+                      row.transfer_account || "-- Split Transaction --");
+    button.type = "button";
+    button.dataset.transactionGuid = row.transaction_guid;
+    button.setAttribute("aria-label",
+                        `Show all ${row.split_count} splits of this transaction`);
+    button.title = `Show the ${row.split_count} splits in this transaction`;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectRegisterRow(index, true, 4);
+      openRegisterDetail(registerState.rows[index]);
+    });
+    transfer.replaceChildren(button);
+  }
   if (editedSplits.has(row.guid)) markRowEdited(tr);
   return tr;
 }
@@ -2537,11 +2582,16 @@ function closeRegisterDetail(focus = true) {
   const panel = document.getElementById("register-detail");
   if (panel.hidden) return false;
   panel.hidden = true;
+  const origin = detailOriginIndex;
+  detailOriginIndex = -1;
   document.getElementById("register-detail-title").textContent = "";
+  document.getElementById("register-detail-meta").textContent = "";
   document.getElementById("register-detail-body").replaceChildren();
   document.getElementById("register-detail-status").hidden = true;
+  document.getElementById("register-detail-total").textContent = "";
+  document.getElementById("register-detail-total").classList.remove("unbalanced");
   if (focus && registerState && registerState.rows.length > 0)
-    selectRegisterRow(registerState.index);
+    selectRegisterRow(origin >= 0 ? origin : registerState.index);
   return true;
 }
 
@@ -2617,6 +2667,11 @@ function onRegisterKeydown(event) {
     return;
   if (event.target.classList.contains("cell-editor"))
     return; // the editor owns its own keys
+  // A split-transaction button is a control in the grid: Enter and Space
+  // activate it natively (which opens the panel), so the row's keys do not
+  // also claim them.
+  if (event.target.closest("button.split-link"))
+    return;
   if (!event.target.closest("#register-grid tbody tr"))
     return;
 
@@ -2659,17 +2714,62 @@ function onRegisterKeydown(event) {
   selectRegisterRow(next);
 }
 
+// A split's account, as a link into that account's register tab.  A modified
+// click keeps the browser's own behaviour: the href is a real page route.
+function splitAccountLink(split) {
+  const link = el("a", "account-link", split.account);
+  link.href = api(registerPath(split.account_guid));
+  link.dataset.accountGuid = split.account_guid;
+  link.title = `Open the ${split.account} register`;
+  link.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey ||
+        event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    const account = findAccount(split.account_guid) ||
+      { guid: split.account_guid, name: split.account };
+    openRegisterTab(account);
+  });
+  return link;
+}
+
+// What the transaction adds up to, in the transaction's own currency: the
+// debit side is a total, while summing the account-currency amounts above
+// would mix commodities.  When the engine says the transaction does not
+// balance, the difference is named rather than hidden.
+function transactionTotalText(transaction) {
+  const unit = transaction.currency ? ` (${transaction.currency})` : "";
+  let text = `Total: ${transaction.total || "0"}${unit}`;
+  if (transaction.balanced)
+    text += " · balances: debits equal credits";
+  else
+    text += ` · does not balance: off by ` +
+      `${transaction.imbalance || "0"}${unit}`;
+  return text;
+}
+
 async function openRegisterDetail(row) {
   if (!row) return;
   const panel = document.getElementById("register-detail");
   const title = document.getElementById("register-detail-title");
+  const meta = document.getElementById("register-detail-meta");
   const status = document.getElementById("register-detail-status");
   const body = document.getElementById("register-detail-body");
+  const table = document.getElementById("register-detail-table");
+  const totalLine = document.getElementById("register-detail-total");
+
+  // Remember the row the panel was opened from before anything asynchronous
+  // can move the selection; Escape returns focus there.
+  detailOriginIndex = registerState ? registerState.index : -1;
 
   title.textContent = `Transaction ${row.date}` +
     (row.num ? ` #${row.num}` : "") + ` — ${row.description}`;
+  meta.textContent = "";
   body.replaceChildren();
+  totalLine.textContent = "";
+  totalLine.classList.remove("unbalanced");
   status.hidden = true;
+  table.setAttribute("aria-rowcount", "1");
+  table.setAttribute("aria-label", "Splits of this transaction");
   /* Stay hidden until the panel has content: a visible but empty panel would
      tell a reader (and a test) that the transaction has no splits. */
   panel.hidden = true;
@@ -2698,10 +2798,23 @@ async function openRegisterDetail(row) {
     }
   }
 
+  meta.textContent = `Date: ${transaction.date} · ` +
+    `Number: ${transaction.num || "—"} · ` +
+    `Description: ${transaction.description || "—"}`;
+  table.setAttribute("aria-rowcount",
+                     String(transaction.splits.length + 1));
+  table.setAttribute("aria-label",
+                     `Splits of transaction ` +
+                     `${transaction.num || transaction.guid}`);
+
   for (const split of transaction.splits) {
     const tr = el("tr");
+    const accountCell = el("td");
+    // Each account opens its own register tab: the placeholder transfer cell
+    // becomes a way into the other legs instead of a dead end.
+    accountCell.append(splitAccountLink(split));
     tr.append(
-      el("td", null, split.account),
+      accountCell,
       el("td", null, split.memo),
       el("td", null, split.action),
       el("td", null, reconcileLabel(split.reconcile)),
@@ -2709,6 +2822,10 @@ async function openRegisterDetail(row) {
     );
     body.append(tr);
   }
+
+  totalLine.textContent = transactionTotalText(transaction);
+  totalLine.classList.toggle("unbalanced", !transaction.balanced);
+
   panel.hidden = false;
   panel.focus();
 }
