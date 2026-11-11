@@ -97,22 +97,118 @@
       border-bottom: 1px solid #dde6ef; text-align: left; }
   #register-detail td.num { text-align: right; font-variant-numeric: tabular-nums; }
   #register-detail .actions { margin: .5rem 0 0; }
-  #reports { margin-top: 1.5rem; }
-  #report-list { display: flex; flex-wrap: wrap; gap: .25rem 1rem; padding-left: 0; }
-  #report-list a { color: #0645ad; }
-  #view { width: 100%; height: 70vh; border: 1px solid #ccc; margin-top: 1rem; }
-  #view[hidden] { display: none; }
+  /* The Reports page: rail, document, inspector (doc/web-ui-reports-layout.md).
+     The page is a grid that owns the remaining viewport height, so the three
+     panes scroll independently and the document fills its column.  The
+     designer is a mode of the same grid: the rail and inspector leave, the
+     form takes the left column, and #report-document (with the one #view
+     iframe) becomes the live preview on the right. */
+  #page-reports { height: calc(100vh - 13.5rem); min-height: 24rem; }
+  #reports-shell {
+      --rail-col: 17rem;
+      --inspector-col: 22rem;
+      --rail-split: 6px;
+      --inspector-split: 6px;
+      display: grid;
+      grid-template-columns:
+          var(--rail-col) var(--rail-split) minmax(0, 1fr)
+          var(--inspector-split) var(--inspector-col);
+      grid-template-areas: "rail railsplit document inspectsplit inspector";
+      align-items: stretch;
+      height: 100%;
+      min-height: 0;
+      border-top: 1px solid #ddd;
+  }
+  #reports-shell.rail-collapsed { --rail-col: 0px; --rail-split: 0px; }
+  #reports-shell.inspector-collapsed { --inspector-col: 0px; --inspector-split: 0px; }
+  #reports-shell.rail-collapsed #reports-rail,
+  #reports-shell.rail-collapsed #rail-resizer,
+  #reports-shell.inspector-collapsed #report-inspector,
+  #reports-shell.inspector-collapsed #inspector-resizer { display: none; }
 
-  /* Report options: a form generated from /api/report/<name>/options */
+  #reports-rail { grid-area: rail; display: flex; flex-direction: column;
+                  min-height: 0; min-width: 0; padding: 0 .5rem 0 .25rem; }
+  #report-list-wrap { flex: 1 1 auto; overflow: auto; min-height: 0;
+                      border-top: 1px solid #eee; }
+  #report-list { display: block; list-style: none; padding-left: 0;
+                 margin: .25rem 0 0; }
+  #report-list li { display: flex; flex-wrap: wrap; gap: .15rem .4rem;
+                    align-items: baseline; margin: .2rem 0; }
+  #report-list li.saved-report, #report-list li.builtin-report {
+      display: flex; gap: .35rem; align-items: baseline; }
+  #report-list a { color: #0645ad; }
+  #report-list a.saved-report-link, #report-list a.builtin-report-link {
+      font-style: normal; }
+  .builtin-tag { color: #666; font-size: .75rem; border: 1px solid #ccc;
+                 border-radius: .5rem; padding: 0 .35rem; }
+  #rail-header, #inspector-header {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: .5rem; padding: .3rem .1rem .35rem;
+      border-bottom: 1px solid #e0e0e0; }
+  #rail-header h2, #inspector-header h2 { font-size: 1.05rem; margin: 0; }
+  .pane-toggle { font: inherit; line-height: 1; color: #444; background: #fff;
+                 border: 1px solid #c4c4c4; border-radius: .25rem;
+                 padding: .1rem .4rem; cursor: pointer; }
+  .pane-toggle:hover { background: #eef3fb; }
+  .pane-toggle:focus-visible, .pane-show:focus-visible {
+      outline: 2px solid #0645ad; outline-offset: 1px; }
+  .rail-actions { margin: .5rem 0; }
+  .rail-actions button { font: inherit; padding: .2rem .6rem; }
+  .rail-hint { margin-top: .5rem; }
+
+  #report-inspector { grid-area: inspector; display: flex;
+                      flex-direction: column; min-height: 0; min-width: 0; }
+  #rail-resizer { grid-area: railsplit; }
+  #inspector-resizer { grid-area: inspectsplit; }
+  #rail-resizer, #inspector-resizer { background: #efefef; cursor: col-resize;
+      border-left: 1px solid #dcdcdc; border-right: 1px solid #dcdcdc; }
+  #rail-resizer:hover, #inspector-resizer:hover,
+  #rail-resizer:focus, #inspector-resizer:focus { background: #c6d7ef;
+      outline: none; }
+  #rail-resizer:focus-visible, #inspector-resizer:focus-visible {
+      outline: 2px solid #0645ad; outline-offset: -2px; }
+  body.resizing-pane { cursor: col-resize; user-select: none; }
+
+  #report-document { grid-area: document; display: flex; flex-direction: column;
+                     min-width: 0; min-height: 0; }
+  #document-bar { display: flex; align-items: baseline; justify-content: space-between;
+                  gap: .5rem; flex-wrap: wrap; padding: .25rem .5rem;
+                  border-bottom: 1px solid #e0e0e0; background: #fbfbfb; }
+  #report-breadcrumb { font-size: .9rem; color: #444; }
+  #report-breadcrumb a { color: #0645ad; }
+  #crumb-sep { margin: 0 .35rem; color: #888; }
+  #crumb-report { font-weight: 600; }
+  #document-actions { display: flex; gap: .35rem; flex-wrap: wrap; }
+  #document-actions button { font: inherit; font-size: .85rem;
+      padding: .1rem .5rem; }
+  .pane-show[aria-pressed="false"] { color: #666; background: #f2f2f2; }
+  #preview-label { padding: .25rem .5rem; border-bottom: 1px solid #e0e0e0;
+                   font-weight: 600; color: #444; }
+  #view-wrap { flex: 1 1 auto; min-height: 0; position: relative; }
+  #view { width: 100%; height: 100%; border: 0; margin: 0; background: #fff;
+          display: block; }
+  #view[hidden] { display: none; }
+  #document-empty { max-width: 34rem; margin: 2.5rem auto; color: #555;
+                    text-align: center; padding: 0 1rem; }
+  #report-statusbar { display: flex; gap: 1.5rem; flex-wrap: wrap;
+      padding: .3rem .5rem; border-top: 1px solid #e0e0e0; background: #f7f7f7;
+      color: #444; font-size: .85rem; font-variant-numeric: tabular-nums; }
+  #report-statusbar span:empty { display: none; }
+
+  /* Report options: a form generated from /api/report/<name>/options, now the
+     inspector's body.  It scrolls inside the pane, not with the document. */
   [hidden] { display: none !important; }
-  #options { border-top: 1px solid #ddd; margin-top: 1rem; padding-top: .5rem; }
-  #options h2 { font-size: 1.1rem; margin: .5rem 0; }
-  #options h3 { font-size: 1rem; margin: 1rem 0 .25rem; }
+  #inspector-body { flex: 1 1 auto; overflow: auto; min-height: 0;
+                    padding: .25rem .55rem .75rem; }
+  #options { margin: 0; }
+  #options h3 { font-size: .95rem; margin: .75rem 0 .25rem; }
   .hint { color: #666; font-size: .85rem; margin: .2rem 0; }
-  #report-error { border: 1px solid #c00; background: #fff4f4; color: #a00;
-                  padding: .5rem .75rem; white-space: pre-wrap; }
+  #report-error, #spec-error { border: 1px solid #c00; background: #fff4f4;
+                  color: #a00; padding: .5rem .75rem; white-space: pre-wrap; }
   #options-form { display: grid; gap: .75rem; max-width: 62rem; }
-  .option { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: .15rem .75rem; }
+  #options .option { grid-template-columns: 7.5rem minmax(0, 1fr); }
+  .option { display: grid; grid-template-columns: 11rem minmax(0, 1fr);
+            gap: .15rem .75rem; }
   .option > label { font-weight: 600; padding-top: .25rem; }
   .option > .hint { grid-column: 2; }
   .option input[type="date"], .option input[type="text"], .option select {
@@ -122,20 +218,32 @@
   ul.accounts { padding-left: 1.1rem; margin: 0; }
   ul.accounts.root { padding-left: 0; }
   ul.accounts label { font-weight: normal; }
-  .form-actions { display: flex; gap: .5rem; }
-  #saved-views { display: flex; flex-wrap: wrap; gap: .3rem 1rem; padding-left: 0; }
+  .form-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+  #saved-views { display: flex; flex-direction: column; gap: .3rem;
+                 padding-left: 0; margin: .25rem 0; }
   #saved-views li { display: flex; gap: .4rem; align-items: baseline; }
   button.link { background: none; border: 0; padding: 0; font: inherit;
                 color: #0645ad; cursor: pointer; }
   button.link.delete { color: #a00; }
   .save-row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .save-row input { font: inherit; padding: .1rem .3rem; max-width: 11rem; }
 
-  /* Report designer: a form over the saved report spec. */
-  #designer { border-top: 1px solid #ccc; margin-top: 2rem; padding-top: .5rem; }
-  #designer h2 { font-size: 1.2rem; }
+  /* The report designer mode.  #designer is a grid item: the form is the
+     left-hand column and #report-document (the same #view iframe) is the live
+     preview on the right. */
+  #designer { grid-area: designer; display: flex; flex-direction: column;
+              min-height: 0; min-width: 0; border-right: 1px solid #ddd; }
+  #designer-header { display: flex; align-items: baseline; gap: .75rem;
+                     flex-wrap: wrap; padding: .3rem .5rem;
+                     border-bottom: 1px solid #e0e0e0; background: #fbfbfb; }
+  #designer-header h2 { font-size: 1.1rem; margin: 0; }
+  #designer-header button { font: inherit; font-size: .85rem;
+                            padding: .1rem .5rem; }
+  .dirty { color: #8a5a00; font-weight: 600; font-size: .85rem; }
+  #designer-form-pane { flex: 1 1 auto; overflow: auto; min-height: 0;
+                        padding: .5rem .7rem 1.25rem; }
   #spec-form { display: grid; gap: .75rem; max-width: 62rem; }
-  #spec-error { border: 1px solid #c00; background: #fff4f4; color: #a00;
-                padding: .5rem .75rem; white-space: pre-wrap; }
+  #spec-form .option { grid-template-columns: 9rem minmax(0, 1fr); }
   .checks { display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; }
   .checks label { font-weight: normal; }
   #spec-form input[type="text"], #spec-form input[type="date"],
@@ -143,38 +251,36 @@
   #spec-form textarea { font: inherit; padding: .2rem .3rem; width: 100%;
                         max-width: 40rem; min-height: 2.5rem; resize: vertical; }
   #spec-source { max-width: 32rem; }
-  #spec-form .accounts { max-height: 12rem; overflow: auto; border: 1px solid #e3e3e3;
-                         padding: .25rem .5rem; background: #fafafa; }
+  #spec-form .accounts { max-height: 12rem; overflow: auto;
+                         border: 1px solid #e3e3e3; padding: .25rem .5rem;
+                         background: #fafafa; }
   #spec-form ul.accounts { padding-left: 1.1rem; margin: 0; }
   #spec-form ul.accounts.root { padding-left: 0; }
-  #report-list li.saved-report { display: flex; gap: .35rem; align-items: baseline; }
-  #report-list li.saved-report a { font-style: normal; }
-  #report-list li.builtin-report { display: flex; gap: .35rem; align-items: baseline; }
-  #report-list li.builtin-report a { font-style: normal; }
-  .builtin-tag { color: #666; font-size: .75rem; border: 1px solid #ccc;
-                 border-radius: .5rem; padding: 0 .35rem; }
+  #spec-form .form-actions { position: sticky; bottom: 0; background: #fff;
+                             padding: .4rem 0; border-top: 1px solid #eee; }
 
-  /* Report search and tags.  A tag chip is a button: clicking it filters the
-     list to that tag, and clicking it again clears the filter. */
-  #report-search-row { display: flex; gap: .5rem; align-items: baseline;
-                       margin: 0 0 .5rem; }
-  #report-search { font: inherit; padding: .25rem .4rem; width: 22rem;
-                   max-width: 100%; }
-  #report-filter-note { color: #555; font-size: .85rem; }
-  button.tag-chip { font: inherit; font-size: .75rem; color: #0645ad;
-                    background: #eef3fb; border: 1px solid #c6d7ef;
-                    border-radius: .6rem; padding: 0 .4rem; cursor: pointer;
-                    line-height: 1.4; }
-  button.tag-chip:hover { background: #dfe9f8; }
-  button.tag-chip.selected { background: #0645ad; color: #fff;
-                             border-color: #0645ad; }
+  /* The designer mode replaces the three-pane grid with form + preview.  The
+     rail, inspector, breadcrumb and document action row leave; the designer's
+     own header has the way back. */
+  #reports-shell.designer-mode {
+      grid-template-columns: minmax(20rem, 42%) minmax(0, 1fr);
+      grid-template-areas: "designer document";
+  }
+  #reports-shell.designer-mode #designer { display: flex; }
+  #reports-shell.designer-mode #reports-rail,
+  #reports-shell.designer-mode #rail-resizer,
+  #reports-shell.designer-mode #inspector-resizer,
+  #reports-shell.designer-mode #report-inspector,
+  #reports-shell.designer-mode #document-bar { display: none; }
+  #reports-shell.designer-mode #preview-label { display: block; }
+  #reports-shell.designer-mode #report-statusbar { display: flex; }
 
   /* Provenance of whatever the designer is showing: a saved spec is a
      definition, a native report's C++ code is not, and a starting point is
      labelled as one.  The banner is not decoration: it is the difference
      between a definition and a reconstruction. */
   #designer-banner { border-left: 4px solid #c9a227; background: #fffbe8;
-                     padding: .5rem .75rem; margin: .5rem 0 .75rem; }
+                     padding: .5rem .75rem; margin: .25rem 0 .75rem; }
   #designer-banner p { margin: .25rem 0; }
   #designer-banner.definition { border-left-color: #0645ad;
                                 background: #eef3fb; }
@@ -187,6 +293,29 @@
                    padding: .4rem .6rem; margin: .5rem 0; }
   #native-source h3 { font-size: .95rem; margin: .2rem 0; }
   #native-source p { margin: .2rem 0; }
+
+  /* Report search and tags.  A tag chip is a button: clicking it filters the
+     list to that tag, and clicking it again clears the filter. */
+  #report-search-row { display: flex; flex-wrap: wrap; gap: .25rem .5rem;
+                       align-items: baseline; margin: 0 0 .5rem; }
+  #report-search { font: inherit; padding: .25rem .4rem; width: 100%;
+                   max-width: 100%; box-sizing: border-box; }
+  #report-filter-note { color: #555; font-size: .85rem; }
+  button.tag-chip { font: inherit; font-size: .75rem; color: #0645ad;
+                    background: #eef3fb; border: 1px solid #c6d7ef;
+                    border-radius: .6rem; padding: 0 .4rem; cursor: pointer;
+                    line-height: 1.4; }
+  button.tag-chip:hover { background: #dfe9f8; }
+  button.tag-chip.selected { background: #0645ad; color: #fff;
+                             border-color: #0645ad; }
+
+  /* At 800px the document must stay usable: the rail goes first and the
+     inspector second.  The page's own margins shrink a little to match. */
+  @media (max-width: 860px) {
+      body { margin: 1rem; }
+      #page-reports { height: calc(100vh - 15rem); min-height: 20rem; }
+      #document-actions button { padding: .1rem .35rem; }
+  }
 
   /* The menu bar.  Every menu and item comes from MENU_TABLE in the script;
      the markup here is only the container.  The bar is full-bleed so it reads
@@ -230,6 +359,24 @@
   #about-dialog h2 { margin: 0 0 .5rem; font-size: 1.2rem; }
   #about-dialog p { margin: .4rem 0; }
   #about-dialog form { margin-top: .75rem; }
+
+  /* The menu bar does not wrap; at a narrow width its titles shrink so the bar
+     itself does not overflow the window (the Reports page's document must stay
+     usable at ~800px).  This rule is last because it overrides the menu
+     titles' base padding. */
+  @media (max-width: 860px) {
+      #menubar { margin: -1rem 0 1rem; padding: 0; }
+      #menubar .menu-title { padding: .35rem .3rem; font-size: .85rem; }
+      /* The designer's preview goes beneath the form when there is no room
+         for two columns; each stays usable rather than one shrinking away. */
+      #reports-shell.designer-mode {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: minmax(0, 55%) minmax(0, 1fr);
+          grid-template-areas: "designer" "document";
+      }
+      #reports-shell.designer-mode #designer { border-right: 0;
+          border-bottom: 1px solid #ddd; }
+  }
 </style>
 </head>
 <body>
@@ -328,248 +475,334 @@
      them is new.  See doc/web-ui-pages.md. -->
 <div id="page-reports" hidden>
 
-<section id="reports">
-  <h2>Reports</h2>
+<!-- The Reports page is three panes and a document (Option A).  The rail is
+     the report list, the centre is the report document, the inspector is the
+     descriptor-driven option form, and the designer is a mode of the page that
+     uses the whole content area (doc/web-ui-reports-layout.md).  The Book page
+     and its account tabs are untouched. -->
+<div id="reports-shell">
+
+<aside id="reports-rail" aria-label="Reports list">
+  <div id="rail-header">
+    <h2>Reports</h2>
+    <button id="rail-toggle" class="pane-toggle" type="button"
+            aria-expanded="true" aria-controls="reports-rail"
+            title="Collapse the report list ([)">«</button>
+  </div>
+  <p class="rail-actions">
+    <button id="spec-new" type="button">New report</button>
+  </p>
   <p id="report-search-row">
     <label for="report-search">Search</label>
     <input id="report-search" type="search" autocomplete="off"
            spellcheck="false" placeholder="Report name or tag">
     <span id="report-filter-note" class="hint" hidden></span>
   </p>
-  <ul id="report-list"></ul>
-
-  <!-- Built from the report's option descriptors when one is opened. -->
-  <section id="options" hidden>
-    <h2 id="options-title">Options</h2>
-    <p id="options-note" class="hint" hidden></p>
-    <div id="native-source" hidden>
-      <h3>Implementation (read-only)</h3>
-      <p id="native-source-text" class="hint"></p>
-    </div>
-    <p id="report-error" class="error" role="alert" hidden></p>
-    <form id="options-form" hidden></form>
-    <div id="saved-views-wrap" hidden>
-      <h3>Saved views</h3>
-      <ul id="saved-views"></ul>
-      <p class="save-row">
-        <label for="view-name">Name this view</label>
-        <input id="view-name" type="text" maxlength="60" autocomplete="off">
-        <button id="save-view" type="button">Save view</button>
-      </p>
-    </div>
-  </section>
-
-  <iframe id="view" title="Report" hidden></iframe>
-</section>
-
-<section id="designer">
-  <h2>Report designer</h2>
-  <div id="designer-banner" role="status" hidden>
-    <p id="designer-provenance"></p>
-    <p id="designer-source" class="hint" hidden></p>
+  <div id="report-list-wrap">
+    <ul id="report-list"></ul>
   </div>
-  <p class="form-actions">
-    <button id="spec-new" type="button">New report</button>
-  </p>
-  <p class="hint">
-    Build a report from the same query, columns and options the native
-    reports use. Preview it, then save it under a name: saved reports live on
-    the server (outside the book) and appear in the Reports list above.
-  </p>
-  <p id="spec-error" class="error" role="alert" hidden></p>
-  <form id="spec-form">
-    <!-- What the report's rows come from.  The picker lists the sources
-         /api/spec/options publishes; choosing one shows only the fields that
-         source accepts, and the server still refuses a field of another
-         source by name rather than ignoring it. -->
-    <div class="option">
-      <label for="spec-source">Source</label>
-      <select id="spec-source"></select>
-      <p class="hint">
-        What the report's rows come from. Choosing a source shows only the
-        fields it accepts and clears the ones it does not: the server refuses
-        a field of another source by name, so the form never sends one.
-      </p>
+  <p class="hint rail-hint">Built-in reports and saved reports share this list.
+     Click a tag to narrow it; click the selected tag again to clear.</p>
+</aside>
+
+<div id="rail-resizer" class="pane-resizer" role="separator"
+     aria-orientation="vertical" tabindex="0"
+     aria-label="Resize the report list" aria-controls="reports-rail"
+     title="Drag or use Left/Right to resize the report list"></div>
+
+<main id="report-document" aria-label="Report document">
+  <div id="document-bar">
+    <nav id="report-breadcrumb" aria-label="Breadcrumb">
+      <a id="crumb-reports" href="reports">Reports</a>
+      <span id="crumb-sep" aria-hidden="true" hidden>›</span>
+      <span id="crumb-report" aria-current="page" hidden></span>
+    </nav>
+    <div id="document-actions">
+      <button id="rail-show" class="pane-show" type="button"
+              aria-pressed="true" aria-controls="reports-rail"
+              title="Show or hide the report list ([)">List</button>
+      <button id="inspector-show" class="pane-show" type="button"
+              aria-pressed="true" aria-controls="report-inspector"
+              title="Show or hide the report options (])">Options</button>
+      <button id="edit-in-designer" type="button" hidden
+              title="Open the report designer in the full-window mode">Edit in designer</button>
+      <button id="print-report" type="button" hidden
+              title="Print the report document alone, without the application's chrome">Print</button>
     </div>
-    <div class="option">
-      <label for="spec-name">Name</label>
-      <input id="spec-name" type="text" maxlength="80" autocomplete="off"
-             placeholder="e.g. Expenses by month">
+  </div>
+  <div id="preview-label" hidden>Live preview</div>
+  <div id="view-wrap">
+    <p id="document-empty" class="empty">
+      Choose a report from the list on the left.  Its options appear on the
+      right, and <strong>New report</strong> opens the report designer.
+    </p>
+    <iframe id="view" title="Report" hidden></iframe>
+  </div>
+  <div id="report-statusbar" role="status" aria-live="polite" hidden>
+    <span id="report-status-rows"></span>
+    <span id="report-status-dates"></span>
+    <span id="report-status-saved"></span>
+  </div>
+</main>
+
+<div id="inspector-resizer" class="pane-resizer" role="separator"
+     aria-orientation="vertical" tabindex="0"
+     aria-label="Resize the report options" aria-controls="report-inspector"
+     title="Drag or use Left/Right to resize the report options"></div>
+
+<aside id="report-inspector" aria-label="Report options">
+  <div id="inspector-header">
+    <h2 id="options-title">Options</h2>
+    <button id="inspector-toggle" class="pane-toggle" type="button"
+            aria-expanded="true" aria-controls="report-inspector"
+            title="Collapse the report options (])">»</button>
+  </div>
+  <div id="inspector-body">
+    <p id="options-empty" class="hint">
+      The selected report's options appear here.  They are the report's own
+      descriptors, generated by the page; applying them re-renders the document
+      beside them.
+    </p>
+
+    <!-- Built from the report's option descriptors when one is opened. -->
+    <section id="options" hidden>
+      <p id="options-note" class="hint" hidden></p>
+      <div id="native-source" hidden>
+        <h3>Implementation (read-only)</h3>
+        <p id="native-source-text" class="hint"></p>
+      </div>
+      <p id="report-error" class="error" role="alert" hidden></p>
+      <form id="options-form" hidden></form>
+      <div id="saved-views-wrap" hidden>
+        <h3>Saved views</h3>
+        <ul id="saved-views"></ul>
+        <p class="save-row">
+          <label for="view-name">Name this view</label>
+          <input id="view-name" type="text" maxlength="60" autocomplete="off">
+          <button id="save-view" type="button">Save view</button>
+        </p>
+      </div>
+    </section>
+  </div>
+</aside>
+
+<!-- The designer is a mode of this page, not a section under the document.
+     #view stays where it is: in the mode the grid places #report-document in
+     the preview column, so the preview is the same iframe the document uses. -->
+<section id="designer" hidden aria-labelledby="designer-title">
+  <div id="designer-header">
+    <button id="designer-close" type="button">← Back to reports</button>
+    <button id="designer-new" type="button">New report</button>
+    <h2 id="designer-title">Report designer</h2>
+    <span id="designer-dirty" class="dirty" hidden>Unsaved changes</span>
+  </div>
+  <div id="designer-form-pane">
+    <div id="designer-banner" role="status" hidden>
+      <p id="designer-provenance"></p>
+      <p id="designer-source" class="hint" hidden></p>
     </div>
-    <div class="option">
-      <label for="spec-title">Title</label>
-      <input id="spec-title" type="text" maxlength="120" autocomplete="off"
-             placeholder="Defaults to the name">
-    </div>
-    <div class="option">
-      <label for="spec-tags">Tags</label>
-      <input id="spec-tags" type="text" maxlength="300" autocomplete="off"
-             list="spec-tag-suggestions"
-             placeholder="e.g. spending, monthly">
-      <datalist id="spec-tag-suggestions"></datalist>
-      <p class="hint">
-        Comma or space separated lowercase slugs: letters, digits and hyphens,
-        at most 24 characters and 12 tags. Tags are saved with the report on
-        the server, so every browser on this book sees them; click a tag in the
-        Reports list to filter by it.
-      </p>
-    </div>
-    <div class="option" id="spec-columns-row">
-      <label>Columns</label>
-      <div id="spec-columns" class="checks"></div>
-    </div>
-    <div class="option" id="spec-split-columns-row" hidden>
-      <label>Split columns</label>
-      <div id="spec-split-columns" class="checks"></div>
-      <p class="hint">
-        The listing's columns, in print order. The flat split list and the
-        grouped listings (the Transaction Report, the General Ledger and the
-        General Journal) draw these from the same vocabulary.
-      </p>
-    </div>
-    <div class="option" id="spec-split-grouping-row" hidden>
-      <label for="spec-split-grouping">Split grouping</label>
-      <select id="spec-split-grouping"></select>
-      <p class="hint">
-        A flat list prints one row per split; by account, by account code and
-        by transaction add that listing's sections and headings. A
-        transaction-grouped listing is the General Journal's whole book, so it
-        has no dates and no account selection.
-      </p>
-    </div>
-    <div class="option" id="spec-grouping-row">
-      <label for="spec-grouping">Grouping</label>
-      <select id="spec-grouping"></select>
-      <p class="hint">
-        A flat list prints one row per account; the account tree rolls
-        parents up and adds a subtotal; by period prints one row per year or
-        month in the date range.
-      </p>
-    </div>
-    <div class="option" id="spec-period-unit-row">
-      <label for="spec-period-unit">Period length</label>
-      <select id="spec-period-unit"></select>
-    </div>
-    <div class="option" id="spec-period-mode-row">
-      <label for="spec-period-mode">Period rows</label>
-      <select id="spec-period-mode"></select>
-      <p class="hint">
-        Period activity is the amount earned or spent in each period. Balance
-        at period end accumulates from the start of the book, which is what a
-        net-worth or balance-sheet trend needs.
-      </p>
-    </div>
-    <div class="option" id="spec-accounts-row">
-      <label>Accounts</label>
-      <div id="spec-accounts" class="accounts"></div>
-      <p class="hint">
-        Each checked account means that account and its whole subtree.
-        Nothing checked means every account in the book.
-      </p>
-    </div>
-    <div class="option" id="spec-account-types-row">
-      <label>Account types</label>
-      <div id="spec-account-types" class="checks"></div>
-      <p class="hint">
-        Restrict the report to these account types. This survives a different
-        book, unlike an account GUID. Nothing ticked means every type; when
-        both accounts and types are chosen, an account must match both.
-      </p>
-    </div>
-    <div id="spec-options"></div>
-    <div class="option" id="spec-invoice-owner-row" hidden>
-      <label for="spec-invoice-owner">Owner</label>
-      <select id="spec-invoice-owner"></select>
-      <p class="hint">
-        Which aging report: every A/Receivable or every A/Payable account in
-        the book. The report ages every one of them, so it has no account
-        selection.
-      </p>
-    </div>
-    <div class="option" id="spec-invoice-grouping-row" hidden>
-      <label for="spec-invoice-grouping">Rows</label>
-      <select id="spec-invoice-grouping"></select>
-      <p class="hint">
-        One row per owner is the aging report's own table; one row per
-        document lists the invoices, credit notes, bills and payments whose
-        amounts make the buckets.
-      </p>
-    </div>
-    <div class="option" id="spec-bucket-basis-row" hidden>
-      <label for="spec-bucket-basis">Bucket basis</label>
-      <select id="spec-bucket-basis"></select>
-      <p class="hint">
-        The report's Due or Post Date option: which invoice date decides the
-        bucket a document falls into.
-      </p>
-    </div>
-    <div class="option" id="spec-lot-account-row" hidden>
-      <label for="spec-lot-account">Account</label>
-      <select id="spec-lot-account"></select>
-      <p class="hint">
-        The Lot Viewer's Account option: one account, whose own splits are
-        listed. No account is the report's unset value, the whole book.
-      </p>
-    </div>
-    <div class="option" id="spec-description-filter-row" hidden>
-      <label for="spec-description-filter">Description filter</label>
-      <input id="spec-description-filter" type="text" maxlength="200"
-             autocomplete="off" placeholder="e.g. dividend">
-      <p class="hint">
-        The Lot Viewer's Description Filter: only transactions whose
-        description contains this text. Empty lists every transaction in the
-        period.
-      </p>
-    </div>
-    <div class="option" id="spec-document-row" hidden>
-      <label for="spec-document">Document</label>
-      <select id="spec-document"></select>
-      <p class="hint">
-        The document report to print: a printable, easy or fancy invoice, a
-        receipt, or one of the two tax invoices.
-      </p>
-    </div>
-    <div class="option" id="spec-invoice-row" hidden>
-      <label for="spec-invoice">Invoice</label>
-      <input id="spec-invoice" type="text" maxlength="80" autocomplete="off"
-             spellcheck="false" placeholder="invoice id or GUID">
-      <p class="hint">
-        The invoice, bill or voucher to print, by id or GUID. Empty prints the
-        report's own 'no invoice selected' page.
-      </p>
-    </div>
-    <div id="spec-document-options-wrap" hidden>
-      <p class="hint">
-        The document report's own print options. A value left at its default
-        is not sent, so the report's own default document prints; a name the
-        report does not publish is refused by the server by name.
-      </p>
-      <div id="spec-document-options"></div>
-    </div>
-    <div class="option" id="spec-chart-row">
-      <label for="spec-chart">Chart</label>
-      <select id="spec-chart"></select>
-    </div>
-    <div class="option" id="spec-chart-series-row">
-      <label>Chart series</label>
-      <div id="spec-chart-series" class="checks"></div>
-      <p class="hint">
-        One or two amount columns the chart plots over the table's rows, or
-        all three on a period report: debit, credit and balance are that
-        period's two sides and its net (income, expense and net profit;
-        assets, liabilities and net worth). Balance cannot be combined with
-        just one side. Nothing ticked means the columns shown decide: debit
-        and credit when both are shown, otherwise the balance or the one
-        amount column.
-      </p>
-    </div>
-    <div class="form-actions">
-      <button id="spec-preview" type="button">Preview</button>
-      <button id="spec-save" type="submit">Save report</button>
-    </div>
-  </form>
+    <p class="hint" id="designer-intro">
+      Build a report from the same query, columns and options the native
+      reports use. The preview beside the form is the report itself; save it
+      under a name and it joins the list on the left. Saved reports live on the
+      server (outside the book).
+    </p>
+    <p id="spec-error" class="error" role="alert" hidden></p>
+    <form id="spec-form">
+      <!-- What the report's rows come from.  The picker lists the sources
+           /api/spec/options publishes; choosing one shows only the fields that
+           source accepts, and the server still refuses a field of another
+           source by name rather than ignoring it. -->
+      <div class="option">
+        <label for="spec-source">Source</label>
+        <select id="spec-source"></select>
+        <p class="hint">
+          What the report's rows come from. Choosing a source shows only the
+          fields it accepts and clears the ones it does not: the server refuses
+          a field of another source by name, so the form never sends one.
+        </p>
+      </div>
+      <div class="option">
+        <label for="spec-name">Name</label>
+        <input id="spec-name" type="text" maxlength="80" autocomplete="off"
+               placeholder="e.g. Expenses by month">
+      </div>
+      <div class="option">
+        <label for="spec-title">Title</label>
+        <input id="spec-title" type="text" maxlength="120" autocomplete="off"
+               placeholder="Defaults to the name">
+      </div>
+      <div class="option">
+        <label for="spec-tags">Tags</label>
+        <input id="spec-tags" type="text" maxlength="300" autocomplete="off"
+               list="spec-tag-suggestions"
+               placeholder="e.g. spending, monthly">
+        <datalist id="spec-tag-suggestions"></datalist>
+        <p class="hint">
+          Comma or space separated lowercase slugs: letters, digits and hyphens,
+          at most 24 characters and 12 tags. Tags are saved with the report on
+          the server, so every browser on this book sees them; click a tag in the
+          Reports list to filter by it.
+        </p>
+      </div>
+      <div class="option" id="spec-columns-row">
+        <label>Columns</label>
+        <div id="spec-columns" class="checks"></div>
+      </div>
+      <div class="option" id="spec-split-columns-row" hidden>
+        <label>Split columns</label>
+        <div id="spec-split-columns" class="checks"></div>
+        <p class="hint">
+          The listing's columns, in print order. The flat split list and the
+          grouped listings (the Transaction Report, the General Ledger and the
+          General Journal) draw these from the same vocabulary.
+        </p>
+      </div>
+      <div class="option" id="spec-split-grouping-row" hidden>
+        <label for="spec-split-grouping">Split grouping</label>
+        <select id="spec-split-grouping"></select>
+        <p class="hint">
+          A flat list prints one row per split; by account, by account code and
+          by transaction add that listing's sections and headings. A
+          transaction-grouped listing is the General Journal's whole book, so it
+          has no dates and no account selection.
+        </p>
+      </div>
+      <div class="option" id="spec-grouping-row">
+        <label for="spec-grouping">Grouping</label>
+        <select id="spec-grouping"></select>
+        <p class="hint">
+          A flat list prints one row per account; the account tree rolls
+          parents up and adds a subtotal; by period prints one row per year or
+          month in the date range.
+        </p>
+      </div>
+      <div class="option" id="spec-period-unit-row">
+        <label for="spec-period-unit">Period length</label>
+        <select id="spec-period-unit"></select>
+      </div>
+      <div class="option" id="spec-period-mode-row">
+        <label for="spec-period-mode">Period rows</label>
+        <select id="spec-period-mode"></select>
+        <p class="hint">
+          Period activity is the amount earned or spent in each period. Balance
+          at period end accumulates from the start of the book, which is what a
+          net-worth or balance-sheet trend needs.
+        </p>
+      </div>
+      <div class="option" id="spec-accounts-row">
+        <label>Accounts</label>
+        <div id="spec-accounts" class="accounts"></div>
+        <p class="hint">
+          Each checked account means that account and its whole subtree.
+          Nothing checked means every account in the book.
+        </p>
+      </div>
+      <div class="option" id="spec-account-types-row">
+        <label>Account types</label>
+        <div id="spec-account-types" class="checks"></div>
+        <p class="hint">
+          Restrict the report to these account types. This survives a different
+          book, unlike an account GUID. Nothing ticked means every type; when
+          both accounts and types are chosen, an account must match both.
+        </p>
+      </div>
+      <div id="spec-options"></div>
+      <div class="option" id="spec-invoice-owner-row" hidden>
+        <label for="spec-invoice-owner">Owner</label>
+        <select id="spec-invoice-owner"></select>
+        <p class="hint">
+          Which aging report: every A/Receivable or every A/Payable account in
+          the book. The report ages every one of them, so it has no account
+          selection.
+        </p>
+      </div>
+      <div class="option" id="spec-invoice-grouping-row" hidden>
+        <label for="spec-invoice-grouping">Rows</label>
+        <select id="spec-invoice-grouping"></select>
+        <p class="hint">
+          One row per owner is the aging report's own table; one row per
+          document lists the invoices, credit notes, bills and payments whose
+          amounts make the buckets.
+        </p>
+      </div>
+      <div class="option" id="spec-bucket-basis-row" hidden>
+        <label for="spec-bucket-basis">Bucket basis</label>
+        <select id="spec-bucket-basis"></select>
+        <p class="hint">
+          The report's Due or Post Date option: which invoice date decides the
+          bucket a document falls into.
+        </p>
+      </div>
+      <div class="option" id="spec-lot-account-row" hidden>
+        <label for="spec-lot-account">Account</label>
+        <select id="spec-lot-account"></select>
+        <p class="hint">
+          The Lot Viewer's Account option: one account, whose own splits are
+          listed. No account is the report's unset value, the whole book.
+        </p>
+      </div>
+      <div class="option" id="spec-description-filter-row" hidden>
+        <label for="spec-description-filter">Description filter</label>
+        <input id="spec-description-filter" type="text" maxlength="200"
+               autocomplete="off" placeholder="e.g. dividend">
+        <p class="hint">
+          The Lot Viewer's Description Filter: only transactions whose
+          description contains this text. Empty lists every transaction in the
+          period.
+        </p>
+      </div>
+      <div class="option" id="spec-document-row" hidden>
+        <label for="spec-document">Document</label>
+        <select id="spec-document"></select>
+        <p class="hint">
+          The document report to print: a printable, easy or fancy invoice, a
+          receipt, or one of the two tax invoices.
+        </p>
+      </div>
+      <div class="option" id="spec-invoice-row" hidden>
+        <label for="spec-invoice">Invoice</label>
+        <input id="spec-invoice" type="text" maxlength="80" autocomplete="off"
+               spellcheck="false" placeholder="invoice id or GUID">
+        <p class="hint">
+          The invoice, bill or voucher to print, by id or GUID. Empty prints the
+          report's own 'no invoice selected' page.
+        </p>
+      </div>
+      <div id="spec-document-options-wrap" hidden>
+        <p class="hint">
+          The document report's own print options. A value left at its default
+          is not sent, so the report's own default document prints; a name the
+          report does not publish is refused by the server by name.
+        </p>
+        <div id="spec-document-options"></div>
+      </div>
+      <div class="option" id="spec-chart-row">
+        <label for="spec-chart">Chart</label>
+        <select id="spec-chart"></select>
+      </div>
+      <div class="option" id="spec-chart-series-row">
+        <label>Chart series</label>
+        <div id="spec-chart-series" class="checks"></div>
+        <p class="hint">
+          One or two amount columns the chart plots over the table's rows, or
+          all three on a period report: debit, credit and balance are that
+          period's two sides and its net (income, expense and net profit;
+          assets, liabilities and net worth). Balance cannot be combined with
+          just one side. Nothing ticked means the columns shown decide: debit
+          and credit when both are shown, otherwise the balance or the one
+          amount column.
+        </p>
+      </div>
+      <div class="form-actions">
+        <button id="spec-preview" type="button">Preview</button>
+        <button id="spec-save" type="submit">Save report</button>
+      </div>
+    </form>
+  </div>
 </section>
 
+</div><!-- #reports-shell -->
 </div><!-- #page-reports -->
 
 <!-- Help ▸ About.  The desktop's About dialog reads the application version
@@ -713,6 +946,31 @@ const designerSource = document.getElementById("designer-source");
 const nativeSource = document.getElementById("native-source");
 const nativeSourceText = document.getElementById("native-source-text");
 const designer = document.getElementById("designer");
+const shell = document.getElementById("reports-shell");
+const rail = document.getElementById("reports-rail");
+const railToggle = document.getElementById("rail-toggle");
+const railShow = document.getElementById("rail-show");
+const railResizer = document.getElementById("rail-resizer");
+const inspector = document.getElementById("report-inspector");
+const inspectorToggle = document.getElementById("inspector-toggle");
+const inspectorShow = document.getElementById("inspector-show");
+const inspectorResizer = document.getElementById("inspector-resizer");
+const documentEmpty = document.getElementById("document-empty");
+const crumbReports = document.getElementById("crumb-reports");
+const crumbSep = document.getElementById("crumb-sep");
+const crumbReport = document.getElementById("crumb-report");
+const editInDesigner = document.getElementById("edit-in-designer");
+const printReport = document.getElementById("print-report");
+const previewLabel = document.getElementById("preview-label");
+const statusBar = document.getElementById("report-statusbar");
+const statusRows = document.getElementById("report-status-rows");
+const statusDates = document.getElementById("report-status-dates");
+const statusSaved = document.getElementById("report-status-saved");
+const optionsEmpty = document.getElementById("options-empty");
+const designerClose = document.getElementById("designer-close");
+const specPreview = document.getElementById("spec-preview");
+const designerNew = document.getElementById("designer-new");
+const designerDirtyBadge = document.getElementById("designer-dirty");
 const summaryEl = document.getElementById("summary");
 const aboutDialog = document.getElementById("about-dialog");
 const aboutVersion = document.getElementById("about-version");
@@ -742,6 +1000,12 @@ const PAGE_REPORTS = "reports";
 const ACCOUNTS_TAB = "accounts";
 const REGISTER_TAB_PREFIX = "register:";
 const OPEN_TABS_KEY = "gnucash-webui.open-tabs.v1";
+const PANES_KEY = "gnucash-webui.reports-panes.v1";
+const DESIGNER_QUERY = "designer";
+const RAIL_DEFAULT = 272;
+const INSPECTOR_DEFAULT = 352;
+const PANE_MIN = 176;
+const PANE_MAX_FRACTION = 0.4;
 
 const pageBook = document.getElementById("page-book");
 const pageReports = document.getElementById("page-reports");
@@ -763,6 +1027,20 @@ let activePage = PAGE_BOOK;   // which top-level page is on screen
 let activeTab = ACCOUNTS_TAB; // "accounts", or "register:<guid>"
 const registerTabs = new Map(); // guid -> { account, panel, slot, button, close }
 let routeGeneration = 0;      // guards the asynchronous application of a route
+// The designer is a mode of the Reports page, named by ?designer=1.  It is
+// not a page: the report path stays beside it, and leaving the mode returns to
+// the list (doc/web-ui-reports-layout.md §2.3).
+let designerMode = false;
+let designerDirty = false;
+let designerBaseline = "";
+let previewActive = false;
+let livePreviewTimer = null;
+let previewGeneration = 0;
+// Options apply must not jump the reader to the top.  These hold the page and
+// frame scroll positions captured before a re-render, consumed when the frame
+// has loaded the new document.
+let pendingPageScroll = null;
+let pendingFrameScroll = null;
 
 const registerTabId = (guid) => REGISTER_TAB_PREFIX + guid;
 const registerPath = (guid) => "register/" + encodeURIComponent(guid);
@@ -784,15 +1062,25 @@ function currentPagePath() {
 
 // Write the URL the page is now showing.  The page's own state is already
 // correct; only Back and Forward re-read the URL (popstate -> applyRoute).
+// `path` may carry the designer query; it is compared with the whole location,
+// not only the pathname, so entering and leaving the mode are history entries.
 function setUrl(path, { replace = false } = {}) {
   const url = api(path);
-  if (url === location.pathname) return;
+  if (url === location.pathname + location.search) return;
   if (replace) history.replaceState(null, "", url);
   else history.pushState(null, "", url);
 }
 
+// The current page path, with the designer query when the mode is on.  Used by
+// menu actions that move between pages without changing what is on them.
+function currentPageUrl() {
+  const path = currentPagePath();
+  return designerMode ? `${path}?${DESIGNER_QUERY}=1` : path;
+}
+
 // What the path says.  Unknown paths fall back to the Accounts tab, which is
-// the page's default, and are canonicalised there.
+// the page's default, and are canonicalised there.  The query says whether the
+// Reports page is in its designer mode; it never changes which report is open.
 function parseRoute() {
   let rest = location.pathname;
   if (token && rest.startsWith("/" + token)) rest = rest.slice(token.length + 1);
@@ -802,6 +1090,12 @@ function parseRoute() {
     parts = rest.split("/").filter(Boolean).map(decodeURIComponent);
   } catch (err) {
     parts = [];
+  }
+  let designer = false;
+  try {
+    designer = new URLSearchParams(location.search).get(DESIGNER_QUERY) === "1";
+  } catch (err) {
+    designer = false;
   }
   if (parts.length === 0 || (parts.length === 1 && parts[0] === "index.html"))
     return { page: PAGE_BOOK, tab: ACCOUNTS_TAB };
@@ -813,11 +1107,11 @@ function parseRoute() {
     return { page: PAGE_BOOK, tab: registerTabId(guid), guid };
   }
   if (parts.length === 1 && parts[0] === "reports")
-    return { page: PAGE_REPORTS };
+    return { page: PAGE_REPORTS, designer };
   if (parts.length === 2 && parts[0] === "report")
-    return { page: PAGE_REPORTS, report: parts[1] };
+    return { page: PAGE_REPORTS, report: parts[1], designer };
   if (parts.length === 3 && parts[0] === "report" && parts[1] === "spec")
-    return { page: PAGE_REPORTS, spec: parts[2] };
+    return { page: PAGE_REPORTS, spec: parts[2], designer };
   return { page: PAGE_BOOK, tab: ACCOUNTS_TAB, unknown: true };
 }
 
@@ -1118,6 +1412,7 @@ async function applyRouteFor(route) {
   const generation = routeGeneration;
 
   if (route.unknown) {
+    setDesignerMode(false);
     setPage(PAGE_BOOK);
     setActiveTab(ACCOUNTS_TAB);
     setUrl("accounts", { replace: true });
@@ -1126,6 +1421,7 @@ async function applyRouteFor(route) {
 
   if (route.page === PAGE_REPORTS) {
     setPage(PAGE_REPORTS);
+    setDesignerMode(Boolean(route.designer));
     if (route.report) {
       await selectReport(route.report, { navigate: false });
       return;
@@ -1136,13 +1432,18 @@ async function applyRouteFor(route) {
       const spec = builtin || saved;
       if (generation !== routeGeneration) return;
       if (spec) await selectSpec(spec, Boolean(builtin), { navigate: false });
-      else showMissingSpec(route.spec);
+      else {
+        setDesignerMode(false);
+        showMissingSpec(route.spec);
+      }
       return;
     }
     clearReportView();
+    if (route.designer) await enterDesigner({ blank: true, navigate: false });
     return;
   }
 
+  setDesignerMode(false);
   setPage(PAGE_BOOK);
   if (route.guid) {
     const account = findAccount(route.guid) || { guid: route.guid, name: route.guid };
@@ -1154,11 +1455,36 @@ async function applyRouteFor(route) {
   setActiveTab(ACCOUNTS_TAB);
 }
 
+// Show or leave the designer mode.  The mode is a URL state, so this only
+// paints it; the caller writes or drops ?designer=1.  The form, the frame and
+// the designer's own state are never rebuilt here: leaving and re-entering
+// keeps whatever the report selection populated, which is what "Edit in
+// designer" relies on.
+function setDesignerMode(on) {
+  const next = Boolean(on);
+  if (designerMode === next) return;
+  designerMode = next;
+  shell.classList.toggle("designer-mode", next);
+  designer.hidden = !next;
+  previewLabel.hidden = !next;
+  if (!next) {
+    // Invalidate a preview still in flight: the document frame belongs to the
+    // page again, and a late preview must not take it over.
+    previewGeneration++;
+    setDesignerDirty(false);
+  }
+  documentEmpty.hidden = next || selectedReport !== null;
+  updateDesignerDirty();
+  syncPaneLayout();
+  refreshMenuStates();
+}
+
 // A saved report the URL names but the store no longer has (deleted in another
 // window, or a stale bookmark): say so instead of silently showing the list.
 function showMissingSpec(id) {
   clearReportView();
   optionsSection.hidden = false;
+  optionsEmpty.hidden = true;
   optionsTitle.textContent = "Saved report";
   optionsNote.hidden = true;
   errorBox.textContent = `There is no saved report ${id} in this book's store.`;
@@ -1171,16 +1497,20 @@ function clearReportView() {
   selectedSpecId = null;
   currentOptions = [];
   optionsSection.hidden = true;
+  optionsEmpty.hidden = false;
   // Hide the frame but keep its document: tearing the frame down would abort
   // whatever it is still loading (a report's Chart.js, for one) and report a
   // failed request in the console.  A hidden frame is not a page on screen.
   view.hidden = true;
   view.removeAttribute("srcdoc");
   hideError();
+  documentEmpty.hidden = designerMode;
+  updateReportChrome();
   refreshMenuStates();
 }
 
 function showAccountsPage() {
+  setDesignerMode(false);
   setPage(PAGE_BOOK);
   setActiveTab(ACCOUNTS_TAB);
   setUrl("accounts");
@@ -1189,12 +1519,356 @@ function showAccountsPage() {
 
 function showReportsPage() {
   setPage(PAGE_REPORTS);
-  // The page keeps the report it has open, if any; the URL names it.
-  setUrl(currentPagePath());
+  // The page keeps the report it has open, if any; the URL names it.  The
+  // designer query is part of the page state, so it is kept while it is on.
+  setUrl(currentPageUrl());
   refreshMenuStates();
 }
 
 window.addEventListener("popstate", () => { applyRoute(); });
+
+
+/* ------------------------------------- the reports layout and its chrome */
+
+// The rail and the inspector are view furniture, not page state: their widths
+// and collapsed flags live in sessionStorage under one record, scoped to this
+// browser tab, for the same reason the open register tab strip does.  The URL
+// names the report and the designer mode; it does not name how wide a pane is
+// (doc/web-ui-reports-layout.md §3, §5).
+const narrowRail = window.matchMedia("(max-width: 1100px)");
+const narrowInspector = window.matchMedia("(max-width: 860px)");
+const paneState = {
+  rail: { width: RAIL_DEFAULT, collapsed: false },
+  inspector: { width: INSPECTOR_DEFAULT, collapsed: false },
+};
+
+function clampPaneWidth(width) {
+  const max = Math.max(PANE_MIN,
+                       Math.floor(window.innerWidth * PANE_MAX_FRACTION));
+  return Math.min(max, Math.max(PANE_MIN, Math.round(width)));
+}
+
+function restorePaneState() {
+  let stored = null;
+  try {
+    stored = JSON.parse(sessionStorage.getItem(PANES_KEY) || "null");
+  } catch (err) {
+    stored = null;
+  }
+  if (!stored || typeof stored !== "object") return;
+  for (const name of ["rail", "inspector"]) {
+    const entry = stored[name];
+    if (!entry || typeof entry !== "object") continue;
+    if (typeof entry.width === "number" && Number.isFinite(entry.width))
+      paneState[name].width = clampPaneWidth(entry.width);
+    if (typeof entry.collapsed === "boolean")
+      paneState[name].collapsed = entry.collapsed;
+  }
+}
+
+function rememberPaneState() {
+  try {
+    sessionStorage.setItem(PANES_KEY, JSON.stringify(paneState));
+  } catch (err) { /* private mode: the panes still work for this view */ }
+}
+
+function applyPaneWidths() {
+  // The inline variables must agree with the collapsed classes: an inline
+  // width would otherwise win over the class that removes the column.
+  const railCollapsed = shell.classList.contains("rail-collapsed");
+  const inspectorCollapsed = shell.classList.contains("inspector-collapsed");
+  shell.style.setProperty("--rail-col",
+                          railCollapsed ? "0px" : `${paneState.rail.width}px`);
+  shell.style.setProperty("--rail-split", railCollapsed ? "0px" : "6px");
+  shell.style.setProperty("--inspector-col",
+                          inspectorCollapsed ? "0px" : `${paneState.inspector.width}px`);
+  shell.style.setProperty("--inspector-split", inspectorCollapsed ? "0px" : "6px");
+}
+
+// Paint the pane columns and their controls from the stored state plus the
+// window's breakpoints: the rail collapses first, the inspector second, so the
+// document keeps its width.  At a narrow width the toggle says why it cannot
+// reopen the pane instead of silently doing nothing.
+function syncPaneLayout() {
+  // A window that shrank must not leave a formerly sensible width taking more
+  // than its share; the stored preference is clamped to the current viewport.
+  paneState.rail.width = clampPaneWidth(paneState.rail.width);
+  paneState.inspector.width = clampPaneWidth(paneState.inspector.width);
+  const railCollapsed = paneState.rail.collapsed || narrowRail.matches;
+  const inspectorCollapsed =
+      paneState.inspector.collapsed || narrowInspector.matches;
+  shell.classList.toggle("rail-collapsed", railCollapsed);
+  shell.classList.toggle("inspector-collapsed", inspectorCollapsed);
+  applyPaneWidths();
+
+  railToggle.setAttribute("aria-expanded", String(!railCollapsed));
+  inspectorToggle.setAttribute("aria-expanded", String(!inspectorCollapsed));
+  railShow.setAttribute("aria-pressed", String(!railCollapsed));
+  inspectorShow.setAttribute("aria-pressed", String(!inspectorCollapsed));
+
+  railShow.disabled = narrowRail.matches;
+  railToggle.disabled = narrowRail.matches;
+  inspectorShow.disabled = narrowInspector.matches;
+  inspectorToggle.disabled = narrowInspector.matches;
+  railShow.title = narrowRail.matches
+    ? "The window is too narrow to show the report list; widen it to reopen the pane"
+    : "Show or hide the report list ([)";
+  railToggle.title = railShow.title;
+  inspectorShow.title = narrowInspector.matches
+    ? "The window is too narrow to show the report options; widen it to reopen the pane"
+    : "Show or hide the report options (])";
+  inspectorToggle.title = inspectorShow.title;
+}
+
+function togglePane(name) {
+  if ((name === "rail" && narrowRail.matches) ||
+      (name === "inspector" && narrowInspector.matches)) return;
+  paneState[name].collapsed = !paneState[name].collapsed;
+  rememberPaneState();
+  syncPaneLayout();
+}
+
+// A splitter drag or Left/Right press changes the pane's width.  The width is
+// written when the drag ends (or after each key), never on every mousemove, so
+// the stored preference is the one the reader settled on.
+function installPaneResizer(element, name) {
+  let drag = null;
+  element.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    drag = { startX: event.clientX, startWidth: paneState[name].width };
+    try { element.setPointerCapture(event.pointerId); } catch (err) { /* ignore */ }
+    document.body.classList.add("resizing-pane");
+  });
+  element.addEventListener("pointermove", (event) => {
+    if (!drag) return;
+    const delta = event.clientX - drag.startX;
+    const raw = drag.startWidth + (name === "rail" ? delta : -delta);
+    paneState[name].width = clampPaneWidth(raw);
+    applyPaneWidths();
+  });
+  const finish = () => {
+    if (!drag) return;
+    drag = null;
+    document.body.classList.remove("resizing-pane");
+    rememberPaneState();
+  };
+  element.addEventListener("pointerup", finish);
+  element.addEventListener("pointercancel", finish);
+  element.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const step = event.shiftKey ? 48 : 16;
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const raw = paneState[name].width +
+      (name === "rail" ? direction : -direction) * step;
+    paneState[name].width = clampPaneWidth(raw);
+    applyPaneWidths();
+    rememberPaneState();
+  });
+}
+
+// The breadcrumb, the document actions and the status bar describe the report
+// on screen.  They are painted from the same state the router uses, so a
+// reload, Back/Forward and a click cannot leave them disagreeing.
+function updateReportChrome() {
+  const name = selectedReport || "";
+  crumbReport.textContent = name;
+  crumbReport.hidden = name === "";
+  crumbSep.hidden = name === "";
+  crumbReports.href = api("reports");
+  crumbReports.title = name === ""
+    ? "The report list" : "Back to the report list";
+  editInDesigner.hidden = name === "";
+  printReport.hidden = name === "" || view.hidden;
+  documentEmpty.hidden = name !== "" || designerMode;
+  optionsEmpty.hidden = name !== "";
+  if (designerMode) previewLabel.hidden = false;
+  statusBar.hidden = name === "";
+  if (name === "") {
+    statusRows.textContent = "";
+    statusDates.textContent = "";
+    statusSaved.textContent = "";
+  } else {
+    updateReportStatus();
+  }
+}
+
+function countReportRows(doc) {
+  if (!doc) return null;
+  let rows = 0;
+  let tables = 0;
+  for (const table of doc.querySelectorAll("table")) {
+    tables++;
+    const bodies = table.tBodies ? [...table.tBodies] : [];
+    if (bodies.length > 0) {
+      for (const body of bodies) rows += body.rows.length;
+    } else {
+      const head = table.querySelectorAll("thead tr").length;
+      rows += Math.max(0, table.rows.length - head);
+    }
+  }
+  return tables === 0 ? null : rows;
+}
+
+// What the frame was actually rendered with.  A submitted option form names
+// its dates in the frame's own URL; the first load has no query and uses the
+// report's descriptor defaults, which is what the native report does with no
+// query.  A designer preview is built from the form, so it reads the form.
+function frameDateRange() {
+  if (view.hasAttribute("srcdoc") && specFields) {
+    const preset = specField("date_preset");
+    if (preset !== "") return `period: ${preset}`;
+    const start = specField("start");
+    const end = specField("end");
+    if (start !== "" && end !== "") return start === end ? start : `${start} – ${end}`;
+    if (start !== "") return `from ${start}`;
+    if (end !== "") return `through ${end}`;
+  }
+  let params = new URLSearchParams();
+  const src = view.getAttribute("src") || "";
+  try {
+    if (src !== "") params = new URL(src, location.href).searchParams;
+  } catch (err) { /* keep the empty set */ }
+  const preset = params.get("period");
+  if (preset) return `period: ${preset}`;
+  let start = params.get("start") || "";
+  let end = params.get("end") || "";
+  if (start === "" && end === "") {
+    const startOption = currentOptions.find((option) => option.name === "start");
+    const endOption = currentOptions.find((option) => option.name === "end");
+    start = startOption && typeof startOption.default === "string"
+      ? startOption.default : "";
+    end = endOption && typeof endOption.default === "string"
+      ? endOption.default : "";
+  }
+  if (start !== "" && end !== "") return start === end ? start : `${start} – ${end}`;
+  if (start !== "") return `from ${start}`;
+  if (end !== "") return `through ${end}`;
+  return "the report's own default";
+}
+
+function updateReportStatus() {
+  if (!selectedReport) {
+    statusBar.hidden = true;
+    return;
+  }
+  statusBar.hidden = false;
+  let doc = null;
+  try { doc = view.contentDocument; } catch (err) { doc = null; }
+  const rows = view.hidden ? null : countReportRows(doc);
+  statusRows.textContent = rows === null ? "Rows: —" : `Rows: ${rows}`;
+  statusDates.textContent = `Dates: ${frameDateRange()}`;
+  if (previewActive) {
+    statusSaved.textContent = "Preview — not saved";
+  } else if (selectedSpecId) {
+    statusSaved.textContent = designerBase && designerBase.kind === "builtin"
+      ? "Built-in definition — not a saved report"
+      : "Saved on the server";
+  } else {
+    statusSaved.textContent = "Built-in report — not saved";
+  }
+}
+
+// A report list is one tab stop with a roving tabindex: the arrows move
+// between entries and Enter opens the focused one.  Only visible entries take
+// part, so a filter cannot leave focus on a row the reader cannot see.
+function visibleReportLinks() {
+  return [...reportList.querySelectorAll("li:not([hidden]) a")];
+}
+
+function syncReportRoving(preferred) {
+  const links = visibleReportLinks();
+  for (const link of reportList.querySelectorAll("a")) link.tabIndex = -1;
+  const target = preferred && links.includes(preferred) ? preferred : links[0];
+  if (target) target.tabIndex = 0;
+}
+
+reportList.addEventListener("keydown", (event) => {
+  const link = event.target.closest("a");
+  if (!link) return;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    link.click();
+    return;
+  }
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  const links = visibleReportLinks();
+  const at = links.indexOf(link);
+  if (at < 0) return;
+  event.preventDefault();
+  const next = links[(at + (event.key === "ArrowDown" ? 1 : -1) +
+                      links.length) % links.length];
+  if (next) next.focus();
+});
+
+reportList.addEventListener("focusin", (event) => {
+  const link = event.target.closest("a");
+  if (link) syncReportRoving(link);
+});
+
+// Keys the page owns on the Reports page.  Ctrl+K is the one browser-ish key
+// the layout brief fixes; the other bindings are punctuation and Escape.  The
+// browser's tab/address/print shortcuts are deliberately not touched.
+document.addEventListener("keydown", (event) => {
+  if (activePage !== PAGE_REPORTS) return;
+  const target = event.target instanceof Element ? event.target : null;
+  const editable = target && target.closest(
+    "input, textarea, select, [contenteditable='true']");
+
+  if ((event.ctrlKey || event.metaKey) && !event.altKey &&
+      String(event.key).toLowerCase() === "k") {
+    if (designerMode || editable) return;
+    event.preventDefault();
+    searchBox.focus();
+    searchBox.select();
+    return;
+  }
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  // Escape is the designer mode's own exit and works from its form fields too;
+  // the bracket shortcuts must not fire while the reader is typing.
+  if (event.key === "Escape" && designerMode) {
+    event.preventDefault();
+    leaveDesigner({ action: "close the report designer" });
+    return;
+  }
+  if (editable) return;
+  if (event.key === "[") {
+    event.preventDefault();
+    togglePane("rail");
+  } else if (event.key === "]") {
+    event.preventDefault();
+    togglePane("inspector");
+  }
+});
+
+railToggle.addEventListener("click", () => togglePane("rail"));
+railShow.addEventListener("click", () => togglePane("rail"));
+inspectorToggle.addEventListener("click", () => togglePane("inspector"));
+inspectorShow.addEventListener("click", () => togglePane("inspector"));
+
+// The breadcrumb's "Reports" is the way back to the list, and it is a real
+// link: the handler only takes over to clear the report and keep the URL rule
+// in one place.
+crumbReports.addEventListener("click", (event) => {
+  event.preventDefault();
+  showReportList();
+});
+
+editInDesigner.addEventListener("click", () => {
+  enterDesigner({ blank: false });
+});
+
+printReport.addEventListener("click", () => {
+  // Print the report document alone.  The application's chrome is not part of
+  // that document, so the browser's dialog sees the report.
+  try {
+    view.contentWindow.focus();
+    view.contentWindow.print();
+  } catch (err) {
+    showError(`Could not print the report: ${err.message}`);
+  }
+});
 
 
 /* ------------------------------------------------------------- the book */
@@ -2057,6 +2731,9 @@ function applyReportFilter() {
       (query !== "" ? ` matching "${searchBox.value.trim()}"` : "");
     filterNote.hidden = false;
   }
+  // The roving tab stop follows the visible list: a filter cannot leave it on
+  // a row the reader cannot see.
+  syncReportRoving();
 }
 
 function allTags() {
@@ -2399,10 +3076,37 @@ function buildQuery(values) {
   return params;
 }
 
+// Applying options is a re-render of the same document, not a new page.  The
+// page and the frame keep their scroll positions: at the top both restores are
+// no-ops (the reader is not jumped anywhere), and when either was scrolled the
+// reader stays where they were (doc/web-ui-reports-layout.md §2.1).
+function rememberScrollForRerender() {
+  pendingPageScroll = window.scrollY;
+  try {
+    pendingFrameScroll = view.contentWindow ? view.contentWindow.scrollY : 0;
+  } catch (err) {
+    pendingFrameScroll = 0;
+  }
+}
+
+function restoreScrollAfterRerender() {
+  if (pendingPageScroll !== null) {
+    window.scrollTo(0, pendingPageScroll);
+    pendingPageScroll = null;
+  }
+  if (pendingFrameScroll !== null) {
+    try {
+      if (view.contentWindow) view.contentWindow.scrollTo(0, pendingFrameScroll);
+    } catch (err) { /* the frame navigated away; nothing to restore */ }
+    pendingFrameScroll = null;
+  }
+}
+
 function submitOptions() {
   if (!selectedReport) return;
   const query = buildQuery(readValues()).toString();
   hideError();
+  rememberScrollForRerender();
   view.hidden = false;
   view.src = api("report/" + encodeURIComponent(selectedReport)) +
              (query ? `?${query}` : "");
@@ -2422,6 +3126,7 @@ function resetForm() {
   }
   syncPeriodState();
   hideError();
+  rememberScrollForRerender();
   view.hidden = false;
   view.src = api("report/" + encodeURIComponent(selectedReport));
 }
@@ -2454,13 +3159,18 @@ async function selectReport(name, options = {}) {
   if (options.navigate !== false)
     setUrl(reportPath(name), { replace: options.replace });
   const generation = ++formGeneration;
+  previewActive = false;
+  previewGeneration++;
+  cancelLivePreview();
   selectedReport = name;
   selectedSpecId = null;
   currentOptions = [];
   optionsSection.hidden = false;
+  optionsEmpty.hidden = true;
   optionsTitle.textContent = `Options for ${name}`;
   optionsNote.hidden = true;
   optionsNote.textContent = "";
+  updateReportChrome();
   hideError();
   form.hidden = true;
   form.replaceChildren();
@@ -2498,6 +3208,8 @@ async function selectReport(name, options = {}) {
       "This report is not one of the native C++ reports, so it has no C++ " +
       "implementation source and the designer has no spec for it.  Its " +
       "options, if any, are above.", "");
+    markDesignerClean();
+    updateReportChrome();
     return;
   }
 
@@ -2548,6 +3260,9 @@ async function selectReport(name, options = {}) {
   form.hidden = false;
   savedWrap.hidden = false;
   renderSavedViews();
+  markDesignerClean();
+  updateReportChrome();
+  updateReportStatus();
 }
 
 /* ------------------------------------------------------ report designer */
@@ -2560,6 +3275,124 @@ function showSpecError(text) {
 function hideSpecError() {
   specError.hidden = true;
   specError.textContent = "";
+}
+
+// The designer's unsaved-work rule.  The baseline is a serialisation of every
+// control after the last population or successful save; an input event that
+// changes that serialisation marks the form dirty.  The register's guard saves
+// and continues, but the designer cannot save on the reader's behalf (the form
+// may be unnamed or invalid), so its guard offers discard-or-stay instead
+// (doc/web-ui-reports-layout.md §2.3).
+function designerSnapshot() {
+  const parts = [];
+  for (const control of specForm.querySelectorAll("input, select, textarea")) {
+    if (control.type === "checkbox" || control.type === "radio")
+      parts.push(`${control.name}:${control.checked ? "1" : "0"}`);
+    else
+      parts.push(`${control.name}:${control.value}`);
+  }
+  return parts.join("\u0001");
+}
+
+function updateDesignerDirty() {
+  designerDirtyBadge.hidden = !(designerMode && designerDirty);
+  designerDirtyBadge.textContent = designerDirty
+    ? "Unsaved changes" : "";
+}
+
+function markDesignerClean() {
+  designerBaseline = designerSnapshot();
+  setDesignerDirty(false);
+}
+
+function markDesignerDirty() {
+  if (!designerMode || !specFields) return;
+  const dirty = designerSnapshot() !== designerBaseline;
+  if (dirty === designerDirty) return;
+  designerDirty = dirty;
+  updateDesignerDirty();
+}
+
+async function guardDesignerLeave(action) {
+  if (!designerDirty) return true;
+  return window.confirm(
+    "The report designer has unsaved changes.\n\n" +
+    `Choose OK to discard them and ${action}, or Cancel to stay here.`);
+}
+
+// Entering the designer mode.  `blank` starts a new report; otherwise the
+// selected report's populated form (or the honest "no equivalent" banner) is
+// shown.  The mode is written to the URL first so a reload lands in it.
+async function enterDesigner({ blank = false, navigate = true,
+                               replace = false } = {}) {
+  setPage(PAGE_REPORTS);
+  // Starting a new report abandons whatever the form holds; that is the same
+  // discard-or-stay decision as leaving the mode.
+  if (blank && designerMode && designerDirty &&
+      !(await guardDesignerLeave("start a new report"))) return false;
+  if (navigate) {
+    setUrl(blank ? `reports?${DESIGNER_QUERY}=1`
+                 : `${currentPagePath()}?${DESIGNER_QUERY}=1`,
+           { replace });
+  }
+  if (blank) {
+    previewActive = false;
+    previewGeneration++;
+    cancelLivePreview();
+    selectedReport = null;
+    selectedSpecId = null;
+    currentOptions = [];
+    clearReportView();
+  }
+  setDesignerMode(true);
+  if (blank || !selectedReport) {
+    await ensureDesignerVocabulary();
+    newDesignerReport();
+  } else if (!specFields) {
+    await ensureDesignerVocabulary();
+  }
+  refreshMenuStates();
+  return true;
+}
+
+// Leaving the designer mode goes back to the list, by design: the mode is a
+// place you go to build.  In-page navigation is guarded; a browser Back/close
+// is the browser's own action and cannot be refused here.
+async function leaveDesigner({ action = "leave the report designer",
+                               navigate = true } = {}) {
+  if (!designerMode) return true;
+  if (!(await guardDesignerLeave(action))) return false;
+  cancelLivePreview();
+  setDesignerDirty(false);
+  setDesignerMode(false);
+  clearReportView();
+  if (navigate) setUrl("reports");
+  refreshMenuStates();
+  return true;
+}
+
+// A debounced, silent preview while the form is edited.  A failed intermediate
+// spec is not an error the reader asked for, so it leaves the last successful
+// preview in place; the explicit Preview button still reports a rejection.
+function cancelLivePreview() {
+  if (livePreviewTimer !== null) {
+    clearTimeout(livePreviewTimer);
+    livePreviewTimer = null;
+  }
+}
+
+function setDesignerDirty(value) {
+  designerDirty = Boolean(value);
+  updateDesignerDirty();
+}
+
+function scheduleLivePreview() {
+  if (!designerMode || !specFields || specForm.hidden) return;
+  if (livePreviewTimer !== null) clearTimeout(livePreviewTimer);
+  livePreviewTimer = setTimeout(() => {
+    livePreviewTimer = null;
+    previewSpec({ quiet: true });
+  }, 800);
 }
 
 function specField(name) {
@@ -2870,6 +3703,7 @@ function applySpecToDesigner(spec) {
   setSpecField("currency", fields.optionRows.includes("currency") &&
                 typeof spec.currency === "string" ? spec.currency : "");
   syncDesignerState();
+  markDesignerClean();
 }
 
 // A new report: the same controls the page builds for a blank spec.  This is
@@ -2881,6 +3715,7 @@ function clearDesigner() {
   specTitle.value = "";
   specTags.value = "";
   setSource("accounts");
+  markDesignerClean();
 }
 
 function newDesignerReport() {
@@ -2891,6 +3726,8 @@ function newDesignerReport() {
   clearDesigner();
   specForm.hidden = false;
   hideSpecError();
+  markDesignerClean();
+  updateReportChrome();
   specName.focus();
 }
 
@@ -3227,13 +4064,18 @@ function syncDesignerState() {
 // are read, so a hidden control can never leak a value into another source's
 // spec; blank dates, a blank currency and a fixed column list are omitted and
 // the server applies the report's own defaults.
-function readDesignerSpec() {
-  const name = specName.value.trim();
-  if (name === "") {
-    showSpecError("Give the report a name before previewing or saving it.");
-    specName.focus();
+function readDesignerSpec({ quiet = false } = {}) {
+  const fail = (message, focusNode = null) => {
+    if (!quiet) {
+      showSpecError(message);
+      if (focusNode) focusNode.focus();
+    }
     return null;
-  }
+  };
+  const name = specName.value.trim();
+  if (name === "")
+    return fail("Give the report a name before previewing or saving it.",
+                specName);
   const source = specSource.value || "accounts";
   const fields = sourceFields(source);
   const wholeBook = fields.splitGrouping &&
@@ -3246,10 +4088,8 @@ function readDesignerSpec() {
 
   if (fields.columns) {
     const columns = checkedValues(specColumns, "spec-columns");
-    if (columns.length === 0) {
-      showSpecError("Choose at least one column.");
-      return null;
-    }
+    if (columns.length === 0)
+      return fail("Choose at least one column.");
     spec.columns = columns;
     spec.grouping = specGrouping.value || "none";
     spec.period_unit = specPeriodUnit.value || "year";
@@ -3262,10 +4102,8 @@ function readDesignerSpec() {
     if (series.length > 0) spec.chart_series = series;
   } else if (fields.splitColumns) {
     const columns = checkedValues(specSplitColumns, "spec-split-columns");
-    if (columns.length === 0) {
-      showSpecError("Choose at least one split column.");
-      return null;
-    }
+    if (columns.length === 0)
+      return fail("Choose at least one split column.");
     spec.columns = columns;
     spec.split_grouping = specSplitGrouping.value || "none";
   } else if (fields.invoice) {
@@ -3279,10 +4117,8 @@ function readDesignerSpec() {
 
   if (fields.document) {
     const document = specDocument.value;
-    if (document === "") {
-      showSpecError("Choose the document report to print.");
-      return null;
-    }
+    if (document === "")
+      return fail("Choose the document report to print.");
     spec.document = document;
     const invoice = specInvoice.value.trim();
     if (invoice !== "") spec.invoice = invoice;
@@ -3330,10 +4166,17 @@ function readDesignerSpec() {
   return spec;
 }
 
-async function previewSpec() {
-  const spec = readDesignerSpec();
-  if (!spec) return;
-  hideSpecError();
+// The explicit Preview button reports a rejection in #spec-error.  The live
+// preview calls this with quiet=true: a half-typed form is not an error, and a
+// failed intermediate spec leaves the last successful preview on screen.
+async function previewSpec({ quiet = false } = {}) {
+  const spec = readDesignerSpec({ quiet });
+  if (!spec) return false;
+  if (!quiet) {
+    hideSpecError();
+    formGeneration++; // an explicit preview abandons a populate still in flight
+  }
+  const generation = ++previewGeneration;
   try {
     const response = await fetch(api("api/spec/preview"), {
       method: "POST",
@@ -3341,22 +4184,31 @@ async function previewSpec() {
       body: JSON.stringify(spec),
     });
     const text = await response.text();
+    if (generation !== previewGeneration) return false;
+    // A silent live preview that was in flight when the mode closed must not
+    // paint over the list (or over a saved report the mode left behind).
+    if (quiet && !designerMode) return false;
     if (!response.ok) {
-      view.hidden = true;
-      showSpecError(text.trim() || `The preview failed (HTTP ${response.status}).`);
-      return;
+      if (!quiet) {
+        view.hidden = true;
+        showSpecError(text.trim() ||
+                      `The preview failed (HTTP ${response.status}).`);
+        updateReportChrome();
+      }
+      return false;
     }
-    // A preview is not a saved report: clear the selection so the frame's
-    // load handler does not treat it as one.
-    formGeneration++;
-    selectedReport = null;
-    selectedSpecId = null;
-    optionsSection.hidden = true;
+    // A preview is the report itself, rendered from the spec; the selection
+    // stays (the designer still needs its name), and previewActive tells the
+    // status bar and the load handler that this frame is not a saved report.
+    previewActive = true;
     view.removeAttribute("src");
     view.hidden = false;
     view.srcdoc = text;
+    updateReportChrome();
+    return true;
   } catch (err) {
-    showSpecError(`Could not preview the report: ${err.message}`);
+    if (!quiet) showSpecError(`Could not preview the report: ${err.message}`);
+    return false;
   }
 }
 
@@ -3390,6 +4242,15 @@ async function saveSpec(event) {
     const saved = JSON.parse(text);
     await loadSpecs();
     await selectSpec(saved);
+    // Saving is the deliberate end of the build: the report is now a saved
+    // report and the page shows it as a document, so the mode closes.  The
+    // form stays populated for Save as… on the copy.
+    markDesignerClean();
+    if (designerMode) {
+      cancelLivePreview();
+      setDesignerMode(false);
+      setUrl(specPath(saved.id), { replace: true });
+    }
   } catch (err) {
     showSpecError(`Could not save the report: ${err.message}`);
   }
@@ -3400,10 +4261,15 @@ async function selectSpec(spec, builtin = false, options = {}) {
   if (options.navigate !== false)
     setUrl(specPath(spec.id), { replace: options.replace });
   const generation = ++formGeneration;
+  previewActive = false;
+  previewGeneration++;
+  cancelLivePreview();
   selectedReport = spec.name;
   selectedSpecId = spec.id;
   currentOptions = [];
   optionsSection.hidden = false;
+  optionsEmpty.hidden = true;
+  updateReportChrome();
   nativeSource.hidden = true;
   nativeSourceText.textContent = "";
   optionsTitle.textContent =
@@ -3470,6 +4336,9 @@ async function selectSpec(spec, builtin = false, options = {}) {
     "This report's definition is a saved report spec, not C++ code: the " +
     "fields below are exactly the query, columns and options the server " +
     "stores for it.  " + sourceLine(full.source || "accounts"));
+  markDesignerClean();
+  updateReportChrome();
+  updateReportStatus();
 }
 
 async function deleteSpec(spec) {
@@ -3492,6 +4361,7 @@ async function deleteSpec(spec) {
     if (selectedSpecId === spec.id) {
       // The page URL named the report that no longer exists, so it goes back
       // to the list; a reload must not ask for the deleted report.
+      setDesignerMode(false);
       clearReportView();
       setUrl("reports", { replace: true });
     }
@@ -3512,8 +4382,24 @@ async function deleteSpec(spec) {
 
 specForm.addEventListener("submit", saveSpec);
 searchBox.addEventListener("input", applyReportFilter);
-document.getElementById("spec-preview").addEventListener("click", previewSpec);
-specNew.addEventListener("click", newDesignerReport);
+specPreview.addEventListener("click", () => previewSpec());
+specNew.addEventListener("click", () => enterDesigner({ blank: true }));
+designerClose.addEventListener("click", () => leaveDesigner({
+  action: "close the report designer",
+}));
+designerNew.addEventListener("click", () => enterDesigner({
+  blank: true, replace: true,
+}));
+// Any edit changes the unsaved-work baseline and schedules the silent live
+// preview.  Programmatic population does not fire these events.
+specForm.addEventListener("input", () => {
+  markDesignerDirty();
+  scheduleLivePreview();
+});
+specForm.addEventListener("change", () => {
+  markDesignerDirty();
+  scheduleLivePreview();
+});
 // Changing the source switches the field set and clears the fields the new
 // source does not have, so a value from the previous source cannot be sent.
 specSource.addEventListener("change", () => {
@@ -3546,7 +4432,8 @@ specOptions.addEventListener("input", syncDesignerState);
 // into the page and hide the frame instead of leaving the error document in
 // the frame, so the page never just goes blank.
 view.addEventListener("load", () => {  // The initial about:blank document also fires load; it is not a report.
-  if (!selectedReport || !view.getAttribute("src")) return;
+  if (!selectedReport) return;
+  if (!view.getAttribute("src") && !view.hasAttribute("srcdoc")) return;
   let doc;
   try {
     doc = view.contentDocument;
@@ -3560,10 +4447,14 @@ view.addEventListener("load", () => {  // The initial about:blank document also 
       : "";
     view.hidden = true;
     showError(text || "The server did not render the report.");
+    restoreScrollAfterRerender();
+    updateReportChrome();
     return;
   }
   view.hidden = false;
   hideError();
+  restoreScrollAfterRerender();
+  updateReportChrome();
 });
 
 form.addEventListener("submit", (event) => {
@@ -4268,7 +5159,9 @@ function businessReason(kind) {
 
 /* ------------------------------------------------------- menu actions */
 
-function focusSearch() {
+async function focusSearch() {
+  if (designerMode &&
+      !(await leaveDesigner({ action: "search the report list" }))) return;
   showReportsPage();
   searchBox.focus();
   searchBox.select();
@@ -4292,12 +5185,12 @@ function closeActiveTab() {
 }
 
 function toggleDesigner() {
-  const wasShowing = activePage === PAGE_REPORTS && !designer.hidden;
-  showReportsPage();
-  designer.hidden = wasShowing;
-  if (!designer.hidden)
-    designer.scrollIntoView({ block: "start" });
-  refreshMenuStates();
+  if (designerMode) {
+    leaveDesigner({ action: "close the report designer" });
+    return;
+  }
+  setPage(PAGE_REPORTS);
+  enterDesigner({ blank: !selectedReport });
 }
 
 function toggleSummaryBar() {
@@ -4305,26 +5198,28 @@ function toggleSummaryBar() {
   refreshMenuStates();
 }
 
-function showReportList() {
-  showReportsPage();
-  const section = document.getElementById("reports");
-  section.scrollIntoView({ block: "start" });
-  const link = [...reportList.querySelectorAll("a")]
-    .find((anchor) => !anchor.closest("li").hidden);
+// Reports > Report List, and the breadcrumb's "Reports": leave the designer
+// (guarded) and go to the list, clearing the open report so the URL and the
+// page agree.
+async function showReportList() {
+  if (designerMode &&
+      !(await leaveDesigner({ action: "show the report list" }))) return false;
+  setPage(PAGE_REPORTS);
+  setUrl("reports");
+  clearReportView();
+  refreshMenuStates();
+  const link = visibleReportLinks()[0];
   if (link) {
     link.focus();
   } else {
     reportList.tabIndex = -1;
     reportList.focus();
   }
+  return true;
 }
 
 function showNewReport() {
-  showReportsPage();
-  designer.hidden = false;
-  newDesignerReport();
-  designer.scrollIntoView({ block: "start" });
-  refreshMenuStates();
+  enterDesigner({ blank: true });
 }
 
 function saveConfiguration() {
@@ -4332,13 +5227,26 @@ function saveConfiguration() {
   // the form's submit handler, so validation and the server message are the
   // ones the button would produce.
   showReportsPage();
-  designer.hidden = false;
+  if (!designerMode) {
+    setDesignerMode(true);
+    setUrl(`${currentPagePath()}?${DESIGNER_QUERY}=1`, { replace: true });
+  }
   specForm.requestSubmit();
 }
 
-function showReportOptions() {
+async function showReportOptions() {
+  if (designerMode &&
+      !(await leaveDesigner({ action: "show the report options" }))) return;
   showReportsPage();
-  optionsSection.scrollIntoView({ block: "start" });
+  if (paneState.inspector.collapsed || narrowInspector.matches) {
+    // A narrow window cannot open the pane; widen it or use the form in the
+    // designer mode.  At a normal width, make sure the inspector is visible.
+    if (!narrowInspector.matches) {
+      paneState.inspector.collapsed = false;
+      rememberPaneState();
+      syncPaneLayout();
+    }
+  }
   const control = optionsSection.querySelector("input, select, textarea, button");
   if (control) control.focus();
 }
@@ -4851,6 +5759,17 @@ function installMenus() {
   });
   aboutClose.addEventListener("click", () => aboutDialog.close());
 }
+
+// The pane widths and collapse flags are view furniture, restored before the
+// first route paints so the page does not jump from one width to another.
+restorePaneState();
+applyPaneWidths();
+syncPaneLayout();
+installPaneResizer(railResizer, "rail");
+installPaneResizer(inspectorResizer, "inspector");
+window.addEventListener("resize", syncPaneLayout);
+narrowRail.addEventListener("change", syncPaneLayout);
+narrowInspector.addEventListener("change", syncPaneLayout);
 
 renderMenus();
 installMenus();

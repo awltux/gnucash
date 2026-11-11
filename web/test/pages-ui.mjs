@@ -23,6 +23,12 @@
 //   * /report/<name> and /report/spec/<id> still answer the report document
 //     to a subresource request (the frame and every harness), while a
 //     navigation to the same path gets the shell;
+//   * the Reports page's rail / document / inspector layout: each pane is
+//     present and collapsible, widths survive a reload, applying options keeps
+//     the page and frame scroll, the status bar and breadcrumb describe the
+//     report, Ctrl+K / Enter / [ / ] work, the designer is a full-window mode
+//     with a live preview and a guarded exit, and the 800px layout stays
+//     usable;
 //   * no console errors or unexpected failed requests.
 //
 // Needs playwright-core on NODE_PATH, exactly like ui-test.mjs.
@@ -67,11 +73,38 @@ function check(name, ok, detail = '') {
 const pageUrl = (path) => new URL(path, url).href;
 const pathOf = (href) => new URL(href).pathname;
 
+// WSL forwards the Linux server's 127.0.0.1 to Windows; for a moment after a
+// fresh server binds, a Windows client can still be refused.  That is a
+// harness fact, not a page or server failure, so connection refusals are
+// retried and every other error still fails the run.
+const isRefused = (err) =>
+    /ECONNREFUSED|CONNECTION_REFUSED|fetch failed/i.test(String(err)) ||
+    /ECONNREFUSED/.test(String(err && err.cause));
+
+async function gotoWithRetry(target, options) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await page.goto(target, options);
+        } catch (err) {
+            if (attempt >= 9 || !isRefused(err)) throw err;
+            await page.waitForTimeout(300);
+        }
+    }
+}
+
 async function getJson(path) {
-    const response = await fetch(new URL(path, url));
-    if (!response.ok)
-        throw new Error(`${path} answered ${response.status}: ${await response.text()}`);
-    return response.json();
+    for (let attempt = 0; ; attempt++) {
+        try {
+            const response = await fetch(new URL(path, url));
+            if (!response.ok)
+                throw new Error(
+                    `${path} answered ${response.status}: ${await response.text()}`);
+            return await response.json();
+        } catch (err) {
+            if (attempt >= 9 || !isRefused(err)) throw err;
+            await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+    }
 }
 
 // The book's leaves, so the register checks follow whatever book the runner
@@ -181,7 +214,7 @@ async function waitForReportFrame(match) {
 
 /* ------------------------------------------------ direct navigation: /accounts */
 
-await page.goto(pageUrl('accounts'), { waitUntil: 'domcontentloaded' });
+await gotoWithRetry(pageUrl('accounts'), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(
     () => document.querySelectorAll('#tree li').length > 0 &&
@@ -208,7 +241,7 @@ check('the Accounts tab is a pinned ARIA tab',
 
 /* -------------------------------------- direct navigation: /register/<guid> */
 
-await page.goto(pageUrl(`register/${first.account.guid}`),
+await gotoWithRetry(pageUrl(`register/${first.account.guid}`),
                 { waitUntil: 'domcontentloaded' });
 await page.waitForFunction((title) =>
     !document.getElementById('register').hidden &&
@@ -241,7 +274,7 @@ check('a reload of a register URL lands on the same register tab',
 
 /* ------------------------------------------------ direct navigation: /reports */
 
-await page.goto(pageUrl('reports'), { waitUntil: 'domcontentloaded' });
+await gotoWithRetry(pageUrl('reports'), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(
     () => document.querySelectorAll('#report-list a').length > 0 &&
@@ -265,7 +298,7 @@ check('opening a report from the list puts it in the URL',
       `${state.path} frame=${state.frameSrc}`);
 
 // The same page URL, reached directly rather than by a click.
-await page.goto(pageUrl('report/Trial%20Balance'), { waitUntil: 'domcontentloaded' });
+await gotoWithRetry(pageUrl('report/Trial%20Balance'), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await waitForReportFrame(/\/report\/Trial%20Balance$/);
 state = await appState();
@@ -304,7 +337,7 @@ check('/report/<name> still answers the report document to a direct read',
 
 /* ------------------------------------- direct navigation: /report/spec/<id> */
 
-await page.goto(pageUrl(`report/spec/${builtin.id}`), { waitUntil: 'domcontentloaded' });
+await gotoWithRetry(pageUrl(`report/spec/${builtin.id}`), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction((id) => {
     const frame = document.getElementById('view');
@@ -349,7 +382,7 @@ check('/report/spec/<id> still answers the document to a direct read',
 
 /* ------------------------------------------------------------- back/forward */
 
-await page.goto(pageUrl('accounts'), { waitUntil: 'domcontentloaded' });
+await gotoWithRetry(pageUrl('accounts'), { waitUntil: 'domcontentloaded' });
 await waitForRoute();
 await page.waitForFunction(() => document.querySelectorAll('#tree li').length > 0);
 await openFromTree(first);
@@ -549,7 +582,7 @@ const ledgerOffPage = await page.evaluate(() => {
 });
 await page.keyboard.press('Escape');
 const ledgerOnPage = await (async () => {
-    await page.goto(pageUrl(`register/${first.account.guid}`),
+    await gotoWithRetry(pageUrl(`register/${first.account.guid}`),
                     { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !document.getElementById('register').hidden,
                                null, { timeout: 30000 });
@@ -601,6 +634,322 @@ await page.keyboard.press('Escape');
 check('File > Close is disabled on the pinned Accounts tab with a reason',
       closePinned.disabled === 'true' && /pinned/.test(closePinned.reason || ''),
       `${closePinned.disabled}: ${closePinned.reason}`);
+
+/* ------------------------------------- the Reports page layout (stage 2) */
+
+// The pane widths are view furniture in sessionStorage; the page is a grid,
+// so the rail and inspector scroll independently and the document fills the
+// middle.  These checks run at the suite's 1280x900 viewport and drive the
+// same controls a reader does.
+const paneGeometry = () => page.evaluate(() => {
+    const measure = (id) => {
+        const node = document.getElementById(id);
+        const rect = node.getBoundingClientRect();
+        return {
+            display: getComputedStyle(node).display,
+            width: Math.round(rect.width),
+            right: Math.round(rect.right),
+        };
+    };
+    return {
+        rail: measure('reports-rail'),
+        inspector: measure('report-inspector'),
+        document: measure('report-document'),
+        designer: measure('designer'),
+        shellClass: document.getElementById('reports-shell').className,
+        stored: sessionStorage.getItem('gnucash-webui.reports-panes.v1'),
+        overflow: document.documentElement.scrollWidth - innerWidth,
+    };
+});
+
+await gotoWithRetry(pageUrl('reports'), { waitUntil: 'domcontentloaded' });
+await waitForRoute();
+await page.waitForFunction(
+    () => document.querySelectorAll('#report-list a').length > 0,
+    null, { timeout: 30000 });
+
+let panes = await paneGeometry();
+check('the Reports page has a rail, a document and an inspector',
+      panes.rail.display !== 'none' && panes.rail.width >= 200 &&
+      panes.inspector.display !== 'none' && panes.inspector.width >= 200 &&
+      panes.document.width > 400 && panes.overflow <= 0,
+      JSON.stringify(panes));
+
+// Resizing the rail by keyboard is the same path as a drag, and writes the
+// width to sessionStorage.  A reload must restore it.
+await page.focus('#rail-resizer');
+await page.keyboard.press('ArrowLeft');
+const resizedWidth = (await paneGeometry()).rail.width;
+await page.reload({ waitUntil: 'domcontentloaded' });
+await waitForRoute();
+await page.waitForFunction(
+    () => document.querySelectorAll('#report-list a').length > 0,
+    null, { timeout: 30000 });
+panes = await paneGeometry();
+const storedPanes = JSON.parse(panes.stored || '{}');
+check('the rail width is remembered across a reload',
+      resizedWidth < 272 && panes.rail.width === resizedWidth &&
+      storedPanes.rail && storedPanes.rail.width === resizedWidth,
+      `resized=${resizedWidth} reloaded=${panes.rail.width} ` +
+      `stored=${panes.stored}`);
+
+// `[` and `]` collapse and restore the panes; the document takes the space.
+await page.evaluate(() => document.activeElement.blur());
+await page.keyboard.press('[');
+panes = await paneGeometry();
+const railCollapsedWidth = panes.document.width;
+check('`[` collapses the rail and gives its width to the document',
+      panes.rail.display === 'none' && railCollapsedWidth > 600,
+      `rail=${panes.rail.display} document=${railCollapsedWidth}`);
+await page.keyboard.press('[');
+panes = await paneGeometry();
+check('`[` again restores the rail at its remembered width',
+      panes.rail.display !== 'none' && panes.rail.width === resizedWidth,
+      `rail=${panes.rail.width}`);
+
+await page.evaluate(() => document.activeElement.blur());
+await page.keyboard.press(']');
+panes = await paneGeometry();
+check('`]` collapses the inspector and gives its width to the document',
+      panes.inspector.display === 'none' &&
+      panes.document.width > railCollapsedWidth - 100,
+      `inspector=${panes.inspector.display} document=${panes.document.width}`);
+await page.keyboard.press(']');
+panes = await paneGeometry();
+check('`]` again restores the inspector',
+      panes.inspector.display !== 'none' && panes.inspector.width >= 200,
+      `inspector=${panes.inspector.width}`);
+
+/* ---------------------------------- applying options keeps the scroll */
+
+// The common case: change the dates with the options beside the document.
+// Neither the page nor the report frame may jump back to the top when the
+// reader had scrolled; when they were at the top they must stay there.
+await gotoWithRetry(pageUrl('report/Trial%20Balance'),
+                { waitUntil: 'domcontentloaded' });
+await waitForRoute();
+await waitForReportFrame(/\/report\/Trial%20Balance$/);
+await page.waitForSelector('#options-form input[name="end"]',
+                           { timeout: 30000 });
+const tbDescriptor = await (await fetch(
+    new URL('api/report/Trial%20Balance/options', url))).json();
+const dateOptions = Object.fromEntries(
+    tbDescriptor.options.map((option) => [option.name, option.default]));
+const reportRows = () => page.evaluate(() => {
+    const doc = document.getElementById('view').contentDocument;
+    return doc ? doc.querySelectorAll('table tbody tr').length : -1;
+});
+const statusText = () => page.evaluate(
+    () => document.getElementById('report-statusbar').innerText);
+const rowsAtTop = await reportRows();
+let status = await statusText();
+check('the status bar counts the report rows and names the dates used',
+      rowsAtTop > 3 && new RegExp(`Rows: ${rowsAtTop}\\b`).test(status) &&
+      status.includes(String(dateOptions.start)) &&
+      status.includes(String(dateOptions.end)),
+      `${rowsAtTop} rows: ${status.replace(/\n/g, ' | ')}`);
+
+await page.fill('#options-form input[name="end"]', '2009-12-31');
+await page.click('#options-submit');
+// Wait for the frame's load handler as well as readyState: it is what
+// restores the scroll position and updates the status bar.
+await page.waitForFunction(() => {
+    const frame = document.getElementById('view');
+    const doc = frame && frame.contentDocument;
+    return frame && /[?&]end=2009-12-31(&|$)/.test(frame.src) &&
+        doc && doc.readyState === 'complete' &&
+        document.getElementById('report-status-dates').textContent
+            .includes('2009-12-31');
+}, null, { timeout: 30000 });
+const atTop = await page.evaluate(() => ({
+    page: window.scrollY,
+    frame: document.getElementById('view').contentWindow.scrollY,
+}));
+check('applying options at the top does not scroll the page or the document',
+      atTop.page === 0 && atTop.frame === 0, JSON.stringify(atTop));
+
+const scrolled = await page.evaluate(() => {
+    const frame = document.getElementById('view');
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    frame.contentWindow.scrollTo(0, 160);
+    return { page: window.scrollY, frame: frame.contentWindow.scrollY };
+});
+check('the page and the report document can be scrolled away from the top',
+      scrolled.frame > 100, JSON.stringify(scrolled));
+
+await page.fill('#options-form input[name="end"]', '2008-12-31');
+await page.click('#options-submit');
+await page.waitForFunction(() => {
+    const frame = document.getElementById('view');
+    const doc = frame && frame.contentDocument;
+    return frame && /[?&]end=2008-12-31(&|$)/.test(frame.src) &&
+        doc && doc.readyState === 'complete' &&
+        document.getElementById('report-status-dates').textContent
+            .includes('2008-12-31');
+}, null, { timeout: 30000 });
+await page.waitForTimeout(80);
+const afterApply = await page.evaluate(() => ({
+    page: window.scrollY,
+    frame: document.getElementById('view').contentWindow.scrollY,
+}));
+status = await statusText();
+const rowsAfter = await reportRows();
+check('applying options keeps the page and document scroll positions',
+      afterApply.page === scrolled.page && afterApply.frame === scrolled.frame,
+      `before=${JSON.stringify(scrolled)} after=${JSON.stringify(afterApply)}`);
+check('the status bar follows the dates actually applied',
+      status.includes('2008-12-31') &&
+      status.includes(String(dateOptions.start)) &&
+      new RegExp(`Rows: ${rowsAfter}\\b`).test(status),
+      status.replace(/\n/g, ' | '));
+
+/* ------------------------------- breadcrumb and search-list keyboard */
+
+// The breadcrumb names the report and its first part is the way back.
+const crumbText = () => page.evaluate(
+    () => document.getElementById('report-breadcrumb').innerText
+        .replace(/\s+/g, ' ').trim());
+check('the breadcrumb is Reports › the report name',
+      /^Reports\s*›\s*Trial Balance$/.test(await crumbText()),
+      await crumbText());
+await page.click('#crumb-reports');
+await page.waitForFunction(() => {
+    return location.pathname.endsWith('/reports') &&
+        document.getElementById('view').hidden;
+}, null, { timeout: 15000 });
+check('the breadcrumb returns to the report list',
+      pathOf(await page.evaluate(() => location.href)) === pathOf(pageUrl('reports')) &&
+      (await crumbText()) === 'Reports' &&
+      await page.evaluate(() => !document.getElementById('document-empty').hidden),
+      await crumbText());
+
+await page.keyboard.press('Control+k');
+check('Ctrl+K focuses the report search box',
+      await page.evaluate(() => document.activeElement.id) === 'report-search',
+      await page.evaluate(() => document.activeElement.id));
+
+await page.locator('#report-list a', { hasText: 'Trial Balance' }).first()
+    .focus();
+await page.keyboard.press('Enter');
+await page.waitForFunction(() =>
+    location.pathname.includes('/report/Trial%20Balance'), null,
+    { timeout: 30000 });
+check('Enter in the list opens the focused report',
+      pathOf(await page.evaluate(() => location.href)) ===
+          pathOf(pageUrl('report/Trial%20Balance')),
+      await page.evaluate(() => location.pathname));
+await waitForReportFrame(/\/report\/Trial%20Balance$/);
+
+/* -------------------------- the designer as a full-window mode */
+
+await page.waitForFunction(() => {
+    const name = document.getElementById('spec-name');
+    return name && name.value === 'Trial Balance (copy)';
+}, null, { timeout: 30000 });
+await page.click('#edit-in-designer');
+await page.waitForFunction(() => {
+    return document.getElementById('reports-shell').classList
+        .contains('designer-mode') &&
+        !document.getElementById('designer').hidden;
+}, null, { timeout: 15000 });
+panes = await paneGeometry();
+check('the designer opens as a full-window mode of the Reports page',
+      new URLSearchParams(await page.evaluate(() => location.search))
+          .get('designer') === '1' &&
+      panes.rail.display === 'none' && panes.inspector.display === 'none' &&
+      panes.designer.width > 400 && panes.document.width > 500 &&
+      await page.evaluate(() => !document.getElementById('preview-label').hidden),
+      JSON.stringify(panes));
+
+// The mode is URL state: a reload lands in the designer with the report's
+// spec still in the form.
+const designerName = await page.inputValue('#spec-name');
+await page.reload({ waitUntil: 'domcontentloaded' });
+await waitForRoute();
+await page.waitForFunction((wanted) => {
+    return !document.getElementById('designer').hidden &&
+        document.getElementById('spec-name').value === wanted;
+}, designerName, { timeout: 30000 });
+check('a reload keeps the designer mode and its report selected',
+      await page.evaluate(() => document.getElementById('reports-shell')
+          .classList.contains('designer-mode')),
+      designerName);
+
+// Editing updates the preview without pressing Preview, and the status bar
+// says the frame is a preview rather than a saved report.
+const previewName = 'Layout gate preview';
+await page.fill('#spec-name', previewName);
+await page.fill('#spec-title', previewName);
+await page.waitForFunction((wanted) => {
+    const frame = document.getElementById('view');
+    const doc = frame && frame.contentDocument;
+    return frame && frame.hasAttribute('srcdoc') && doc &&
+        doc.title === wanted;
+}, previewName, { timeout: 30000 });
+const previewState = await page.evaluate(() => ({
+    dirty: !document.getElementById('designer-dirty').hidden,
+    saved: document.getElementById('report-status-saved').textContent,
+    srcdoc: document.getElementById('view').hasAttribute('srcdoc'),
+}));
+check('editing the designer form updates a live preview beside it',
+      previewState.srcdoc && previewState.dirty &&
+      /Preview — not saved/.test(previewState.saved),
+      JSON.stringify(previewState));
+
+// Leaving is guarded: Cancel keeps the form (work is not lost), OK leaves to
+// the list.
+page.once('dialog', (dialog) => dialog.dismiss());
+await page.click('#designer-close');
+await page.waitForTimeout(150);
+check('cancelling the unsaved-work guard stays in the designer with the work',
+      await page.evaluate(() => !document.getElementById('designer').hidden) &&
+      await page.inputValue('#spec-name') === previewName,
+      await page.inputValue('#spec-name'));
+page.once('dialog', (dialog) => dialog.accept());
+await page.click('#designer-close');
+await page.waitForFunction(() => {
+    return document.getElementById('designer').hidden &&
+        location.pathname.endsWith('/reports');
+}, null, { timeout: 15000 });
+check('leaving the designer with OK returns to the report list',
+      (await crumbText()) === 'Reports' &&
+      await page.evaluate(() => !document.getElementById('document-empty').hidden),
+      await page.evaluate(() => location.pathname + location.search));
+
+/* ------------------------------- the layout at ~800px */
+
+await page.setViewportSize({ width: 800, height: 900 });
+await gotoWithRetry(pageUrl('report/Trial%20Balance'),
+                { waitUntil: 'domcontentloaded' });
+await waitForRoute();
+await waitForReportFrame(/\/report\/Trial%20Balance$/);
+await page.waitForTimeout(120);
+const narrow = await page.evaluate(() => {
+    const frame = document.getElementById('view').getBoundingClientRect();
+    const status = document.getElementById('report-statusbar')
+        .getBoundingClientRect();
+    const doc = document.getElementById('report-document')
+        .getBoundingClientRect();
+    return {
+        rail: getComputedStyle(document.getElementById('reports-rail')).display,
+        inspector:
+            getComputedStyle(document.getElementById('report-inspector')).display,
+        documentWidth: Math.round(doc.width),
+        frameWidth: Math.round(frame.width),
+        frameHeight: Math.round(frame.height),
+        statusBottom: Math.round(status.bottom),
+        overflow: document.documentElement.scrollWidth - innerWidth,
+        rows: document.getElementById('view').contentDocument
+            .querySelectorAll('table tbody tr').length,
+    };
+});
+check('at 800px the rail and inspector collapse and the document stays usable',
+      narrow.rail === 'none' && narrow.inspector === 'none' &&
+      narrow.documentWidth >= 700 && narrow.frameWidth >= 700 &&
+      narrow.frameHeight >= 400 && narrow.statusBottom <= 900 &&
+      narrow.overflow <= 0 && narrow.rows > 3,
+      JSON.stringify(narrow));
+await page.setViewportSize({ width: 1280, height: 900 });
 
 /* --------------------------------------------------------- console gate */
 

@@ -40,6 +40,10 @@ const browser = await chromium.launch({
     args: process.env.PW_NO_SANDBOX ? ['--no-sandbox'] : [],
 });
 const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+// The designer's unsaved-work guard is a confirm.  The flow below starts a
+// new report from inside the designer, which discards the previous one; a
+// reader would OK that, so the test does too.
+page.on('dialog', (dialog) => dialog.accept());
 
 // A favicon miss is not a defect; anything else is.  The bad-date check below
 // deliberately asks the server for a 400, and Chrome logs that as a console
@@ -182,6 +186,39 @@ const waitForSpecFrame = () => page.waitForFunction(() => {
     return frame && !frame.hidden && /\/report\/spec\//.test(frame.src) &&
         doc && doc.body && (!doc.contentType || doc.contentType === 'text/html');
 }, null, { timeout: 15000 });
+
+// The designer is a full-window mode of the Reports page, not an inline
+// section: the form controls are laid out only while the mode is on.  These
+// helpers enter it the way a reader does (Edit in designer for the selected
+// report, New report for a blank one) and leave it by its own button.
+async function openDesignerMode() {
+    if (!(await page.evaluate(() => document.getElementById('designer').hidden)))
+        return;
+    await page.click('#edit-in-designer');
+    await page.waitForFunction(
+        () => !document.getElementById('designer').hidden,
+        null, { timeout: 15000 });
+}
+
+async function closeDesignerMode() {
+    if (await page.evaluate(() => document.getElementById('designer').hidden))
+        return;
+    await page.click('#designer-close');
+    await page.waitForFunction(
+        () => document.getElementById('designer').hidden,
+        null, { timeout: 15000 });
+}
+
+// New report lives in the rail before the mode is open and in the designer's
+// own header while it is; both are "start a blank report".
+async function startNewReport() {
+    const hidden = await page.evaluate(
+        () => document.getElementById('designer').hidden);
+    await page.click(hidden ? '#spec-new' : '#designer-new');
+    await page.waitForFunction(
+        () => !document.getElementById('designer').hidden,
+        null, { timeout: 15000 });
+}
 
 // Fetch a served spec through the base URL the server printed, not through
 // location.href: stage 1 made the page URL a page path (/reports, /report/…),
@@ -383,6 +420,7 @@ check('the built-in designer offers Save as…, not Save',
 
 // Saving under the built-in's own name must be refused in the UI, not left
 // to the server's duplicate-name error.
+await openDesignerMode();
 await page.click('#spec-save');
 await page.waitForSelector('#spec-error:not([hidden])', { timeout: 15000 });
 const sameNameError = (await page.textContent('#spec-error')).trim();
@@ -791,7 +829,7 @@ check('an account checkbox becomes an account GUID',
 // The last report opened was a native one (Transaction Report), whose
 // designer has no honest equivalent and is therefore hidden.  Start a blank
 // report before building the explicit Trial Balance spec below.
-await page.click('#spec-new');
+await startNewReport();
 // Build a spec equivalent to an explicit Trial Balance request, inside the
 // UI, and require the rendered table to be the same table: a designer that
 // silently produced different numbers would pass every weaker check.
@@ -1092,7 +1130,7 @@ check('switching from a native report back to a built-in repopulates',
       JSON.stringify(backFields));
 
 // New report is the way out of a hidden designer: blank fields and Save.
-await page.click('#spec-new');
+await startNewReport();
 const newFields = await readDesignerFields();
 check('New report clears the designer and returns to Save',
       newFields.name === '' && newFields.grouping === 'none' &&
@@ -1102,6 +1140,9 @@ check('New report clears the designer and returns to Save',
       (await page.textContent('#spec-save')).trim() === 'Save report' &&
       !(await page.evaluate(() => document.getElementById('spec-form').hidden)),
       JSON.stringify({ name: newFields.name, columns: newFields.columns }));
+// The rail and the inspector are hidden in the designer mode, so leave it
+// before the next report is selected from the list.
+await closeDesignerMode();
 
 /* ------------------------------------------------- rejected options */
 
@@ -1267,7 +1308,7 @@ async function deleteSaved(name) {
 // account-only fields, switch to the invoice source (which accepts none of
 // them), and require them gone from the DOM and hidden — then preview the new
 // source to prove the stale values cannot cause a 400.
-await page.click('#spec-new');
+await startNewReport();
 await page.selectOption('#spec-source', 'accounts');
 await page.fill('#spec-opt-currency', 'EUR');
 await page.fill('#spec-opt-start', '2018-01-01');
@@ -1379,7 +1420,7 @@ const gateSources = [
 for (const gate of gateSources) {
     const { source, name } = gate;
     const tags = ['gate', source];
-    await page.click('#spec-new');
+    await startNewReport();
     await page.selectOption('#spec-source', source);
     await page.fill('#spec-name', name);
     await page.fill('#spec-title', name);
@@ -1508,6 +1549,7 @@ await waitForReportFrame('Balance Sheet');
 check('a balance-sheet starting point carries its source in the picker',
       await page.inputValue('#spec-source') === 'balance-sheet',
       await page.inputValue('#spec-source'));
+await openDesignerMode();
 await page.fill('#spec-name', 'Gate forked balance sheet');
 await page.click('#spec-save');
 await page.waitForFunction(() =>
@@ -1738,10 +1780,12 @@ check('a desktop item the web cannot do keeps its label and states the reason',
       /writes to the book/.test(stockSplit.description) &&
       stockSplit.title === stockSplit.description && stockSplit.focusable,
       `${stockSplit.label}: ${stockSplit.description}`);
+const disabledClickOk = afterDisabledClick.menuOpen === true &&
+      afterDisabledClick.dialogOpen === false &&
+      afterDisabledClick.designerHidden === true;
 check('activating a disabled item performs no action',
-      afterDisabledClick.menuOpen && !afterDisabledClick.dialogOpen &&
-      !afterDisabledClick.designerHidden,
-      'the menu stayed open and nothing changed');
+      disabledClickOk,
+      `${JSON.stringify(afterDisabledClick)} ok=${disabledClickOk}`);
 await page.keyboard.press('Escape');
 
 // One menu path at a time.  Opening a submenu used to leave a sibling one
@@ -1910,14 +1954,16 @@ check('View > Summary Bar hides and shows the summary, and reports its state',
 
 await openMenu('view');
 await page.click('#menubar .menu[data-menu="view"] [data-item="toggle-designer"]');
-const designerHidden = await page.evaluate(() =>
-    document.getElementById('designer').hidden);
+const designerShown = await page.evaluate(() =>
+    !document.getElementById('designer').hidden &&
+    new URLSearchParams(location.search).get('designer') === '1');
 await openMenu('view');
 await page.click('#menubar .menu[data-menu="view"] [data-item="toggle-designer"]');
-const designerShown = await page.evaluate(() =>
-    !document.getElementById('designer').hidden);
-check('View > Report Designer hides and shows the designer',
-      designerHidden && designerShown, `hidden=${designerHidden} shown=${designerShown}`);
+const designerHidden = await page.evaluate(() =>
+    document.getElementById('designer').hidden &&
+    !new URLSearchParams(location.search).has('designer'));
+check('View > Report Designer enters and leaves the full-window mode',
+      designerShown && designerHidden, `shown=${designerShown} hidden=${designerHidden}`);
 
 // Reports > Report List goes to the list the desktop generates its Reports
 // menu from, and focuses it.
@@ -1952,7 +1998,13 @@ check('Help > About opens a dialog that says which version it can show',
 // A menu action that really writes: Save Report Configuration As… submits the
 // designer's form, the report is saved server-side and appears in the list.
 const menuReportName = 'Menu gate report';
+// The report list is the page's state now, and the menu action above cleared
+// the open report; start a fresh designer form and give it a valid document
+// spec, then let the menu submit it.
+await startNewReport();
+await page.selectOption('#spec-source', 'document');
 await page.fill('#spec-name', menuReportName);
+await page.fill('#spec-invoice', 'yoyo1');
 await openMenu('reports');
 await page.click('#menubar .menu[data-menu="reports"] [data-item="save-config-as"]');
 await page.waitForFunction((wanted) =>

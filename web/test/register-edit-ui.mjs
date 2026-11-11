@@ -151,7 +151,16 @@ async function showAccountsTab() {
 
 async function openAccount(account, rows) {
     await showAccountsTab();
+    // The register is unhidden before its re-read finishes, and the previous
+    // grid can already have the expected row count; clicking a stale row right
+    // then loses the click when the re-read replaces it.  Wait for the read
+    // the click starts before looking at the rows.
+    const reread = page.waitForResponse(
+        (response) => response.url().includes(
+            `/api/register/${account.guid}`) && response.status() === 200,
+        { timeout: 30000 });
     await page.locator(`#tree button.account-name[data-guid="${account.guid}"]`).click();
+    await reread;
     await page.waitForFunction(
         (expected) => {
             const section = document.getElementById('register');

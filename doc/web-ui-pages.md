@@ -6,8 +6,9 @@ tier deliberately diverges from the desktop.  It is a decision document, not a
 tutorial: the implementation is `web/ui/index.html` and `web/server/main.cpp`.
 
 Related: `doc/web-ui-menu.md` (the menu inventory and each item's reason),
-`doc/web-ui-roadmap.md` (the workstream this sits inside), `WEBUI.md` (how to
-run it).
+`doc/web-ui-reports-layout.md` (the Reports page's rail / document / inspector
+layout and its designer mode), `doc/web-ui-roadmap.md` (the workstream this
+sits inside), `WEBUI.md` (how to run it).
 
 ## 1. The vocabulary
 
@@ -159,8 +160,14 @@ This is a **web divergence, not desktop fidelity**, and it is recorded here so
 that no later document claims otherwise.  It exists because the report list,
 the designer and the frame are the web tier's own surfaces with no desktop
 menu counterpart, and because the options form and the designer are page-sized
-content that the desktop shows in dialogs and separate tabs.  The Reports page
-keeps its internal layout: moving it to a URL did not redesign it.
+content that the desktop shows in dialogs and separate tabs.
+
+The page's internal layout is the rail / document / inspector arrangement
+recorded in `doc/web-ui-reports-layout.md`: the report list is a rail beside
+the document, the option form is an inspector, and the designer is a
+full-window mode named by `?designer=1` on the same report URLs.  That
+document is the authority for the panes, the keyboard map and the state split;
+this one remains the authority for the page vocabulary and the URL scheme.
 
 Consequence for the menu: the desktop's generated per-page entries under
 **Windows** are still absent (the tabs are not browser windows), and the View
@@ -189,5 +196,7 @@ There is no server-side page state and no new API.  The page reads the same
   content (§5).
 - The register tab strip is not persisted across browser sessions (only across
   a reload of the same browser tab).
-- Nothing in the report list, the option form or the designer was redesigned;
-  they moved to a URL and kept their layout.
+- The report list, the option form and the designer kept their behaviour and
+  their markup vocabulary; they were moved into the panes and the designer
+  mode described in `doc/web-ui-reports-layout.md`.  There is no report
+  gallery and no report tab in the Book page's strip.

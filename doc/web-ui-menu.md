@@ -356,14 +356,17 @@ The reason says exactly that, and points at the browser's own cut/copy/paste
 inside the cell editor. The page-scoped account, invoice, budget and
 owner-tree items are all present and disabled with their page. Find… works,
 with a changed meaning (§4.8). Report Options works when a report is selected:
-it scrolls to the options form the page already shows. Preferences, Style
-Sheets and Tax Report Options are server/book-level and have no endpoint.
+it expands the Reports page's inspector if it was collapsed and focuses its
+first control. Preferences, Style Sheets and Tax Report Options are
+server/book-level and have no endpoint.
 
 ### 4.5 View
 
 Summary Bar is a real toggle of the summary line; Refresh is real; Report
-Designer is the web tier's own toggle and brings the Reports page up if it is
-not on screen. **New Accounts Page** now acts: the Book page has a pinned
+Designer is the web tier's own toggle.  It brings the Reports page up if it is
+not on screen and enters or leaves the full-window designer mode
+(`?designer=1`, `doc/web-ui-reports-layout.md`); leaving while the form has
+unsaved changes asks first. **New Accounts Page** now acts: the Book page has a pinned
 Accounts tab, so the desktop item shows that tab instead of opening a second
 accounts page (a changed meaning, §4.8). **Reports** is a web-tier item that
 goes to the Reports page — the desktop has no such page because a report there

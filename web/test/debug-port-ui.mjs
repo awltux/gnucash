@@ -51,7 +51,19 @@ function check(name, ok, detail = '') {
     if (!ok) failures++;
 }
 
-await page.goto(url);
+// WSL forwards 127.0.0.1 from Windows; a just-bound server can still refuse
+// for a moment.  Retry only that condition, so a real page failure still fails.
+for (let attempt = 0; ; attempt++) {
+    try {
+        await page.goto(url);
+        break;
+    } catch (err) {
+        if (attempt >= 9 ||
+            !/ECONNREFUSED|CONNECTION_REFUSED|ERR_CONNECTION_REFUSED/.test(
+                String(err))) throw err;
+        await page.waitForTimeout(300);
+    }
+}
 await page.waitForFunction(
     () => (document.getElementById('summary')?.textContent || '').includes('accounts'),
     null, { timeout: 30000 });
