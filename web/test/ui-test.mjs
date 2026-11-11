@@ -1533,6 +1533,51 @@ async function menuItemLabels(id) {
             .map((node) => node.textContent.trim()), menuPopup(id));
 }
 
+// What the browser actually shows.  A submenu counts only when it is both not
+// hidden and laid out (an "open" submenu inside a closed popup has no layout),
+// and the label comes from its trigger.  The menu checks below use this rather
+// than the page's own state, so a flag that claims a submenu is open while it
+// is not visible cannot satisfy them.
+async function visibleMenuContainers() {
+    return page.evaluate(() => {
+        const menus = [...document.querySelectorAll('#menubar [role="menu"]')]
+            .filter((popup) => !popup.hidden && popup.getClientRects().length > 0);
+        return menus.map((popup) => {
+            const submenu = popup.classList.contains('menu-submenu');
+            const owner = popup.parentElement.querySelector(
+                submenu ? ':scope > .menu-item' : ':scope > .menu-title');
+            return {
+                top: !submenu,
+                label: (owner.querySelector('.menu-label') || owner)
+                    .textContent.trim(),
+            };
+        });
+    });
+}
+
+// The invariant every menu step must leave behind: at most one top-level menu
+// visible, at most one submenu visible, and aria-expanded on every submenu
+// trigger agreeing with whether that submenu has layout.
+async function checkMenuInvariant(step) {
+    const containers = await visibleMenuContainers();
+    const subs = containers.filter((menu) => !menu.top);
+    const tops = containers.filter((menu) => menu.top);
+    const ariaMatches = await page.evaluate(() =>
+        [...document.querySelectorAll('#menubar .menu-sub > .menu-item')]
+            .every((trigger) => {
+                const sub = trigger.parentElement.querySelector(
+                    ':scope > .menu-popup');
+                const shown = !sub.hidden && sub.getClientRects().length > 0;
+                return (trigger.getAttribute('aria-expanded') === 'true') === shown;
+            }));
+    check(`at most one menu path is visible after ${step}`,
+          tops.length <= 1 && subs.length <= 1 && ariaMatches,
+          `${tops.length} top-level menu(s), ${subs.length} submenu(s), ` +
+          `aria matches: ${ariaMatches}` +
+          (subs.length ? ` [${subs.map((sub) => sub.label).join(', ')}]` : ''));
+    return { containers, tops, subs };
+}
+
 const topLevelLabels = await page.evaluate(() =>
     [...document.querySelectorAll('#menubar > .menu > .menu-title')]
         .map((button) => button.textContent.trim()));
@@ -1673,6 +1718,127 @@ check('activating a disabled item performs no action',
       !afterDisabledClick.designerHidden,
       'the menu stayed open and nothing changed');
 await page.keyboard.press('Escape');
+
+// One menu path at a time.  Opening a submenu used to leave a sibling one
+// open, and clicking another top-level title while a menu was open only
+// closed the menu the pointer had already opened.  Every step below also
+// asserts the global invariant from what the DOM shows: one top-level menu,
+// at most one submenu, and aria-expanded that agrees with the layout.
+await openMenu('file');
+const importTrigger = page.locator(`${menuRoot('file')} .menu-sub > .menu-item`,
+                                    { hasText: 'Import' }).first();
+await importTrigger.click();
+const importStep = await checkMenuInvariant('opening File > Import');
+check('File > Import opens one submenu',
+      importStep.subs.length === 1 && importStep.subs[0].label === 'Import',
+      importStep.subs.map((sub) => sub.label).join(', '));
+
+await page.click(`${menuRoot('edit')} > .menu-title`);
+const switchedStep = await checkMenuInvariant(
+    'clicking Edit while File > Import is open');
+const switchedState = await page.evaluate(() => ({
+    openTitles: [...document.querySelectorAll('#menubar > .menu > .menu-title')]
+        .filter((title) => title.getAttribute('aria-expanded') === 'true')
+        .map((title) => title.textContent.trim()),
+    fileSubmenus: [...document.querySelectorAll(
+        '#menubar .menu[data-menu="file"] .menu-submenu')]
+        .filter((sub) => !sub.hidden && sub.getClientRects().length > 0).length,
+    fileExpanded: document.getElementById('menubar-file')
+        .getAttribute('aria-expanded'),
+    editExpanded: document.getElementById('menubar-edit')
+        .getAttribute('aria-expanded'),
+}));
+check('clicking another top-level menu closes the first menu and its submenu',
+      switchedStep.subs.length === 0 &&
+      switchedState.openTitles.length === 1 &&
+      switchedState.openTitles[0] === 'Edit' &&
+      switchedState.fileSubmenus === 0 &&
+      switchedState.fileExpanded === 'false' &&
+      switchedState.editExpanded === 'true',
+      `open: ${switchedState.openTitles.join(', ') || 'none'}; ` +
+      `File submenus: ${switchedState.fileSubmenus}`);
+await page.keyboard.press('Escape');
+await checkMenuInvariant('Escape closing the Edit menu');
+
+await openMenu('actions');
+const onlineTrigger = page.locator(
+    `${menuRoot('actions')} .menu-sub > .menu-item`,
+    { hasText: 'Online Actions' }).first();
+await onlineTrigger.click();
+const onlineStep = await checkMenuInvariant(
+    'opening Actions > Online Actions');
+check('Actions > Online Actions opens its submenu',
+      onlineStep.subs.length === 1 &&
+      onlineStep.subs[0].label === 'Online Actions',
+      onlineStep.subs.map((sub) => sub.label).join(', '));
+
+const budgetTrigger = page.locator(
+    `${menuRoot('actions')} .menu-sub > .menu-item`,
+    { hasText: 'Budget' }).first();
+await budgetTrigger.click();
+const siblingStep = await checkMenuInvariant(
+    'opening the sibling Actions > Budget');
+const labelsOf = (step) => step.subs.map((sub) => sub.label).join(', ') || 'none';
+check('opening a sibling submenu closes the one that was open',
+      siblingStep.subs.length === 1 && siblingStep.subs[0].label === 'Budget',
+      `${labelsOf(onlineStep)} -> ${labelsOf(siblingStep)}`);
+
+await budgetTrigger.click();
+const closedStep = await checkMenuInvariant(
+    'clicking the open Budget parent');
+const closedState = await page.evaluate(() => ({
+    focus: document.activeElement.textContent.trim(),
+    expanded: [...document.querySelectorAll(
+        '#menubar .menu-sub > .menu-item[aria-expanded="true"]')].length,
+    actionsOpen: !document.querySelector(
+        '#menubar .menu[data-menu="actions"] > .menu-popup').hidden,
+}));
+check('clicking the parent of an open submenu closes it and focuses the parent',
+      closedStep.subs.length === 0 && closedState.expanded === 0 &&
+      /Budget/.test(closedState.focus) && closedState.actionsOpen,
+      `visible submenus: ${closedStep.subs.length}; focus: ${closedState.focus}`);
+
+// Move the pointer away and back: a submenu closed by clicking its parent
+// must not reopen on the next hover.
+await page.mouse.move(10, 700);
+await budgetTrigger.hover();
+const hoverStep = await checkMenuInvariant(
+    'hovering the closed Budget parent');
+check('a submenu closed by clicking its parent does not reopen on hover',
+      hoverStep.subs.length === 0, `${hoverStep.subs.length} submenu(s)`);
+
+await budgetTrigger.click();
+const reopenedStep = await checkMenuInvariant('clicking Budget again');
+check('the parent of a closed submenu reopens it on the next click',
+      reopenedStep.subs.length === 1 &&
+      reopenedStep.subs[0].label === 'Budget',
+      reopenedStep.subs.map((sub) => sub.label).join(', '));
+
+await page.keyboard.press('Escape');
+const escapeStep = await checkMenuInvariant('Escape from an open submenu');
+const escapeState = await page.evaluate(() => ({
+    focus: document.activeElement.textContent.trim(),
+    expanded: [...document.querySelectorAll(
+        '#menubar .menu-sub > .menu-item[aria-expanded="true"]')].length,
+    actionsOpen: !document.querySelector(
+        '#menubar .menu[data-menu="actions"] > .menu-popup').hidden,
+}));
+check('Escape closes every open submenu and returns focus to the trigger',
+      escapeStep.subs.length === 0 && escapeState.expanded === 0 &&
+      /Budget/.test(escapeState.focus) && escapeState.actionsOpen,
+      `visible submenus: ${escapeStep.subs.length}; focus: ${escapeState.focus}`);
+
+await page.keyboard.press('Escape');
+const barClosed = await checkMenuInvariant('Escape closing the menu bar');
+const barClosedState = await page.evaluate(() =>
+    [...document.querySelectorAll('#menubar .menu-popup')]
+        .every((popup) => popup.hidden) &&
+    [...document.querySelectorAll('#menubar .menu-title')]
+        .every((title) => title.getAttribute('aria-expanded') === 'false'));
+check('a second Escape closes the top-level menu with no stale expansion',
+      barClosed.tops.length === 0 && barClosed.subs.length === 0 &&
+      barClosedState,
+      `${barClosed.tops.length} menus left open`);
 
 // A whole page-scoped menu: the desktop hides Transaction without a register
 // page; the web keeps it visible and says why, with every item disabled.

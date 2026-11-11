@@ -2870,6 +2870,12 @@ async function refreshPage() {
 const menuItemIndex = new Map(); // button element -> { menu, item }
 const menuElementIds = new Set();
 let openMenuElement = null;
+let openMenuByHover = false;
+// The one open submenu path: trigger ids, outermost first.  This array is the
+// only record of submenu state.  `hidden` and aria-expanded on every submenu
+// and trigger are rendered from it by syncSubmenus() and never read back, so
+// two open submenus are unrepresentable rather than merely avoided.
+let openSubmenuPath = [];
 
 function uniqueMenuId(base) {
   let id = base;
@@ -2933,6 +2939,7 @@ function buildItems(container, menu, items) {
       const wrap = el("div", "menu-sub");
       const trigger = el("button", "menu-item");
       trigger.type = "button";
+      trigger.id = uniqueMenuId(`menu-sub-${menu.id}-${slug(item.label)}`);
       trigger.setAttribute("role", "menuitem");
       trigger.setAttribute("aria-haspopup", "true");
       trigger.setAttribute("aria-expanded", "false");
@@ -3015,34 +3022,74 @@ function itemsOf(popup) {
   return out;
 }
 
-function closeSubmenus(popup) {
-  for (const sub of popup.querySelectorAll(".menu-submenu")) {
-    sub.hidden = true;
+function submenuTriggerOf(sub) {
+  return sub.parentElement.querySelector(":scope > .menu-item");
+}
+
+// Render the one open path into the DOM: a submenu is visible exactly when
+// its trigger is on the path, and aria-expanded says the same thing.  This is
+// the only place `hidden` and a submenu trigger's aria-expanded are written,
+// so the two can never disagree with each other or with the path.
+function syncSubmenus() {
+  for (const sub of document.querySelectorAll("#menubar .menu-submenu")) {
+    const trigger = submenuTriggerOf(sub);
+    if (!trigger) continue;
+    const open = openSubmenuPath.includes(trigger.id);
+    sub.hidden = !open;
+    trigger.setAttribute("aria-expanded", open ? "true" : "false");
   }
-  for (const trigger of popup.querySelectorAll("[aria-haspopup='true']")) {
-    trigger.setAttribute("aria-expanded", "false");
+}
+
+function closeSubmenus() {
+  openSubmenuPath = [];
+  syncSubmenus();
+}
+
+// The ids of the triggers that lead to `trigger`: itself, then each enclosing
+// submenu's trigger outwards.  Opening a submenu installs exactly this path,
+// which is what closes a sibling or a deeper submenu.
+function submenuPathFor(trigger) {
+  const path = [trigger.id];
+  let popup = trigger.parentElement.parentElement;
+  while (popup && popup.classList.contains("menu-submenu")) {
+    const outer = submenuTriggerOf(popup);
+    if (!outer) break;
+    path.unshift(outer.id);
+    popup = outer.parentElement.parentElement;
   }
+  return path;
+}
+
+function submenuIsOpen(trigger) {
+  return openSubmenuPath.includes(trigger.id);
+}
+
+// The trigger of the submenu that contains `item`.
+function containingSubmenuTrigger(item) {
+  return item.closest(".menu-sub").querySelector(":scope > .menu-item");
 }
 
 function closeMenus(returnFocus) {
   const top = openMenuElement;
+  closeSubmenus();
   for (const menuElement of knownTopLevelMenus()) {
     const popup = menuPopup(menuElement);
     if (!popup || popup.hidden) continue;
-    closeSubmenus(popup);
     popup.hidden = true;
     menuButton(menuElement).setAttribute("aria-expanded", "false");
   }
   openMenuElement = null;
+  openMenuByHover = false;
   if (returnFocus && top) menuButton(top).focus();
 }
 
-function openMenu(menuElement, focusFirst) {
+function openMenu(menuElement, focusFirst, fromHover) {
   const popup = menuPopup(menuElement);
   if (!popup) return;
   closeMenus(false);
   refreshMenuStates();
   openMenuElement = menuElement;
+  openMenuByHover = Boolean(fromHover);
   popup.hidden = false;
   menuButton(menuElement).setAttribute("aria-expanded", "true");
   if (focusFirst) {
@@ -3068,21 +3115,24 @@ function moveTopMenu(offset) {
 }
 
 function openSubmenu(trigger) {
-  const wrap = trigger.parentElement;
-  const sub = wrap.querySelector(":scope > .menu-popup");
+  const sub = trigger.parentElement.querySelector(":scope > .menu-popup");
   if (!sub) return;
-  sub.hidden = false;
-  trigger.setAttribute("aria-expanded", "true");
+  openSubmenuPath = submenuPathFor(trigger);
+  syncSubmenus();
   const first = itemsOf(sub)[0];
   if (first) first.focus();
 }
 
 function closeSubmenu(trigger) {
-  const sub = trigger.parentElement.querySelector(":scope > .menu-popup");
-  if (!sub) return;
-  sub.hidden = true;
-  trigger.setAttribute("aria-expanded", "false");
+  const at = openSubmenuPath.indexOf(trigger.id);
+  if (at >= 0) openSubmenuPath = openSubmenuPath.slice(0, at);
+  syncSubmenus();
   trigger.focus();
+}
+
+function toggleSubmenu(trigger) {
+  if (submenuIsOpen(trigger)) closeSubmenu(trigger);
+  else openSubmenu(trigger);
 }
 
 function activateMenuItem(button) {
@@ -3109,6 +3159,10 @@ function renderMenus() {
   bar.replaceChildren();
   menuItemIndex.clear();
   menuElementIds.clear();
+  // A re-render replaces every trigger, so a path into the old DOM is gone.
+  openMenuElement = null;
+  openMenuByHover = false;
+  openSubmenuPath = [];
   for (const menu of MENU_TABLE) {
     const menuElement = el("div", "menu");
     menuElement.dataset.menu = menu.id;
@@ -3138,6 +3192,7 @@ function renderMenus() {
   }
   const first = bar.querySelector(".menu-title");
   if (first) first.tabIndex = 0;
+  syncSubmenus();
   refreshMenuStates();
 }
 
@@ -3199,27 +3254,24 @@ function onMenubarKeydown(event) {
       break;
     case "ArrowLeft":
       event.preventDefault();
-      if (inSubmenu) closeSubmenu(item.closest(".menu-sub").querySelector(
-        ":scope > .menu-item"));
+      if (inSubmenu) closeSubmenu(containingSubmenuTrigger(item));
       else moveTopMenu(-1);
       break;
     case "Enter":
     case " ": {
       event.preventDefault();
-      if (isSubmenuTrigger) {
-        const sub = item.parentElement.querySelector(":scope > .menu-popup");
-        if (sub.hidden) openSubmenu(item);
-        else closeSubmenu(item);
-      } else {
-        activateMenuItem(item);
-      }
+      if (isSubmenuTrigger) toggleSubmenu(item);
+      else activateMenuItem(item);
       break;
     }
     case "Escape":
       event.preventDefault();
       if (inSubmenu) {
-        closeSubmenu(item.closest(".menu-sub").querySelector(
-          ":scope > .menu-item"));
+        // Escape leaves the menu bar open but closes every submenu on the
+        // path, and puts focus back on the trigger it came from.
+        const trigger = containingSubmenuTrigger(item);
+        closeSubmenus();
+        trigger.focus();
       } else {
         closeMenus(true);
       }
@@ -3241,19 +3293,32 @@ function installMenus() {
   const bar = document.getElementById("menubar");
   bar.addEventListener("keydown", onMenubarKeydown);
   bar.addEventListener("click", (event) => {
+    // A click settles whatever the pointer opened on its way here.
+    const openedByHover = openMenuByHover;
+    openMenuByHover = false;
     const title = event.target.closest(".menu-title");
     if (title) {
       const menuElement = title.closest(".menu");
-      if (menuElement === openMenuElement) closeMenus(true);
-      else openMenu(menuElement, true);
+      if (menuElement === openMenuElement) {
+        if (openedByHover) {
+          // The pointer opened this menu on the way to the click; the click
+          // confirms it (and moves focus into it) rather than toggling it
+          // shut.  Without this, clicking another menu title while a menu is
+          // open closes the menu the pointer just opened.
+          const first = itemsOf(menuPopup(menuElement))[0];
+          if (first) first.focus();
+        } else {
+          closeMenus(true);
+        }
+      } else {
+        openMenu(menuElement, true);
+      }
       return;
     }
     const item = event.target.closest(".menu-item");
     if (!item) return;
     if (item.getAttribute("aria-haspopup") === "true") {
-      const sub = item.parentElement.querySelector(":scope > .menu-popup");
-      if (sub.hidden) openSubmenu(item);
-      else closeSubmenu(item);
+      toggleSubmenu(item);
       return;
     }
     activateMenuItem(item);
@@ -3264,7 +3329,7 @@ function installMenus() {
     if (!title) return;
     const menuElement = title.closest(".menu");
     if (menuElement && menuElement !== openMenuElement)
-      openMenu(menuElement, false);
+      openMenu(menuElement, false, true);
   });
   document.addEventListener("click", (event) => {
     if (openMenuElement && !document.getElementById("menubar").contains(event.target))
