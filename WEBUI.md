@@ -38,7 +38,12 @@ It prints one line and then serves:
 
 The path segment is a 128-bit token generated per run. Without it every path
 answers 404. The socket binds the loopback address and there is no option to
-change that. The session is opened read-only; there are no write endpoints.
+change that. The session is opened read-only and the write routes answer 403.
+
+Add `--writable` (or `GNC_WEBUI_WRITABLE=1`) to open the book read-write and
+enable saving; see ADR 0013 for the guarantees that mode makes and does not
+make. It is per process and explicit: a request cannot turn a read-only server
+writable.
 
 ## API
 
@@ -49,9 +54,16 @@ change that. The session is opened read-only; there are no write endpoints.
 | `/<token>/api/accounts` | the account tree with formatted totals |
 | `/<token>/api/reports` | the names of the registered reports |
 | `/<token>/report/<name>` | the report's HTML, rendered in this process |
+| `/<token>/api/book/save` | `POST`: save the book; writable mode only |
+| `/<token>/api/book/selftest` | `POST`: one transaction, to prove the write path; writable mode only |
 
 Report names are URL-decoded, so `/report/Trial%20Balance` works. The UI lists
 `/api/reports` and shows a report in a frame, so it never leaves the page.
+
+`api/book/save` answers `403 read-only` in the default mode, `409 locked` when
+the book's `.LCK` is held, and otherwise reports the path, size and backup the
+engine wrote. `api/book/selftest` is stage-1 scaffolding for the register: it
+creates one balanced transaction and is removed when the register API lands.
 
 ## How it is put together
 
@@ -78,8 +90,10 @@ toolkit-free one.
 
 ## Limits (deliberate, for now)
 
-* Read-only: no editing, no saving.
+* Read-only by default: no editing or saving unless the process is started
+  `--writable`, and even then there is no register UI yet.
 * One user, one book, one process; no concurrency beyond serialising requests.
+  A writable process holds the book's `.LCK` for its lifetime (ADR 0013).
 * Plain HTTP on loopback; the token is the only credential.
 * The UI is vanilla HTML/CSS/ES modules. No framework has been chosen yet —
   the JSON API is what a framework would sit on.
@@ -88,3 +102,4 @@ toolkit-free one.
 
 * `doc/adr/0011-reports-in-the-server-process.md`
 * `doc/adr/0012-single-threaded-local-server.md`
+* `doc/adr/0013-writable-web-session.md`

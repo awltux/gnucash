@@ -30,7 +30,8 @@ fi
 LOG=$(mktemp)
 REPORTS_FILE=$(mktemp)
 SPEC_STORE=$(mktemp)
-trap 'kill "$SERVER_PID" 2>/dev/null; rm -f "$LOG" "$REPORTS_FILE" "$SPEC_STORE"' EXIT
+SAVE_BODY=$(mktemp)
+trap 'kill "$SERVER_PID" 2>/dev/null; rm -f "$LOG" "$REPORTS_FILE" "$SPEC_STORE" "$SAVE_BODY"' EXIT
 
 env GNC_UNINSTALLED=YES GNC_BUILDDIR="$BUILD" \
     ${SCHEMAS:+GSETTINGS_SCHEMA_DIR="$SCHEMAS"} \
@@ -56,6 +57,23 @@ done
 [ -n "$URL" ] || { cat "$LOG" >&2; fail "server did not start"; }
 
 echo "server: $URL"
+
+# The default mode is read-only (ADR 0013): the write routes must be
+# unreachable, the refusal must be named, and the book must not change.
+BOOK_SUM_BEFORE=$(sha256sum "$BOOK" | cut -d' ' -f1)
+save_code=$(curl -sS -o "$SAVE_BODY" -w '%{http_code}' -X POST "${URL}api/book/save") \
+    || { cat "$LOG" >&2; fail "POST api/book/save failed"; }
+[ "$save_code" = "403" ] \
+    || fail "a read-only server answered POST api/book/save with $save_code (expected 403)"
+grep -q '"error":"read-only"' "$SAVE_BODY" \
+    || fail "the read-only save refusal is not named: $(cat "$SAVE_BODY")"
+selftest_code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${URL}api/book/selftest")
+[ "$selftest_code" = "403" ] \
+    || fail "a read-only server answered POST api/book/selftest with $selftest_code (expected 403)"
+[ ! -e "$BOOK.LCK" ] || fail "a read-only server created $BOOK.LCK"
+BOOK_SUM_AFTER=$(sha256sum "$BOOK" | cut -d' ' -f1)
+[ "$BOOK_SUM_BEFORE" = "$BOOK_SUM_AFTER" ] \
+    || fail "a read-only server modified the fixture book"
 
 book=$(curl -fsS "${URL}api/book") || { cat "$LOG" >&2; fail "GET api/book failed"; }
 echo "book: $book"

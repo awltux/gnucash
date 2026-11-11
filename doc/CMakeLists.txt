@@ -9,6 +9,7 @@ set(doc_noinst_DATA
         gnucash-cli.1.in tip_of_the_day.list.c README.txt
         adr/0011-reports-in-the-server-process.md
         adr/0012-single-threaded-local-server.md
+        adr/0013-writable-web-session.md
         report-engine-migration.md
         eguile-decision.md
         report-coverage.md

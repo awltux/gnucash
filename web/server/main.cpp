@@ -25,6 +25,10 @@
 
 #include <gio/gio.h>
 #include <glib.h>
+#ifndef G_OS_WIN32
+#include <glib-unix.h>
+#endif
+#include <csignal>
 #ifdef GNC_WITH_REPORT
 #include <libguile.h>
 #endif
@@ -42,6 +46,7 @@ extern "C" {
 #include <qof.h>
 #include <qofbook.h>
 #include <qofsession.h>
+#include <gnc-uri-utils.h>
 #include <Account.h>
 #include <Split.h>
 #include <Transaction.h>
@@ -68,6 +73,17 @@ struct Server
     Account* root = nullptr;
     int top_level = 0;
     int accounts = 0;
+
+    /* ADR 0013.  The session is the one this process owns; `writable` is fixed
+     * at startup and is what every write route checks first.  `locked` means
+     * writable was asked for but the book already had a lock, so the session
+     * was opened read-only and saves are refused with the lock's path. */
+    QofSession* session = nullptr;
+    QofBook* book = nullptr;
+    bool writable = false;
+    bool locked = false;
+    std::string lock_path;
+    std::string book_path;
 };
 
 Server g_server;
@@ -1768,6 +1784,412 @@ chartjs_file ()
     return body;
 }
 
+/* ------------------------------------------------------------- write path
+ *
+ * ADR 0013.  Nothing here runs unless the process was started writable, and
+ * every route asks `refuse_write()` before it touches the engine, so a
+ * read-only process cannot save even if a route were reached by mistake.
+ *
+ * The server never writes the book itself: the save is qof_session_save, the
+ * same call the desktop makes, so the lock and the timestamped backup are the
+ * engine's, not a second implementation of them. */
+
+std::string
+json_string (const std::string& text)
+{
+    return "\"" + json_escape (text.c_str ()) + "\"";
+}
+
+/* The files next to the book that the XML backend's backup_file() creates:
+ * <book>.<14-digit timestamp>.gnucash.  The server only *names* the backup a
+ * save just produced; it does not create, copy or prune them. */
+std::set<std::string>
+book_backups (const std::string& book_path)
+{
+    std::set<std::string> found;
+
+    gchar* dirname = g_path_get_dirname (book_path.c_str ());
+    gchar* basename = g_path_get_basename (book_path.c_str ());
+    const std::string prefix = std::string (basename) + ".";
+
+    GDir* dir = g_dir_open (dirname, 0, nullptr);
+    if (dir != nullptr)
+    {
+        const gchar* name = nullptr;
+        while ((name = g_dir_read_name (dir)) != nullptr)
+        {
+            const std::string candidate (name);
+            if (candidate.size () <= prefix.size ()
+                || candidate.compare (0, prefix.size (), prefix) != 0)
+                continue;
+            if (!g_str_has_suffix (name, GNC_DATAFILE_EXT))
+                continue;
+            gchar* full = g_build_filename (dirname, name, nullptr);
+            found.insert (full);
+            g_free (full);
+        }
+        g_dir_close (dir);
+    }
+
+    g_free (dirname);
+    g_free (basename);
+    return found;
+}
+
+/* The backup the save just added: a name in `after` that was not in `before`.
+ * If a save somehow produced more than one, the newest wins. */
+std::string
+new_backup (const std::set<std::string>& before,
+            const std::set<std::string>& after)
+{
+    std::string newest;
+    gint64 newest_time = 0;
+
+    for (const std::string& path : after)
+    {
+        if (before.count (path) != 0)
+            continue;
+        GStatBuf info;
+        if (g_stat (path.c_str (), &info) != 0)
+            continue;
+        if (newest.empty () || static_cast<gint64>(info.st_mtime) >= newest_time)
+        {
+            newest = path;
+            newest_time = static_cast<gint64>(info.st_mtime);
+        }
+    }
+    return newest;
+}
+
+/* Size of a regular file, or -1 when there is no regular file at that path. */
+gint64
+file_size (const std::string& path)
+{
+    GStatBuf info;
+    if (g_stat (path.c_str (), &info) != 0)
+        return -1;
+    if (!g_file_test (path.c_str (), G_FILE_TEST_IS_REGULAR))
+        return -1;
+    return static_cast<gint64>(info.st_size);
+}
+
+std::string
+backend_error_text (QofBackendError error)
+{
+    switch (error)
+    {
+    case ERR_BACKEND_LOCKED:
+        return "the book is locked by another process";
+    case ERR_BACKEND_READONLY:
+        return "the book cannot be written (read-only filesystem, "
+               "permissions, or anti-virus)";
+    case ERR_FILEIO_BACKUP_ERROR:
+        return "the engine could not make the pre-save backup";
+    case ERR_FILEIO_WRITE_ERROR:
+        return "the engine could not write the book";
+    default:
+        return "the engine reported a write error";
+    }
+}
+
+/* The named refusal every write route starts with.  Returns true when it has
+ * answered the request, so the caller must not touch the engine. */
+void
+send_json (GSocketConnection* connection, const char* status,
+           const std::string& body)
+{
+    send_response (connection, status, "application/json", body);
+}
+
+bool
+refuse_write (GSocketConnection* connection)
+{
+    if (g_server.writable)
+        return false;
+
+    std::string body;
+    if (g_server.locked)
+    {
+        body = "{\"error\":\"locked\",\"message\":";
+        body += json_string ("the book is locked by another GnuCash process, "
+                             "so this server opened it read-only; the lock is "
+                             + g_server.lock_path);
+        body += ",\"lock\":";
+        body += json_string (g_server.lock_path);
+        body += "}";
+        send_json (connection, "409 Conflict", body);
+    }
+    else
+    {
+        body = "{\"error\":\"read-only\",\"message\":";
+        body += json_string ("this server was started read-only; start it "
+                             "with --writable (or GNC_WEBUI_WRITABLE=1) to "
+                             "enable saving");
+        body += "}";
+        send_json (connection, "403 Forbidden", body);
+    }
+    return true;
+}
+
+/* POST /api/book/save -- write the session's book with the engine's own save
+ * path and report what was written.  See ADR 0013 for the policy: the backup
+ * is made by the engine before the original is touched, and the route does not
+ * report success for a book it cannot see afterwards. */
+
+/* What one qof_session_save did, with no HTTP in it: the engine's error and
+ * message, whether the book was dirty, whether the path still holds a
+ * non-empty file, and the backup the engine's backup_file() added. */
+struct SaveOutcome
+{
+    QofBackendError error = ERR_BACKEND_NO_ERR;
+    std::string message;
+    bool changed = false;
+    bool verified = false;
+    std::string backup;
+    gint64 bytes = -1;
+};
+
+SaveOutcome
+save_book (QofSession* session, QofBook* book, const std::string& path)
+{
+    SaveOutcome outcome;
+    const std::set<std::string> backups_before = book_backups (path);
+    outcome.changed = qof_book_session_not_saved (book);
+
+    /* A failed save leaves its error on the session.  Clear it first so a
+     * retry is a retry, not a replay of the previous failure. */
+    qof_session_pop_error (session);
+
+    qof_session_save (session, nullptr);
+
+    outcome.error = qof_session_get_error (session);
+    outcome.message = qof_session_get_error_message (session);
+    outcome.backup = new_backup (backups_before, book_backups (path));
+    outcome.bytes = file_size (path);
+    outcome.verified = outcome.bytes > 0;
+    return outcome;
+}
+
+void
+send_save_lost (GSocketConnection* connection, const SaveOutcome& outcome,
+                const std::string& path)
+{
+    /* The engine said the save worked but the book is not there.  This is the
+     * unlink-then-link window in the XML backend; the backup named here is the
+     * complete pre-save copy. */
+    std::string body = "{\"error\":\"write-lost\",\"message\":";
+    body += json_string ("the engine reported a successful save but " + path +
+                         " is missing or empty; the pre-save copy is " +
+                         (outcome.backup.empty () ? "not next to the book"
+                                                  : outcome.backup));
+    body += ",\"path\":" + json_string (path);
+    body += ",\"backup\":";
+    body += outcome.backup.empty () ? "null" : json_string (outcome.backup);
+    body += "}";
+    send_json (connection, "500 Internal Server Error", body);
+}
+
+void
+send_save_failure (GSocketConnection* connection, const SaveOutcome& outcome,
+                   const std::string& path)
+{
+    const bool locked = outcome.error == ERR_BACKEND_LOCKED;
+    std::string body = "{\"error\":";
+    body += json_string (locked ? "locked"
+                        : outcome.error == ERR_FILEIO_BACKUP_ERROR
+                            ? "backup-failed"
+                            : "save-failed");
+    body += ",\"message\":";
+    body += json_string (outcome.message.empty ()
+                             ? backend_error_text (outcome.error) + ": " + path
+                             : outcome.message);
+    body += ",\"engine_error\":";
+    body += std::to_string (static_cast<int>(outcome.error));
+    body += ",\"path\":" + json_string (path);
+    body += ",\"path_exists\":";
+    body += outcome.bytes > 0 ? "true" : "false";
+    body += ",\"backup\":";
+    body += outcome.backup.empty () ? "null" : json_string (outcome.backup);
+    body += "}";
+    send_json (connection,
+               locked ? "409 Conflict" : "500 Internal Server Error", body);
+}
+
+void
+send_save_success (GSocketConnection* connection, const SaveOutcome& outcome,
+                   const std::string& path)
+{
+    std::string body = "{\"saved\":true,\"changed\":";
+    body += outcome.changed ? "true" : "false";
+    body += ",\"path\":" + json_string (path);
+    body += ",\"bytes\":" + std::to_string (outcome.bytes);
+    body += ",\"backup\":";
+    body += outcome.backup.empty () ? "null" : json_string (outcome.backup);
+    if (!outcome.backup.empty ())
+        body += ",\"backup_bytes\":" +
+                std::to_string (file_size (outcome.backup));
+    if (outcome.changed && outcome.backup.empty ())
+        body += ",\"warning\":\"the save wrote the book but no backup file "
+                "was found next to it\"";
+    body += "}";
+    send_json (connection, "200 OK", body);
+}
+
+void
+handle_book_save (GSocketConnection* connection, const HttpRequest& request)
+{
+    if (request.method != "POST")
+    {
+        send_json (connection, "405 Method Not Allowed",
+                   "{\"error\":\"method\",\"message\":\"saving needs POST\"}");
+        return;
+    }
+    if (refuse_write (connection))
+        return;
+
+    const std::string path = g_server.book_path;
+    const SaveOutcome outcome = save_book (g_server.session, g_server.book,
+                                           path);
+
+    if (outcome.error != ERR_BACKEND_NO_ERR)
+        send_save_failure (connection, outcome, path);
+    else if (!outcome.verified)
+        send_save_lost (connection, outcome, path);
+    else
+        send_save_success (connection, outcome, path);
+}
+
+/* Accounts the self-test may use: real accounts (not placeholders, not the
+ * root) that carry a commodity. */
+void
+collect_usable_accounts (Account* parent, std::vector<Account*>& out)
+{
+    GList* children = gnc_account_get_children (parent);
+    for (GList* node = children; node != nullptr; node = node->next)
+    {
+        auto* child = static_cast<Account*>(node->data);
+        if (!xaccAccountGetPlaceholder (child)
+            && xaccAccountGetCommodity (child) != nullptr
+            && xaccAccountGetType (child) != ACCT_TYPE_ROOT)
+            out.push_back (child);
+        collect_usable_accounts (child, out);
+    }
+    g_list_free (children);
+}
+
+/* The first pair of usable accounts that share a commodity. */
+bool
+find_transfer_accounts (Account* root, Account*& from, Account*& to)
+{
+    std::vector<Account*> accounts;
+    collect_usable_accounts (root, accounts);
+
+    from = nullptr;
+    to = nullptr;
+    for (size_t i = 0; i < accounts.size () && from == nullptr; ++i)
+    {
+        for (size_t j = i + 1; j < accounts.size (); ++j)
+        {
+            gnc_commodity* left = xaccAccountGetCommodity (accounts[i]);
+            gnc_commodity* right = xaccAccountGetCommodity (accounts[j]);
+            if (left != nullptr && gnc_commodity_equal (left, right))
+            {
+                from = accounts[i];
+                to = accounts[j];
+                break;
+            }
+        }
+    }
+    return from != nullptr;
+}
+
+/* One balanced two-split transaction of one unit of the accounts' commodity,
+ * through the same begin/commit path the register will use. */
+Transaction*
+create_transfer (QofBook* book, Account* from, Account* to,
+                 const char* description)
+{
+    gnc_commodity* commodity = xaccAccountGetCommodity (from);
+    const gint64 fraction = gnc_commodity_get_fraction (commodity);
+    const gnc_numeric amount = gnc_numeric_create (fraction, fraction);
+
+    Transaction* transaction = xaccMallocTransaction (book);
+    xaccTransBeginEdit (transaction);
+    xaccTransSetCurrency (transaction, commodity);
+    xaccTransSetDatePostedSecsNormalized (transaction, gnc_time (nullptr));
+    xaccTransSetDescription (transaction, description);
+
+    Split* debit = xaccMallocSplit (book);
+    xaccSplitSetParent (debit, transaction);
+    xaccSplitSetAccount (debit, from);
+    xaccSplitSetValue (debit, amount);
+    xaccSplitSetAmount (debit, amount);
+
+    Split* credit = xaccMallocSplit (book);
+    xaccSplitSetParent (credit, transaction);
+    xaccSplitSetAccount (credit, to);
+    xaccSplitSetValue (credit, gnc_numeric_neg (amount));
+    xaccSplitSetAmount (credit, gnc_numeric_neg (amount));
+
+    xaccTransCommitEdit (transaction);
+    return transaction;
+}
+
+/* The smallest honest proof that the write path works before a register
+ * exists: one balanced two-split transaction through the engine.  It is
+ * stage-1 scaffolding; the register API replaces it. */
+void
+handle_book_selftest (GSocketConnection* connection, const HttpRequest& request)
+{
+    if (request.method != "POST")
+    {
+        send_json (connection, "405 Method Not Allowed",
+                   "{\"error\":\"method\",\"message\":\"the self-test needs POST\"}");
+        return;
+    }
+    if (refuse_write (connection))
+        return;
+
+    Account* from = nullptr;
+    Account* to = nullptr;
+    if (!find_transfer_accounts (g_server.root, from, to))
+    {
+        send_json (connection, "409 Conflict",
+                   "{\"error\":\"no-accounts\",\"message\":\"the book has "
+                   "no two non-placeholder accounts sharing a commodity, "
+                   "so the self-test created nothing\"}");
+        return;
+    }
+
+    gnc_commodity* commodity = xaccAccountGetCommodity (from);
+    const char* description = "gnc-webd write-path selftest";
+    Transaction* transaction = create_transfer (
+        gnc_account_get_book (g_server.root), from, to, description);
+
+    gchar* transaction_guid = guid_to_string (xaccTransGetGUID (transaction));
+    gchar* from_guid = guid_to_string (xaccAccountGetGUID (from));
+    gchar* to_guid = guid_to_string (xaccAccountGetGUID (to));
+
+    std::string body = "{\"created\":true,\"guid\":";
+    body += json_string (transaction_guid);
+    body += ",\"description\":" + json_string (description);
+    body += ",\"from\":{\"account\":";
+    body += json_string (xaccAccountGetName (from));
+    body += ",\"guid\":" + json_string (from_guid) + "}";
+    body += ",\"to\":{\"account\":";
+    body += json_string (xaccAccountGetName (to));
+    body += ",\"guid\":" + json_string (to_guid) + "}";
+    body += ",\"commodity\":";
+    body += json_string (gnc_commodity_get_mnemonic (commodity));
+    body += "}";
+
+    g_free (transaction_guid);
+    g_free (from_guid);
+    g_free (to_guid);
+
+    send_json (connection, "200 OK", body);
+}
+
 gboolean
 on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
 {
@@ -1804,6 +2226,14 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
         body += std::to_string (g_server.top_level);
         body += "}";
         send_response (connection, "200 OK", "application/json", body);
+    }
+    else if (route == "api/book/save")
+    {
+        handle_book_save (connection, request);
+    }
+    else if (route == "api/book/selftest")
+    {
+        handle_book_selftest (connection, request);
     }
     else if (route == "api/accounts")
     {
@@ -2336,7 +2766,28 @@ struct Arguments
 {
     const char* backend = nullptr;
     const char* book = nullptr;
+    bool writable = false;
+    bool break_lock = false;
 };
+
+GMainLoop* g_loop = nullptr;
+
+gboolean
+quit_on_signal (gpointer)
+{
+    if (g_loop != nullptr)
+        g_main_loop_quit (g_loop);
+    return G_SOURCE_REMOVE;
+}
+
+#ifdef G_OS_WIN32
+void
+quit_on_signal_win (int)
+{
+    if (g_loop != nullptr)
+        g_main_loop_quit (g_loop);
+}
+#endif
 
 void
 webd_main (void* data, int argc, char** argv)
@@ -2376,8 +2827,53 @@ webd_main (void* data, int argc, char** argv)
         exit (1);
     }
 
-    qof_session_begin (session, args->book, SESSION_READ_ONLY);
-    if (qof_session_get_error (session) != ERR_BACKEND_NO_ERR)
+    /* ADR 0013: writable is a mode of the process, chosen here and nowhere
+     * else.  The default is SESSION_READ_ONLY, exactly as before. */
+    bool writable = args->writable;
+    const gchar* writable_env = g_getenv ("GNC_WEBUI_WRITABLE");
+    if (writable_env != nullptr && writable_env[0] != '\0'
+        && g_strcmp0 (writable_env, "0") != 0)
+        writable = true;
+
+    if (writable && !gnc_uri_targets_local_fs (args->book))
+    {
+        std::fprintf (stderr,
+                      "webd: --writable supports local book files only, not "
+                      "%s: the lock and backup guarantees are the file "
+                      "backend's (ADR 0013)\n", args->book);
+        exit (1);
+    }
+
+    SessionOpenMode mode = SESSION_READ_ONLY;
+    if (writable)
+        mode = args->break_lock ? SESSION_BREAK_LOCK : SESSION_NORMAL_OPEN;
+
+    qof_session_begin (session, args->book, mode);
+    QofBackendError open_error = qof_session_get_error (session);
+
+    if (writable && open_error == ERR_BACKEND_LOCKED)
+    {
+        /* No dialog in a server, so take the branch the desktop offers as
+         * "Open Read-Only" and say which lock blocked the write. */
+        g_server.locked = true;
+        const char* opened = qof_session_get_file_path (session);
+        gchar* lock_path = gnc_uri_get_path (args->book);
+        g_server.lock_path = opened != nullptr ? std::string (opened)
+                            : lock_path != nullptr ? std::string (lock_path)
+                                                   : std::string (args->book);
+        g_server.lock_path += ".LCK";
+        g_free (lock_path);
+
+        std::fprintf (stderr,
+                      "webd: %s is locked (%s); opening it read-only, so "
+                      "saves will be refused with 409\n",
+                      args->book, g_server.lock_path.c_str ());
+
+        qof_session_begin (session, args->book, SESSION_READ_ONLY);
+        open_error = qof_session_get_error (session);
+    }
+
+    if (open_error != ERR_BACKEND_NO_ERR)
     {
         std::fprintf (stderr, "webd: cannot open %s: %s\n", args->book,
                       qof_session_get_error_message (session));
@@ -2393,6 +2889,28 @@ webd_main (void* data, int argc, char** argv)
     }
 
     QofBook* book = qof_session_get_book (session);
+    g_server.session = session;
+    g_server.book = book;
+    g_server.writable = writable && !g_server.locked;
+
+    /* The route gate is the first line of defence; this is the second.  The
+     * engine's own save paths check the book's read-only flag
+     * (gnc-xml-backend.cpp:315, :364), so a future route that forgot its gate
+     * still cannot write a book this process opened read-only.  The desktop
+     * does the same after "Open Read-Only" (gnc-file.c:1045-1050). */
+    if (!g_server.writable)
+        qof_book_mark_readonly (book);
+
+    const char* opened_path = qof_session_get_file_path (session);
+    if (opened_path != nullptr)
+        g_server.book_path = opened_path;
+    else
+    {
+        gchar* uri_path = gnc_uri_get_path (args->book);
+        g_server.book_path = uri_path != nullptr ? uri_path : args->book;
+        g_free (uri_path);
+    }
+
     g_server.root = gnc_book_get_root_account (book);
     g_server.accounts = g_server.root ? gnc_account_n_descendants (g_server.root) : 0;
     g_server.top_level = g_server.root
@@ -2427,7 +2945,29 @@ webd_main (void* data, int argc, char** argv)
                  g_server.token.c_str ());
     std::fflush (stdout);
 
-    g_main_loop_run (g_main_loop_new (nullptr, FALSE));
+    if (writable)
+    {
+        const std::string mode =
+            g_server.locked
+                ? "read-only (locked: " + g_server.lock_path + ")"
+                : "writable";
+        std::printf ("webd mode: %s\n", mode.c_str ());
+        std::fflush (stdout);
+    }
+
+    g_loop = g_main_loop_new (nullptr, FALSE);
+#ifndef G_OS_WIN32
+    g_unix_signal_add (SIGINT, quit_on_signal, nullptr);
+    g_unix_signal_add (SIGTERM, quit_on_signal, nullptr);
+#else
+    std::signal (SIGINT, quit_on_signal_win);
+    std::signal (SIGTERM, quit_on_signal_win);
+#endif
+    g_main_loop_run (g_loop);
+
+    /* An ordinary Ctrl-C must release the .LCK, or every stop would leave a
+     * lock that refuses the next writable run. */
+    qof_session_end (session);
 }
 
 } // namespace
@@ -2441,6 +2981,10 @@ main (int argc, char** argv)
     {
         if (g_strcmp0 (argv[i], "--backend") == 0 && i + 1 < argc)
             args.backend = argv[++i];
+        else if (g_strcmp0 (argv[i], "--writable") == 0)
+            args.writable = true;
+        else if (g_strcmp0 (argv[i], "--break-lock") == 0)
+            args.break_lock = true;
         else if (args.book == nullptr)
             args.book = argv[i];
     }
@@ -2448,7 +2992,8 @@ main (int argc, char** argv)
     if (args.book == nullptr)
     {
         std::fprintf (stderr,
-                      "usage: %s [--backend <backend-module>] <book>\n", argv[0]);
+                      "usage: %s [--backend <backend-module>] [--writable "
+                      "[--break-lock]] <book>\n", argv[0]);
         return 2;
     }
 
