@@ -257,6 +257,78 @@ check("one register has enough rows to page through",
       str(max((len(data["splits"]) for _, _, data in populated), default=0)) +
       " rows")
 
+# The header the UI builds needs the account's own balance and the tree's
+# subtree total, plus the flags that choose between one figure and two.  The
+# subtree total must be the same number /api/accounts shows for that account;
+# a placeholder's own balance is genuinely zero because every split is in a
+# child, and an asset leaf's own balance is already its subtree total.
+def account_at(path):
+    return next((account for candidate, account in leaves
+                 if candidate == path), None)
+
+
+assets = account_at("Assets")
+check("the fixture has the Assets placeholder account", assets is not None)
+if assets is not None:
+    status, content_type, body = fetch("api/register/" + assets["guid"])
+    assets_register = json.loads(body)
+    check("GET /api/register/Assets succeeds", status == 200, str(status))
+    check("a placeholder's own balance is zero",
+          money(assets_register["balance"]) == 0,
+          repr(assets_register["balance"]))
+    check("a placeholder's subtree total equals /api/accounts' total",
+          money(assets_register["subtree_balance"]) == money(assets["total"]),
+          "%r vs %r" % (assets_register["subtree_balance"], assets["total"]))
+    check("a placeholder's own balance differs from its subtree total",
+          assets_register["own_equals_subtree"] is False)
+    check("a placeholder is flagged placeholder",
+          assets_register["placeholder"] is True)
+    check("a placeholder is flagged as having children",
+          assets_register["has_children"] is True and
+          bool(assets_register["children"]))
+    check("a placeholder names its children in tree order",
+          [child["guid"] for child in assets_register["children"]] ==
+          [child["guid"] for child in assets["children"]],
+          "%d names" % len(assets_register["children"]))
+
+checking = account_at("Assets:Checking")
+check("the fixture has the Assets:Checking leaf", checking is not None)
+if checking is not None:
+    status, content_type, body = fetch("api/register/" + checking["guid"])
+    checking_register = json.loads(body)
+    check("GET /api/register/Assets:Checking succeeds",
+          status == 200, str(status))
+    check("a leaf's own balance equals its subtree total",
+          checking_register["own_equals_subtree"] is True and
+          money(checking_register["balance"]) ==
+          money(checking_register["subtree_balance"]),
+          "%r vs %r" % (checking_register["balance"],
+                        checking_register["subtree_balance"]))
+    check("a leaf's subtree total equals /api/accounts' total",
+          money(checking_register["subtree_balance"]) == money(checking["total"]),
+          "%r vs %r" % (checking_register["subtree_balance"],
+                        checking["total"]))
+    check("a leaf is not a placeholder",
+          checking_register["placeholder"] is False)
+    check("a leaf has no children",
+          checking_register["has_children"] is False and
+          checking_register["children"] == [])
+
+# A credit-normal parent is sign-reversed in exactly the same way as the tree:
+# /api/accounts reports Liabilities as negative, and the register's subtree
+# total must carry the same sign rather than the raw engine sign.
+liabilities = account_at("Liabilities")
+if liabilities is not None:
+    status, content_type, body = fetch("api/register/" + liabilities["guid"])
+    liabilities_register = json.loads(body)
+    check("a credit-normal parent's subtree total keeps the tree's sign",
+          money(liabilities_register["subtree_balance"]) ==
+          money(liabilities["total"]) and
+          liabilities_register["subtree_negative"] ==
+          liabilities["negative"],
+          "%r vs %r" % (liabilities_register["subtree_balance"],
+                        liabilities["total"]))
+
 # The account the gate names: a leaf asset, whose /api/accounts total is its
 # own balance (no children, and assets are not sign-reversed).
 named = next(((path, account, data) for path, account, data in populated

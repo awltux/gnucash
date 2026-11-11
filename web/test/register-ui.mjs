@@ -61,6 +61,14 @@ function* descendants(node, path = '') {
     }
 }
 
+// The tree prints the engine's amount string, which may carry Unicode bidi
+// isolates around a currency amount.  They are invisible but they are part of
+// textContent, so compare figures with them removed.
+const stripIsolates = (text) => (text || '').replace(/[\u2066\u2069]/g, '');
+
+const treeTotal = async (guid) => stripIsolates(await page.locator(
+    `#tree li[data-guid="${guid}"] > .account-line > span.total`).textContent());
+
 // Pick the leaf account with the most register rows, and one with none.  The
 // account is chosen from the API rather than hard-coded, so the test follows
 // whatever book the runner generated.
@@ -103,6 +111,13 @@ async function gridState() {
             title: document.getElementById('register-title').textContent.trim(),
             countText: document.getElementById('register-count').textContent.trim(),
             balanceText: document.getElementById('register-balance').textContent.trim(),
+            contextHidden: document.getElementById('register-context').hidden,
+            contextText: document.getElementById('register-context').textContent.trim(),
+            childLinks: [...document.querySelectorAll(
+                '#register-context button.link')].map((link) => ({
+                guid: link.dataset.guid,
+                text: link.textContent.trim(),
+            })),
             rows: rows.length,
             selected,
             selectedCount: rows.filter(
@@ -189,6 +204,15 @@ check('the last running balance equals the heading balance',
       state.lastBalance === populated.register.balance &&
       state.balanceText === `Balance: ${populated.register.balance}`,
       `last row ${state.lastBalance}, heading ${state.balanceText}`);
+const leafTreeTotal = await treeTotal(populated.account.guid);
+check('a leaf shows one balance, not a subtree total',
+      !state.balanceText.includes('including sub-accounts') &&
+      stripIsolates(state.balanceText) ===
+        `Balance: ${populated.register.balance}`,
+      state.balanceText);
+check('a leaf\'s subtree total matches what the tree shows for it',
+      stripIsolates(populated.register.subtree_balance) === leafTreeTotal,
+      `${populated.register.subtree_balance} vs ${leafTreeTotal}`);
 check('the grid has honest grid/row/gridcell roles',
       state.role === 'grid' && state.rowRoles && state.cellRoles &&
       state.ariaRowcount === String(state.rows + 1) &&
@@ -366,6 +390,73 @@ check('an account with no splits shows an empty grid, not an error',
 const emptyMessage = await page.evaluate(() =>
     document.getElementById('register-message').hidden);
 check('the empty register has no error message', emptyMessage, `hidden=${emptyMessage}`);
+
+/* ------------------------------------------ a placeholder / parent account */
+
+// Assets is a placeholder on both fixtures this suite runs against: it has no
+// splits of its own, and its money is in its children.  The register must show
+// the account's own balance and the tree's subtree total, say why the grid is
+// empty, and link to the children.
+const placeholder = (accounts.children || []).find(
+    (account) => account.name === 'Assets');
+check('the book has the Assets placeholder account with children',
+      Boolean(placeholder) && placeholder.children.length > 0,
+      placeholder ? `${placeholder.children.length} children` : 'none');
+
+const assets = placeholder
+    ? await getJson(`api/register/${placeholder.guid}`) : null;
+check('the Assets register reports its own balance and subtree total',
+      Boolean(assets) && assets.placeholder === true &&
+      assets.has_children === true &&
+      assets.own_equals_subtree === false &&
+      assets.subtree_balance !== assets.balance,
+      assets ? `${assets.balance} / ${assets.subtree_balance}` : 'none');
+
+await clickAccount(placeholder.guid);
+state = await gridState();
+check('a placeholder shows its own balance and the subtree total',
+      state.balanceText.startsWith('this account ') &&
+      state.balanceText.includes(' · including sub-accounts ') &&
+      stripIsolates(state.balanceText) ===
+        `this account ${assets.balance} · including sub-accounts ` +
+        `${stripIsolates(assets.subtree_balance)}`,
+      state.balanceText);
+const assetsTreeTotal = await treeTotal(placeholder.guid);
+check('a placeholder\'s subtree figure matches what the tree shows for it',
+      stripIsolates(assets.subtree_balance) === assetsTreeTotal,
+      `${assets.subtree_balance} vs ${assetsTreeTotal}`);
+check('a placeholder explains why its register is empty',
+      !state.contextHidden && /placeholder/i.test(state.contextText) &&
+      /transactions are in its sub-accounts/i.test(state.contextText),
+      state.contextText);
+check('a placeholder links to its sub-accounts',
+      state.childLinks.length === assets.children.length &&
+      state.childLinks.every((link, index) =>
+          link.guid === assets.children[index].guid &&
+          link.text === assets.children[index].name),
+      state.childLinks.map((link) => link.text).join(', '));
+
+const firstChild = assets.children[0];
+const childRegister = await getJson(`api/register/${firstChild.guid}`);
+await page.locator(
+    `#register-context button.link[data-guid="${firstChild.guid}"]`).click();
+await page.waitForFunction(
+    (expected) => {
+        const section = document.getElementById('register');
+        return !section.hidden &&
+            document.getElementById('register-title').textContent.trim() ===
+                expected.title &&
+            document.querySelectorAll('#register-grid tbody tr').length ===
+                expected.rows;
+    },
+    { title: childRegister.full_name, rows: childRegister.splits.length },
+    { timeout: 30000 });
+state = await gridState();
+check('a sub-account link opens that child\'s register',
+      state.title === childRegister.full_name &&
+      state.rows === childRegister.splits.length &&
+      new URL(page.url()).pathname.endsWith(`/register/${firstChild.guid}`),
+      `${state.title}, ${state.rows} rows, ${page.url()}`);
 
 for (const problem of problems) console.log(`page problem: ${problem}`);
 check('no console errors or failed requests', problems.length === 0,

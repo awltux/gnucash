@@ -135,6 +135,66 @@ account_guid_text (Account* account)
     return result;
 }
 
+/* The account tree's total: the recursive present balance in the account's
+ * own currency, sign-reversed for credit-normal accounts and formatted by the
+ * engine's own balance printer.  /api/accounts and the register header both
+ * call this, so the tree and the header cannot disagree: there is one
+ * calculation, not two that could drift apart. */
+std::string
+account_total_text (Account* account, bool* negative = nullptr)
+{
+    gboolean tree_negative = FALSE;
+    gchar* text = gnc_ui_account_get_print_balance (
+        xaccAccountGetPresentBalanceInCurrency, account, TRUE, &tree_negative);
+    if (negative != nullptr)
+        *negative = tree_negative != FALSE;
+    std::string result = text != nullptr ? text : "";
+    g_free (text);
+    return result;
+}
+
+/* The two figures the tree and a register header both show for one account.
+ * `own` is the account's own balance; `subtree` is the recursive present
+ * balance the account tree calls its total, sign-reversed for credit-normal
+ * accounts and printed by account_total_text().  Comparing them in the
+ * engine's signed space is what lets a header print one figure for a leaf and
+ * two for a parent. */
+struct AccountFigures
+{
+    gnc_numeric own{};
+    gnc_numeric subtree{};
+    std::string subtree_text;
+    bool subtree_negative = false;
+    bool own_equals_subtree = false;
+};
+
+AccountFigures
+account_figures (Account* account)
+{
+    AccountFigures figures;
+    figures.own = xaccAccountGetBalance (account);
+    figures.subtree =
+        xaccAccountGetPresentBalanceInCurrency (account, nullptr, TRUE);
+    figures.subtree_text =
+        account_total_text (account, &figures.subtree_negative);
+    figures.own_equals_subtree =
+        gnc_numeric_equal (figures.own, figures.subtree);
+    return figures;
+}
+
+/* The account's direct children, in the tree's order.  The caller owns the
+ * vector; the accounts belong to the book. */
+std::vector<Account*>
+account_children (Account* account)
+{
+    std::vector<Account*> children;
+    GList* list = gnc_account_get_children (account);
+    for (GList* node = list; node != nullptr; node = node->next)
+        children.push_back (static_cast<Account*> (node->data));
+    g_list_free (list);
+    return children;
+}
+
 std::string
 account_json (Account* account)
 {
@@ -144,11 +204,9 @@ account_json (Account* account)
     out += json_escape (account_guid_text (account).c_str ());
     out += "\",\"total\":\"";
 
-    gboolean negative = FALSE;
-    gchar* text = gnc_ui_account_get_print_balance (
-        xaccAccountGetPresentBalanceInCurrency, account, TRUE, &negative);
-    out += json_escape (text != nullptr ? text : "");
-    g_free (text);
+    bool negative = false;
+    const std::string total = account_total_text (account, &negative);
+    out += json_escape (total.c_str ());
 
     out += "\",\"negative\":";
     out += negative ? "true" : "false";
@@ -965,6 +1023,26 @@ register_json (Account* account)
     const GNCPrintAmountInfo info = gnc_account_print_info (account, TRUE);
     const std::vector<RegisterRow> rows = register_rows (account);
 
+    /* `own` keeps its old meaning (the account's own balance); the subtree
+     * fields are the tree's total and the flags that choose the header form. */
+    const AccountFigures figures = account_figures (account);
+    const std::vector<Account*> children = account_children (account);
+
+    std::string children_json = "[";
+    bool first_child = true;
+    for (Account* child : children)
+    {
+        if (!first_child)
+            children_json += ",";
+        first_child = false;
+        children_json += "{\"name\":\"";
+        children_json += json_escape (xaccAccountGetName (child));
+        children_json += "\",\"guid\":\"";
+        children_json += json_escape (account_guid_text (child).c_str ());
+        children_json += "\"}";
+    }
+    children_json += "]";
+
     gchar* full_name = gnc_account_get_full_name (account);
     std::string out = "{\"account\":\"";
     out += json_escape (xaccAccountGetName (account));
@@ -974,11 +1052,22 @@ register_json (Account* account)
     out += json_escape (full_name != nullptr ? full_name : "");
     g_free (full_name);
     out += "\",\"balance\":\"";
-    const gchar* balance = xaccPrintAmount (xaccAccountGetBalance (account), info);
+    const gchar* balance = xaccPrintAmount (figures.own, info);
     out += json_escape (balance != nullptr ? balance : "");
     out += "\",\"balance_negative\":";
-    out += gnc_numeric_negative_p (xaccAccountGetBalance (account)) ? "true"
-                                                                   : "false";
+    out += gnc_numeric_negative_p (figures.own) ? "true" : "false";
+    out += ",\"subtree_balance\":\"";
+    out += json_escape (figures.subtree_text.c_str ());
+    out += "\",\"subtree_negative\":";
+    out += figures.subtree_negative ? "true" : "false";
+    out += ",\"placeholder\":";
+    out += xaccAccountGetPlaceholder (account) ? "true" : "false";
+    out += ",\"has_children\":";
+    out += children.empty () ? "false" : "true";
+    out += ",\"own_equals_subtree\":";
+    out += figures.own_equals_subtree ? "true" : "false";
+    out += ",\"children\":";
+    out += children_json;
     out += ",\"row_count\":";
     out += std::to_string (rows.size ());
     out += ",\"editable\":";
@@ -1138,6 +1227,9 @@ register_html (Account* account)
 {
     const GNCPrintAmountInfo info = gnc_account_print_info (account, TRUE);
     const std::vector<RegisterRow> rows = register_rows (account);
+    const AccountFigures figures = account_figures (account);
+    const bool has_children = !account_children (account).empty ();
+    const bool placeholder = xaccAccountGetPlaceholder (account);
 
     std::string out = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>";
     out += html_escape (xaccAccountGetName (account));
@@ -1145,6 +1237,7 @@ register_html (Account* account)
            "body{font-family:system-ui,sans-serif;margin:1rem;color:#222}"
            "h1{font-size:1.2rem;margin:0 0 .25rem}"
            "p.total{color:#555;margin:0 0 1rem}"
+           "p.context{color:#555;margin:0 0 1rem}"
            "table{border-collapse:collapse;width:100%}"
            "th,td{padding:.3rem .6rem;border-bottom:1px solid #e0e0e0;text-align:left}"
            "th{font-weight:600;color:#444}"
@@ -1154,10 +1247,32 @@ register_html (Account* account)
            "</style></head><body><h1>";
     out += html_escape (xaccAccountGetName (account));
     out += "</h1><p class='total'>Balance: ";
-    const gchar* balance = xaccPrintAmount (xaccAccountGetBalance (account), info);
+    const gchar* balance = xaccPrintAmount (figures.own, info);
     out += html_escape (balance != nullptr ? balance : "");
+    out += "</p>";
 
-    out += "</p><table><thead><tr><th>Date</th><th>Description</th>"
+    /* The same two figures the shell's header shows: the account's own balance
+     * above, and the tree's subtree total when they differ.  This page is the
+     * report frame's drill-down target, so it explains a placeholder the same
+     * way the shell does rather than showing an empty table with no reason. */
+    if (!figures.own_equals_subtree)
+    {
+        out += "<p class='total'>Including sub-accounts: ";
+        out += html_escape (figures.subtree_text.c_str ());
+        out += "</p>";
+    }
+    if (rows.empty () && (placeholder || has_children))
+    {
+        out += "<p class='context'>";
+        out += (placeholder
+            ? "This account is a placeholder: its transactions are in its "
+              "sub-accounts."
+            : "This account has no transactions of its own: they are in its "
+              "sub-accounts.");
+        out += "</p>";
+    }
+
+    out += "<table><thead><tr><th>Date</th><th>Description</th>"
            "<th>Transfer</th><th class='num'>Amount</th>"
            "<th class='num'>Balance</th></tr></thead><tbody>";
 

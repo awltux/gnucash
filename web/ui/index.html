@@ -55,6 +55,8 @@
   #register { border-top: 1px solid #ddd; margin-top: 1.25rem; padding-top: .5rem; }
   #register h2 { font-size: 1.2rem; margin: 0 0 .25rem; }
   #register-meta { color: #555; margin: 0 0 .6rem; display: flex; gap: 1.5rem; }
+  #register-context { margin: 0 0 .6rem; }
+  #register-context button.link:hover { text-decoration: underline; }
   #register-message { color: #a00; }
   #register-grid { border-collapse: collapse; width: 100%; }
   #register-grid-wrap { max-height: 55vh; overflow: auto;
@@ -426,6 +428,7 @@
     <span id="register-balance"></span>
     <span id="register-count"></span>
   </p>
+  <p id="register-context" class="hint" hidden></p>
   <p id="register-readonly" class="hint" hidden></p>
   <p id="register-actions" hidden>
     <button id="register-save" type="button">Save</button>
@@ -2274,14 +2277,64 @@ function updateDirtyUi() {
   refreshMenuStates();
 }
 
+// The header's figures.  A leaf's own balance is its subtree total, so it
+// keeps the single "Balance: ..." line the register has always shown.  An
+// account whose children hold the money shows both: its own balance, and the
+// tree's subtree total, which the server computes with the same engine call
+// /api/accounts uses.
+function renderRegisterBalance(data) {
+  const balance = document.getElementById("register-balance");
+  if (data.own_equals_subtree) {
+    balance.textContent = `Balance: ${data.balance}`;
+    return;
+  }
+  balance.textContent =
+    `this account ${data.balance} · including sub-accounts ` +
+    `${data.subtree_balance}`;
+}
+
+// A placeholder (or any parent with no splits of its own) has no rows to show.
+// An empty grid reads as a broken register, so say why it is empty and link
+// straight to the accounts that do hold the transactions.
+function renderRegisterContext(data) {
+  const context = document.getElementById("register-context");
+  context.replaceChildren();
+  context.hidden = true;
+  if (data.row_count > 0 || !(data.placeholder || data.has_children)) return;
+  context.append(document.createTextNode(
+    data.placeholder
+      ? "This account is a placeholder: its transactions are in its " +
+        "sub-accounts."
+      : "This account has no transactions of its own: they are in its " +
+        "sub-accounts."));
+  if (!data.children || data.children.length === 0) {
+    context.hidden = false;
+    return;
+  }
+  context.append(document.createTextNode(" Open a sub-account: "));
+  for (const [index, child] of data.children.entries()) {
+    if (index > 0) context.append(document.createTextNode(", "));
+    const link = el("button", "link", child.name);
+    link.type = "button";
+    link.dataset.guid = child.guid;
+    link.title = `Open the register for ${child.name}`;
+    link.addEventListener("click", () => {
+      const account = findAccount(child.guid);
+      if (account) selectAccount(account, null);
+    });
+    context.append(link);
+  }
+  context.hidden = false;
+}
+
 // Draw a register payload: the heading, the counts and every row.  Both the
 // first open and the re-read after an edit go through here, so there is one
 // renderer, not two that could disagree.
 function renderRegisterBody(data) {
   document.getElementById("register-title").textContent =
     data.full_name || data.account;
-  document.getElementById("register-balance").textContent =
-    `Balance: ${data.balance}`;
+  renderRegisterBalance(data);
+  renderRegisterContext(data);
   document.getElementById("register-count").textContent =
     `${data.row_count} row${data.row_count === 1 ? "" : "s"}`;
   document.getElementById("register-grid")
@@ -2504,6 +2557,10 @@ async function openRegister(account, options = {}) {
   // second copy of it under the tree.
   section.hidden = activeTab === ACCOUNTS_TAB;
   message.hidden = true;
+  // The previous account's explanation must not stand over this one's error.
+  const context = document.getElementById("register-context");
+  context.replaceChildren();
+  context.hidden = true;
   closeRegisterDetail(false);
 
   try {
