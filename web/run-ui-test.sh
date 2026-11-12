@@ -18,7 +18,7 @@
 #   phase 1  sample1.gnucash  -> ui-test.mjs      the page, reports, designer,
 #                                                 menu bar
 #   phase 2  generated demo   -> register-ui.mjs  register grid, keyboard,
-#                                                 transaction panel, menu items
+#                                                 inline split band, menu items
 #   phase 3  a copy of the demo, --writable
 #                             -> register-edit-ui.mjs
 #                                                 editing a cell, the dirty
@@ -185,7 +185,7 @@ else
 fi
 
 echo
-echo "== the read-only register: grid, keyboard, transaction panel"
+echo "== the read-only register: grid, keyboard, inline split band"
 start_server "$TMP/demo.gnucash" "$TMP/demo.log" "$TMP/demo-reports.json" \
     || fail "register server did not start"
 echo "server: $URL"

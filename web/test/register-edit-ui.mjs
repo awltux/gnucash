@@ -174,13 +174,13 @@ async function openAccount(account, rows) {
         (expected) => {
             const section = document.getElementById('register');
             if (section.hidden) return false;
-            return document.querySelectorAll('#register-grid tbody tr').length === expected;
+            return document.querySelectorAll('#register-grid > tbody > tr:not(.detail-band)').length === expected;
         }, rows, { timeout: 30000 });
 }
 
 async function cellText(row, column) {
     return page.evaluate(([r, c]) => {
-        const tr = document.querySelectorAll('#register-grid tbody tr')[r];
+        const tr = document.querySelectorAll('#register-grid > tbody > tr:not(.detail-band)')[r];
         return tr ? tr.children[c].textContent : null;
     }, [row, column]);
 }
@@ -191,7 +191,7 @@ async function cellText(row, column) {
 async function rowText(guid) {
     return page.evaluate((g) => {
         const tr = document.querySelector(
-            `#register-grid tbody tr[data-guid="${g}"]`);
+            `#register-grid > tbody > tr[data-guid="${g}"]`);
         if (!tr) return null;
         return {
             num: tr.children[1].textContent,
@@ -204,7 +204,7 @@ async function rowText(guid) {
 const COLUMN = { num: 1, description: 2, memo: 3, amount: 6, balance: 7 };
 
 async function clickCell(row, column) {
-    await page.locator('#register-grid tbody tr').nth(row)
+    await page.locator('#register-grid > tbody > tr:not(.detail-band)').nth(row)
         .locator('td').nth(column).click();
 }
 
@@ -231,7 +231,7 @@ async function typeInto(row, column, text) {
 await openAccount(populated.account, populated.register.splits.length);
 
 const affordance = await page.evaluate(() => {
-    const firstRow = document.querySelector('#register-grid tbody tr');
+    const firstRow = document.querySelector('#register-grid > tbody > tr:not(.detail-band)');
     return {
         actionsHidden: document.getElementById('register-actions').hidden,
         readonlyHidden: document.getElementById('register-readonly').hidden,
@@ -242,7 +242,7 @@ const affordance = await page.evaluate(() => {
         rowReadonly: firstRow.getAttribute('aria-readonly'),
         amountEditable: firstRow.children[6].classList.contains('editable'),
         balanceEditable: firstRow.children[7].classList.contains('editable'),
-        rows: document.querySelectorAll('#register-grid tbody tr').length,
+        rows: document.querySelectorAll('#register-grid > tbody > tr:not(.detail-band)').length,
     };
 });
 check('a writable session shows the Save control and no read-only note',
@@ -302,8 +302,8 @@ await page.keyboard.press('Escape');
 await page.waitForFunction(() => document.querySelectorAll('#register-grid .cell-editor').length === 0,
                            null, { timeout: 15000 });
 const afterEscape = await page.evaluate(() => ({
-    text: document.querySelector('#register-grid tbody tr td.description').textContent,
-    marked: document.querySelectorAll('#register-grid tbody tr.edited').length,
+    text: document.querySelector('#register-grid > tbody > tr:not(.detail-band) td.description').textContent,
+    marked: document.querySelectorAll('#register-grid > tbody > tr.edited').length,
     dirtyHidden: document.getElementById('register-dirty-state').hidden,
     saveDisabled: document.getElementById('register-save').disabled,
 }));
@@ -322,8 +322,8 @@ await clickCell(1, 0); // the date cell has no field, so no editor replaces it
 await page.waitForFunction(() => document.querySelectorAll('#register-grid .cell-editor').length === 0,
                            null, { timeout: 15000 });
 const afterBlur = await page.evaluate(() => ({
-    text: document.querySelector('#register-grid tbody tr td.description').textContent,
-    marked: document.querySelectorAll('#register-grid tbody tr.edited').length,
+    text: document.querySelector('#register-grid > tbody > tr:not(.detail-band) td.description').textContent,
+    marked: document.querySelectorAll('#register-grid > tbody > tr.edited').length,
 }));
 check('leaving the editor without Enter or Tab cancels it too',
       afterBlur.text === original.description && afterBlur.marked === 0,
@@ -364,13 +364,13 @@ await page.waitForFunction(() =>
 await page.keyboard.type('tab memo');
 await page.keyboard.press('Enter');
 await page.waitForFunction((g) => {
-    const tr = document.querySelector(`#register-grid tbody tr[data-guid="${g}"]`);
+    const tr = document.querySelector(`#register-grid > tbody > tr[data-guid="${g}"]`);
     return document.querySelectorAll('#register-grid .cell-editor').length === 0 &&
         tr && tr.children[3].textContent === 'tab memo';
 }, editedGuid, { timeout: 15000 });
 
 const keyboardRow = await page.evaluate((g) => {
-    const tr = document.querySelector(`#register-grid tbody tr[data-guid="${g}"]`);
+    const tr = document.querySelector(`#register-grid > tbody > tr[data-guid="${g}"]`);
     return {
         num: tr.children[1].textContent,
         description: tr.children[2].textContent,
@@ -396,9 +396,9 @@ check('the engine has the keyboard edits, not just the page',
 /* ------------------------------------------------------------ dirty state */
 
 const dirtyState = await page.evaluate((g) => {
-    const tr = document.querySelector(`#register-grid tbody tr[data-guid="${g}"]`);
+    const tr = document.querySelector(`#register-grid > tbody > tr[data-guid="${g}"]`);
     return {
-        marked: document.querySelectorAll('#register-grid tbody tr.edited').length,
+        marked: document.querySelectorAll('#register-grid > tbody > tr.edited').length,
         dirtyHidden: document.getElementById('register-dirty-state').hidden,
         dirtyText: document.getElementById('register-dirty-state').textContent.trim(),
         saveDisabled: document.getElementById('register-save').disabled,
@@ -446,7 +446,7 @@ await page.keyboard.press('Enter'); // activate File > Save from the keyboard
 const saveHTTP = await saveResponse;
 const saveBody = await saveHTTP.json();
 await page.waitForFunction(() =>
-    document.querySelectorAll('#register-grid tbody tr.edited').length === 0,
+    document.querySelectorAll('#register-grid > tbody > tr.edited').length === 0,
     null, { timeout: 15000 });
 
 check('Save posts to /api/book/save and succeeds',
@@ -458,7 +458,7 @@ check('Save reports that it wrote the book and names the backup',
       `${saveBody.path} (${saveBody.bytes} bytes), backup ${saveBody.backup}`);
 
 const afterSave = await page.evaluate(() => ({
-    marked: document.querySelectorAll('#register-grid tbody tr.edited').length,
+    marked: document.querySelectorAll('#register-grid > tbody > tr.edited').length,
     dirtyHidden: document.getElementById('register-dirty-state').hidden,
     saveDisabled: document.getElementById('register-save').disabled,
     status: document.getElementById('register-edit-status').textContent,
@@ -510,7 +510,7 @@ const afterRefusal = await page.evaluate(() => ({
     status: document.getElementById('register-edit-status').textContent,
     isError: document.getElementById('register-edit-status')
         .classList.contains('error'),
-    marked: document.querySelectorAll('#register-grid tbody tr.edited').length,
+    marked: document.querySelectorAll('#register-grid > tbody > tr.edited').length,
     dirtyHidden: document.getElementById('register-dirty-state').hidden,
     saveDisabled: document.getElementById('register-save').disabled,
 }));
@@ -537,7 +537,7 @@ await page.waitForFunction(
     () => document.getElementById('register-dirty-state').hidden,
     null, { timeout: 5000 }).catch(() => {});
 const afterRetry = await page.evaluate(() => ({
-    marked: document.querySelectorAll('#register-grid tbody tr.edited').length,
+    marked: document.querySelectorAll('#register-grid > tbody > tr.edited').length,
     dirtyHidden: document.getElementById('register-dirty-state').hidden,
     saveDisabled: document.getElementById('register-save').disabled,
     status: document.getElementById('register-edit-status').textContent,
@@ -557,7 +557,7 @@ await openAccount(populated.account, populated.register.splits.length);
 
 const reloaded = await rowText(editedGuid);
 const reloadedState = await page.evaluate(() => ({
-    marked: document.querySelectorAll('#register-grid tbody tr.edited').length,
+    marked: document.querySelectorAll('#register-grid > tbody > tr.edited').length,
     saveDisabled: document.getElementById('register-save').disabled,
 }));
 check('after a reload the saved edit is still in the register',
@@ -583,9 +583,9 @@ await page.waitForFunction(() =>
     null, { timeout: 15000 });
 expectingRefusal = false;
 const afterBad = await page.evaluate(() => ({
-    text: document.querySelectorAll('#register-grid tbody tr')[2]
+    text: document.querySelectorAll('#register-grid > tbody > tr:not(.detail-band)')[2]
         .children[2].textContent,
-    marked: document.querySelectorAll('#register-grid tbody tr.edited').length,
+    marked: document.querySelectorAll('#register-grid > tbody > tr.edited').length,
     status: document.getElementById('register-edit-status').textContent,
     isError: document.getElementById('register-edit-status')
         .classList.contains('error'),
@@ -605,7 +605,7 @@ await page.waitForFunction(() => document.querySelectorAll('#register-grid .cell
 await page.keyboard.type('kept until saved');
 await page.keyboard.press('Enter');
 await page.waitForFunction(() =>
-    document.querySelectorAll('#register-grid tbody tr.edited').length === 1,
+    document.querySelectorAll('#register-grid > tbody > tr.edited').length === 1,
     null, { timeout: 15000 });
 
 // A synthetic beforeunload runs the page's own listener; Chromium's real
@@ -627,7 +627,7 @@ await page.locator(`#tree button.account-name[data-guid="${other[1].guid}"]`).cl
 await page.waitForTimeout(400);
 const afterDismiss = await page.evaluate(() => ({
     title: document.getElementById('register-title').textContent,
-    marked: document.querySelectorAll('#register-grid tbody tr.edited').length,
+    marked: document.querySelectorAll('#register-grid > tbody > tr.edited').length,
     dirtyHidden: document.getElementById('register-dirty-state').hidden,
 }));
 const dismissed = dialogs.slice(dialogsBefore);
@@ -653,7 +653,7 @@ await page.waitForFunction((expected) =>
 const afterAccept = await page.evaluate(() => ({
     title: document.getElementById('register-title').textContent,
     dirtyHidden: document.getElementById('register-dirty-state').hidden,
-    marked: document.querySelectorAll('#register-grid tbody tr.edited').length,
+    marked: document.querySelectorAll('#register-grid > tbody > tr.edited').length,
 }));
 check('OK saves first and then opens the other account',
       guardSaveHTTP.status() === 200 && afterAccept.dirtyHidden &&

@@ -56,7 +56,14 @@
   #register h2 { font-size: 1.2rem; margin: 0 0 .25rem; }
   #register-meta { color: #555; margin: 0 0 .6rem; display: flex; gap: 1.5rem; }
   #register-context { margin: 0 0 .6rem; }
-  #register-context button.link:hover { text-decoration: underline; }
+  /* The sub-account chooser: the name is the control, the subtree total is an
+     annotation beside it, not part of the label. */
+  #register-context .account-choice-name { font-weight: 600; }
+  #register-context button.link:hover .account-choice-name {
+      text-decoration: underline; }
+  #register-context .account-choice-total { font-weight: 400; color: #555;
+      font-variant-numeric: tabular-nums; }
+  #register-context .account-choice-total.negative { color: #c00; }
   #register-message { color: #a00; }
   #register-grid { border-collapse: collapse; width: 100%; }
   #register-grid-wrap { max-height: 55vh; overflow: auto;
@@ -73,8 +80,8 @@
   #register-grid td.description, #register-grid td.memo { white-space: normal; }
   #register-grid tbody tr.voided td { color: #999; text-decoration: line-through; }
   /* A split transaction's transfer cell is a control, not a label: it opens
-     the panel that lists the other legs.  A two-split row keeps the plain
-     text, so the difference is visible at a glance. */
+     the transaction's splits in a band under its own row.  A two-split row
+     keeps the plain text, so the difference is visible at a glance. */
   #register-grid button.split-link { font: inherit; padding: 0;
       border: 0; background: none; color: #0645ad; text-decoration: underline;
       text-underline-offset: 2px; cursor: pointer; }
@@ -100,20 +107,36 @@
   #register-dirty-state { color: #8a5a00; font-weight: 600; }
   #register-edit-status.error { color: #a00; }
   #register-readonly { color: #555; margin: 0 0 .5rem; }
-  #register-detail { border: 1px solid #b9cfe6; background: #f7fafd;
-                     padding: .6rem .8rem; margin-top: .8rem; }
-  #register-detail h3 { font-size: 1rem; margin: 0 0 .4rem; }
-  #register-detail table { border-collapse: collapse; width: 100%; }
-  #register-detail th, #register-detail td { padding: .25rem .5rem;
-      border-bottom: 1px solid #dde6ef; text-align: left; }
-  #register-detail td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  #register-detail .detail-meta { margin: 0 0 .4rem; color: #333; }
-  #register-detail .detail-total { margin: .5rem 0 0; font-weight: 600; }
-  #register-detail .detail-total.unbalanced { color: #a00; }
-  #register-detail a.account-link { color: #0645ad; }
-  #register-detail a.account-link:focus-visible { outline: 2px solid #0645ad;
-      outline-offset: 1px; }
-  #register-detail .actions { margin: .5rem 0 0; }
+  /* A transaction's splits are disclosed in place: a band row immediately
+     under the row it belongs to, one cell across every column.  It is flat
+     and edge to edge -- part of the table, not a card floating below it --
+     so it aligns with the grid and scrolls inside the same box. */
+  #register-grid tbody tr.detail-band > td { padding: .35rem .55rem .55rem;
+      background: #eef4fb; border-bottom: 1px solid #c9d8ea;
+      white-space: normal; }
+  #register-grid tr.detail-band .detail-title { font-size: .95rem;
+      font-weight: 600; margin: 0 0 .2rem; }
+  #register-grid tr.detail-band .detail-meta { margin: 0 0 .35rem;
+      color: #333; }
+  #register-grid tr.detail-band table { border-collapse: collapse;
+      width: 100%; margin-top: .15rem; }
+  #register-grid tr.detail-band th,
+  #register-grid tr.detail-band td { padding: .2rem .5rem;
+      border-bottom: 1px solid #d5e1ef; text-align: left;
+      white-space: nowrap; }
+  /* The nested split table has its own header; the grid's sticky header
+     rule must not make it sticky too. */
+  #register-grid tr.detail-band thead th { position: static; z-index: auto;
+      background: transparent; color: #444; }
+  #register-grid tr.detail-band td.num { text-align: right;
+      font-variant-numeric: tabular-nums; }
+  #register-grid tr.detail-band .detail-total { margin: .45rem 0 0;
+      font-weight: 600; }
+  #register-grid tr.detail-band .detail-total.unbalanced { color: #a00; }
+  #register-grid tr.detail-band a.account-link { color: #0645ad; }
+  #register-grid tr.detail-band a.account-link:focus-visible {
+      outline: 2px solid #0645ad; outline-offset: 1px; }
+  #register-grid tr.detail-band .hint { color: #666; margin: .2rem 0; }
   /* The Reports page: rail, document, inspector (doc/web-ui-reports-layout.md).
      The page is a grid that owns the remaining viewport height, so the three
      panes scroll independently and the document fills its column.  The
@@ -469,24 +492,6 @@
     <tbody></tbody>
   </table>
   </div>
-  <section id="register-detail" hidden tabindex="-1" role="region"
-           aria-labelledby="register-detail-title"
-           aria-describedby="register-detail-meta">
-    <h3 id="register-detail-title"></h3>
-    <p id="register-detail-meta" class="detail-meta"></p>
-    <p id="register-detail-status" class="hint" hidden></p>
-    <table id="register-detail-table" role="table"
-           aria-label="Splits of this transaction">
-      <thead>
-        <tr role="row"><th scope="col">Account</th><th scope="col">Memo</th>
-            <th scope="col">Action</th><th scope="col">R</th>
-            <th scope="col">Amount</th></tr>
-      </thead>
-      <tbody id="register-detail-body"></tbody>
-    </table>
-    <p id="register-detail-total" class="detail-total"></p>
-    <p class="actions"><button id="register-detail-close" type="button">Close</button></p>
-  </section>
 </section>
 </div><!-- #page-book -->
 
@@ -2016,10 +2021,10 @@ let sessionWritable = false;      // /api/register's `editable`
 let bookDirty = false;            // an edit was committed and not yet saved
 const editedSplits = new Set();   // split GUIDs edited since the last save
 let activeEditor = null;          // { cell, input, rowIndex, field, rowData }
-// The register row the open transaction panel came from.  Escape returns
-// focus there, even if the pending row selection moved while the panel had
-// focus (a click, or the account changing).  -1 means no panel is open.
-let detailOriginIndex = -1;
+// The register row whose detail band is open.  `band` is the row that follows
+// it, `button` the disclosure control it came from (absent on a row that has
+// no control), and `index` the row Escape returns focus to.
+let openDetail = null;
 
 // The fields the edit route accepts, and whether each one belongs to the split
 // or to its transaction.  `amount` is absent on purpose: the server refuses it
@@ -2031,7 +2036,11 @@ const EDITABLE_FIELDS = {
 };
 
 function registerRowElements() {
-  return [...document.querySelectorAll("#register-grid tbody tr")];
+  // Only the register's own rows: a detail band is a row of the grid too, and
+  // the arrows must walk the account's rows, not the bands between them.  The
+  // nested split table has rows of its own, so the child combinators matter.
+  return [...document.querySelectorAll(
+    "#register-grid > tbody > tr:not(.detail-band)")];
 }
 
 // The cells in display order: [class, text, editable field or null].  The
@@ -2105,7 +2114,7 @@ function selectRegisterRow(index, focus = true, cell) {
 // grid, not a hard-coded guess.  The header row is the -1.
 function registerPageSize() {
   const wrap = document.getElementById("register-grid-wrap");
-  const row = wrap.querySelector("tbody tr");
+  const row = wrap.querySelector("tbody > tr:not(.detail-band)");
   if (!row || row.offsetHeight === 0) return 10;
   return Math.max(1, Math.floor(wrap.clientHeight / row.offsetHeight) - 1);
 }
@@ -2137,10 +2146,55 @@ const NON_EDITABLE_HINTS = {
      "editable.",
 };
 
+// The id of the band a row's disclosure control points at.  A split GUID is
+// hex, so it is safe in an id, and one row's band never collides with another.
+function detailBandId(row) {
+  return `split-detail-${row.guid}`;
+}
+
+// The band's one cell: a gridcell spanning every register column, so the
+// band is a row of the grid rather than a block beside it.
+function createDetailBandCell() {
+  const cell = el("td", "detail-band-cell");
+  cell.setAttribute("role", "gridcell");
+  cell.setAttribute("aria-colindex", "1");
+  cell.setAttribute("aria-colspan", "8");
+  cell.colSpan = 8; // one cell across every register column
+  return cell;
+}
+
+// The band itself: a row of the register grid, directly after the row it
+// belongs to, holding one cell across every column.  Its content is built
+// when it opens, so a collapsed band is an empty disclosure target, not a
+// hidden copy of the detail.
+function renderRegisterDetailBand(row) {
+  const band = el("tr", "detail-band");
+  band.id = detailBandId(row);
+  band.setAttribute("role", "row");
+  band.dataset.detailBand = row.guid;
+  band.hidden = true;
+  band.append(createDetailBandCell());
+  return band;
+}
+
+// aria-rowindex has to describe the rows that are actually present: the band
+// is one of them while it is open, so the rows after it shift by one.  The
+// register's own rows keep their order and count; only the widget's total
+// gains the band.
+function syncRegisterDetailRows() {
+  const grid = document.getElementById("register-grid");
+  let rowIndex = 2; // row 1 is the header
+  for (const [index, row] of registerRowElements().entries()) {
+    row.setAttribute("aria-rowindex", String(rowIndex++));
+    if (openDetail && openDetail.index === index)
+      openDetail.band.setAttribute("aria-rowindex", String(rowIndex++));
+  }
+  grid.setAttribute("aria-rowcount", String(rowIndex - 1));
+}
+
 function renderRegisterRow(row, index) {
   const tr = el("tr");
   tr.setAttribute("role", "row");
-  tr.setAttribute("aria-rowindex", String(index + 2)); // row 1 is the header
   tr.setAttribute("aria-selected", "false");
   tr.setAttribute("aria-readonly", sessionWritable ? "false" : "true");
   tr.dataset.index = String(index);
@@ -2175,24 +2229,28 @@ function renderRegisterRow(row, index) {
       showEditStatus(NON_EDITABLE_HINTS[column]);
   });
   // A split transaction's transfer cell is the way into its other legs: the
-  // engine's placeholder becomes a button, and Enter on it opens the panel.
-  // A two-split row keeps the plain account name, so only the rows with more
-  // to show carry the affordance.  The button stops the click from also
-  // selecting the cell under it; it selects the row itself first, so Escape
-  // still has a row to return to.
+  // engine's placeholder becomes a button that expands the transaction's
+  // splits in the band directly under this row.  A two-split row keeps the
+  // plain account name, so only the rows with more to show carry the
+  // affordance.  The button points at the band it owns, so the relation holds
+  // for a screen reader in both states.
   if (row.split_count > 2) {
     const transfer = tr.children[4];
     const button = el("button", "split-link",
                       row.transfer_account || "-- Split Transaction --");
     button.type = "button";
     button.dataset.transactionGuid = row.transaction_guid;
+    button.setAttribute("aria-controls", detailBandId(row));
+    button.setAttribute("aria-expanded", "false");
     button.setAttribute("aria-label",
                         `Show all ${row.split_count} splits of this transaction`);
     button.title = `Show the ${row.split_count} splits in this transaction`;
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      selectRegisterRow(index, true, 4);
-      openRegisterDetail(registerState.rows[index]);
+      // Select the row without taking focus from the button: Tab then moves
+      // straight into the band's account links, and Shift+Tab comes back.
+      selectRegisterRow(index, false, 4);
+      toggleRegisterDetail(index);
     });
     transfer.replaceChildren(button);
   }
@@ -2338,6 +2396,32 @@ function renderRegisterBalance(data) {
     `${data.subtree_balance}`;
 }
 
+// One sub-account choice.  The figure is the child's subtree total, which the
+// server computes with the same AccountFigures call as the header's.  It is a
+// separate span so the name still reads as the control and the amount as its
+// annotation; the aria-label says the relation in words rather than running
+// the two strings together for a screen reader.
+function renderSubAccountChoice(child) {
+  const link = el("button", "link account-choice");
+  link.type = "button";
+  link.dataset.guid = child.guid;
+  const name = el("span", "account-choice-name", child.name);
+  const total = el("span", "account-choice-total",
+                   child.subtree_balance || "");
+  if (child.subtree_negative) total.classList.add("negative");
+  link.append(name, document.createTextNode(" "), total);
+  link.setAttribute("aria-label",
+                    `Open ${child.name}, including sub-accounts ` +
+                    `${child.subtree_balance}`);
+  link.title = `Open the register for ${child.name}, including ` +
+               `sub-accounts ${child.subtree_balance}`;
+  link.addEventListener("click", () => {
+    const account = findAccount(child.guid);
+    if (account) selectAccount(account, null);
+  });
+  return link;
+}
+
 // A placeholder (or any parent with no splits of its own) has no rows to show.
 // An empty grid reads as a broken register, so say why it is empty and link
 // straight to the accounts that do hold the transactions.
@@ -2359,15 +2443,7 @@ function renderRegisterContext(data) {
   context.append(document.createTextNode(" Open a sub-account: "));
   for (const [index, child] of data.children.entries()) {
     if (index > 0) context.append(document.createTextNode(", "));
-    const link = el("button", "link", child.name);
-    link.type = "button";
-    link.dataset.guid = child.guid;
-    link.title = `Open the register for ${child.name}`;
-    link.addEventListener("click", () => {
-      const account = findAccount(child.guid);
-      if (account) selectAccount(account, null);
-    });
-    context.append(link);
+    context.append(renderSubAccountChoice(child));
   }
   context.hidden = false;
 }
@@ -2382,12 +2458,16 @@ function renderRegisterBody(data) {
   renderRegisterContext(data);
   document.getElementById("register-count").textContent =
     `${data.row_count} row${data.row_count === 1 ? "" : "s"}`;
-  document.getElementById("register-grid")
-    .setAttribute("aria-rowcount", String(data.splits.length + 1));
-  const tbody = document.querySelector("#register-grid tbody");
+  // A re-render replaces the rows and their bands; forget the old band before
+  // its nodes leave the document, so nothing points at a detached row.
+  closeRegisterDetail(false);
+  const tbody = document.querySelector("#register-grid > tbody");
   tbody.replaceChildren();
-  for (const [index, row] of data.splits.entries())
+  for (const [index, row] of data.splits.entries()) {
     tbody.append(renderRegisterRow(row, index));
+    if (row.split_count > 2) tbody.append(renderRegisterDetailBand(row));
+  }
+  syncRegisterDetailRows();
 }
 
 // The engine's register order is xaccSplitOrder, which compares the number and
@@ -2579,19 +2659,15 @@ async function openAccount(account) {
 }
 
 function closeRegisterDetail(focus = true) {
-  const panel = document.getElementById("register-detail");
-  if (panel.hidden) return false;
-  panel.hidden = true;
-  const origin = detailOriginIndex;
-  detailOriginIndex = -1;
-  document.getElementById("register-detail-title").textContent = "";
-  document.getElementById("register-detail-meta").textContent = "";
-  document.getElementById("register-detail-body").replaceChildren();
-  document.getElementById("register-detail-status").hidden = true;
-  document.getElementById("register-detail-total").textContent = "";
-  document.getElementById("register-detail-total").classList.remove("unbalanced");
+  if (!openDetail) return false;
+  const { band, index, button } = openDetail;
+  openDetail = null;
+  band.hidden = true;
+  band.replaceChildren();
+  if (button) button.setAttribute("aria-expanded", "false");
+  syncRegisterDetailRows();
   if (focus && registerState && registerState.rows.length > 0)
-    selectRegisterRow(origin >= 0 ? origin : registerState.index);
+    selectRegisterRow(index);
   return true;
 }
 
@@ -2668,11 +2744,15 @@ function onRegisterKeydown(event) {
   if (event.target.classList.contains("cell-editor"))
     return; // the editor owns its own keys
   // A split-transaction button is a control in the grid: Enter and Space
-  // activate it natively (which opens the panel), so the row's keys do not
+  // activate it natively (which toggles the band), so the row's keys do not
   // also claim them.
   if (event.target.closest("button.split-link"))
     return;
-  if (!event.target.closest("#register-grid tbody tr"))
+  // An account link inside a band owns its own keys; the band is not a
+  // register row, so the arrows must not move the register's selection here.
+  if (event.target.closest("tr.detail-band"))
+    return;
+  if (!event.target.closest("#register-grid > tbody > tr"))
     return;
 
   const last = registerState.rows.length - 1;
@@ -2692,12 +2772,12 @@ function onRegisterKeydown(event) {
       return;
     case "Enter":
       event.preventDefault();
-      // Shift+Enter is the transaction panel in a writable session; plain
-      // Enter edits the cursored cell (or the row's first editable cell when
-      // the cursor is on a cell that has no field), and falls back to the
-      // panel when the row has nothing editable.
+      // Shift+Enter toggles the band in either session; plain Enter edits the
+      // cursored cell (or the row's first editable cell when the cursor is on
+      // a cell that has no field) in a writable session, and toggles the band
+      // when there is nothing to edit or the session is read-only.
       if (event.shiftKey) {
-        openRegisterDetail(registerState.rows[registerState.index]);
+        toggleRegisterDetail(registerState.index);
         return;
       }
       if (sessionWritable && beginCellEdit(
@@ -2705,7 +2785,7 @@ function onRegisterKeydown(event) {
             editableColumnFor(registerState.rows[registerState.index],
                               registerState.cell)))
         return;
-      openRegisterDetail(registerState.rows[registerState.index]);
+      toggleRegisterDetail(registerState.index);
       return;
     default:
       return;
@@ -2747,99 +2827,177 @@ function transactionTotalText(transaction) {
   return text;
 }
 
-async function openRegisterDetail(row) {
-  if (!row) return;
-  const panel = document.getElementById("register-detail");
-  const title = document.getElementById("register-detail-title");
-  const meta = document.getElementById("register-detail-meta");
-  const status = document.getElementById("register-detail-status");
-  const body = document.getElementById("register-detail-body");
-  const table = document.getElementById("register-detail-table");
-  const totalLine = document.getElementById("register-detail-total");
-
-  // Remember the row the panel was opened from before anything asynchronous
-  // can move the selection; Escape returns focus there.
-  detailOriginIndex = registerState ? registerState.index : -1;
-
-  title.textContent = `Transaction ${row.date}` +
-    (row.num ? ` #${row.num}` : "") + ` — ${row.description}`;
-  meta.textContent = "";
-  body.replaceChildren();
-  totalLine.textContent = "";
-  totalLine.classList.remove("unbalanced");
+// The static part of the band: what transaction this is, before the splits
+// arrive.  It is built from the register row, so the band is named even while
+// the transaction request is in flight.
+function renderRegisterDetailSkeleton(state) {
+  const { row, band } = state;
+  band.replaceChildren();
+  const cell = createDetailBandCell();
+  const title = el("h3", "detail-title",
+    `Transaction ${row.date}` + (row.num ? ` #${row.num}` : "") +
+    ` — ${row.description}`);
+  const meta = el("p", "detail-meta",
+    `Date: ${row.date} · Number: ${row.num || "—"} · ` +
+    `Description: ${row.description || "—"}`);
+  const status = el("p", "hint");
   status.hidden = true;
-  table.setAttribute("aria-rowcount", "1");
-  table.setAttribute("aria-label", "Splits of this transaction");
-  /* Stay hidden until the panel has content: a visible but empty panel would
-     tell a reader (and a test) that the transaction has no splits. */
-  panel.hidden = true;
+  cell.append(title, meta, status);
+  band.append(cell);
+  state.cell = cell;
+  state.status = status;
+}
+
+function showRegisterDetailStatus(state, text) {
+  if (openDetail !== state) return;
+  state.status.textContent = text;
+  state.status.hidden = false;
+}
+
+// Fill the band with the transaction the engine returned: its own identity,
+// one line per split, then the total with the engine's verdict.  This is the
+// content the old bottom panel showed, now inside the row it belongs to.
+function fillRegisterDetail(state, transaction) {
+  const { cell } = state;
+  const table = el("table");
+  table.setAttribute("role", "table");
+  table.setAttribute("aria-label",
+    `Splits of transaction ${transaction.num || transaction.guid}`);
+  table.setAttribute("aria-rowcount", String(transaction.splits.length + 1));
+
+  const head = el("tr");
+  head.setAttribute("role", "row");
+  for (const label of ["Account", "Memo", "Action", "R", "Amount"]) {
+    const th = el("th", null, label);
+    th.scope = "col";
+    th.setAttribute("role", "columnheader");
+    head.append(th);
+  }
+  const thead = el("thead");
+  thead.append(head);
+
+  const tbody = el("tbody");
+  for (const split of transaction.splits) {
+    const tr = el("tr");
+    tr.setAttribute("role", "row");
+    const cellFor = (cls, text) => {
+      const td = el("td", cls, text);
+      td.setAttribute("role", "cell");
+      return td;
+    };
+    const account = cellFor(null);
+    // Each account opens its own register tab: the placeholder transfer cell
+    // becomes a way into the other legs instead of a dead end.
+    account.append(splitAccountLink(split));
+    tr.append(account, cellFor(null, split.memo),
+              cellFor(null, split.action),
+              cellFor(null, reconcileLabel(split.reconcile)),
+              cellFor("num", split.amount));
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+
+  const total = el("p", "detail-total", transactionTotalText(transaction));
+  total.classList.toggle("unbalanced", !transaction.balanced);
+  state.status.hidden = true;
+  state.status.textContent = "";
+  cell.append(table, total);
+}
+
+// Keep the source row on screen and scroll the grid itself -- never the page
+// -- just far enough to show the band.  A band taller than the viewport
+// starts with its row: the reader sees where it came from and scrolls on.
+function revealRegisterDetail(band, row) {
+  if (!band || !row) return;
+  const wrap = document.getElementById("register-grid-wrap");
+  const wrapRect = wrap.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  const bandRect = band.getBoundingClientRect();
+  const head = document.querySelector("#register-grid thead");
+  const headHeight = head ? head.getBoundingClientRect().height : 0;
+  const current = wrap.scrollTop;
+  const viewHeight = wrap.clientHeight;
+  const rowTop = rowRect.top - wrapRect.top + current;
+  const rowHeight = rowRect.height;
+  const bandTop = bandRect.top - wrapRect.top + current;
+  const bandBottom = bandRect.bottom - wrapRect.top + current;
+  if (bandTop >= current + headHeight &&
+      bandBottom <= current + viewHeight) return;
+  const target = bandBottom - bandTop <= viewHeight - rowHeight - headHeight
+    ? Math.max(0, bandBottom - viewHeight)
+    : Math.max(0, rowTop - headHeight);
+  if (target !== current) wrap.scrollTop = target;
+}
+
+function toggleRegisterDetail(index) {
+  if (!registerState) return false;
+  const row = registerState.rows[index];
+  if (!row || row.split_count <= 2) return false;
+  if (openDetail && openDetail.index === index) {
+    closeRegisterDetail(false);
+    return false;
+  }
+  openRegisterDetail(row, index);
+  return true;
+}
+
+async function openRegisterDetail(row, index) {
+  if (!row) return;
+  const band = document.getElementById(detailBandId(row));
+  const sourceRow = registerRowElements()[index];
+  if (!band || !sourceRow) return;
+  if (openDetail && openDetail.index === index) return;
+  if (openDetail) closeRegisterDetail(false);
+
+  const state = {
+    row,
+    index,
+    band,
+    button: sourceRow.querySelector("button.split-link"),
+    cell: null,
+    status: null,
+  };
+  openDetail = state;
+  band.hidden = false;
+  if (state.button) state.button.setAttribute("aria-expanded", "true");
+  syncRegisterDetailRows();
+  renderRegisterDetailSkeleton(state);
+  revealRegisterDetail(band, sourceRow);
 
   let transaction = transactionCache.get(row.transaction_guid);
   if (!transaction) {
     try {
       const response = await fetch(
         api("api/transaction/" + encodeURIComponent(row.transaction_guid)));
+      if (openDetail !== state) return;
       if (!response.ok) {
-        status.textContent = `Could not load the transaction: ${await response.text()}`;
-        status.hidden = false;
-        panel.hidden = false;
-        panel.focus();
+        showRegisterDetailStatus(
+          state, `Could not load the transaction: ${await response.text()}`);
         return;
       }
       transaction = await response.json();
+      if (openDetail !== state) return;
       transactionCache.set(row.transaction_guid, transaction);
     } catch (err) {
-      status.textContent = `Could not load the transaction: ${err}`;
-      status.hidden = false;
-      panel.hidden = false;
-      panel.focus();
+      showRegisterDetailStatus(state,
+                                `Could not load the transaction: ${err}`);
       console.error(err);
       return;
     }
   }
-
-  meta.textContent = `Date: ${transaction.date} · ` +
-    `Number: ${transaction.num || "—"} · ` +
-    `Description: ${transaction.description || "—"}`;
-  table.setAttribute("aria-rowcount",
-                     String(transaction.splits.length + 1));
-  table.setAttribute("aria-label",
-                     `Splits of transaction ` +
-                     `${transaction.num || transaction.guid}`);
-
-  for (const split of transaction.splits) {
-    const tr = el("tr");
-    const accountCell = el("td");
-    // Each account opens its own register tab: the placeholder transfer cell
-    // becomes a way into the other legs instead of a dead end.
-    accountCell.append(splitAccountLink(split));
-    tr.append(
-      accountCell,
-      el("td", null, split.memo),
-      el("td", null, split.action),
-      el("td", null, reconcileLabel(split.reconcile)),
-      el("td", "num", split.amount),
-    );
-    body.append(tr);
-  }
-
-  totalLine.textContent = transactionTotalText(transaction);
-  totalLine.classList.toggle("unbalanced", !transaction.balanced);
-
-  panel.hidden = false;
-  panel.focus();
+  if (openDetail !== state) return;
+  fillRegisterDetail(state, transaction);
+  revealRegisterDetail(band, sourceRow);
 }
 
 document.getElementById("register-grid")
   .addEventListener("keydown", onRegisterKeydown);
-document.getElementById("register-detail-close")
-  .addEventListener("click", () => closeRegisterDetail(true));
 document.getElementById("register-save")
   .addEventListener("click", () => saveBook());
 
-// Escape closes an open cell editor first, then the transaction panel, and
-// puts focus back on the selected grid row.  The menu bar has its own Escape
-// handling on #menubar, so this only fires for the register.
+// Escape closes an open cell editor first, then the row's detail band, and
+// puts focus back on the row the band came from.  The menu bar has its own
+// Escape handling on #menubar, so this only fires for the register.
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (closeCellEditor(true)) {

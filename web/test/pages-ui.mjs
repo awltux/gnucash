@@ -155,7 +155,8 @@ async function appState() {
             book: !document.getElementById('page-book').hidden,
             reports: !document.getElementById('page-reports').hidden,
             registerHidden: document.getElementById('register').hidden,
-            rows: document.querySelectorAll('#register-grid tbody tr').length,
+            rows: document.querySelectorAll(
+                '#register-grid > tbody > tr:not(.detail-band)').length,
             registerTitle: document.getElementById('register-title').textContent,
             tablistRole: document.getElementById('book-tabs').getAttribute('role'),
             tabs: tabs.map((tab) => ({

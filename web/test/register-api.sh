@@ -291,6 +291,71 @@ if assets is not None:
           [child["guid"] for child in assets["children"]],
           "%d names" % len(assets_register["children"]))
 
+    # The sub-account chooser's figures.  Each child entry must carry the same
+    # subtree total /api/accounts shows for that child, with the tree's sign
+    # flag: the register header and the chooser are two renderings of one
+    # account_total_text() call, not two calculations.
+    tree_children = {child["guid"]: child for child in assets["children"]}
+    check("a child entry carries a name, a guid, a figure and its sign flag",
+          all(child.get("name") and child.get("guid") and
+              child.get("subtree_balance") and
+              isinstance(child.get("subtree_negative"), bool)
+              for child in assets_register["children"]),
+          ", ".join(child.get("name", "?")
+                    for child in assets_register["children"]))
+    check("every child's chooser figure equals /api/accounts for that child",
+          all(money(child["subtree_balance"]) ==
+              money(tree_children[child["guid"]]["total"]) and
+              child["subtree_negative"] ==
+              tree_children[child["guid"]]["negative"]
+              for child in assets_register["children"]),
+          ", ".join("%s %r" % (child["name"], child["subtree_balance"])
+                    for child in assets_register["children"]))
+    check("the parent's subtree figure is the sum of its children's "
+          "(the chart is exhaustive on this fixture)",
+          money(assets_register["subtree_balance"]) ==
+          sum(money(child["subtree_balance"])
+              for child in assets_register["children"]),
+          "%r vs children" % assets_register["subtree_balance"])
+
+    # A child with no activity is still a choice: its figure is zero, not
+    # missing, because a chooser that silently drops it is harder to read.
+    idle_children = []
+    for child in assets_register["children"]:
+        status, content_type, body = fetch("api/register/" + child["guid"])
+        child_register = json.loads(body)
+        if status == 200 and child_register["splits"] == []:
+            idle_children.append(child)
+    check("a child with no activity is still listed, showing zero",
+          bool(idle_children) and all(
+              money(child["subtree_balance"]) == 0 for child in idle_children),
+          ", ".join("%s %r" % (child["name"], child["subtree_balance"])
+                    for child in idle_children))
+
+    # A child that is itself a parent: Income:Salary has no splits of its own,
+    # so its own balance is zero while Main Job and Bonus hold the money.  The
+    # chooser promises "including sub-accounts", so it must print the subtree
+    # total, not the child's own balance.
+    income = account_at("Income")
+    salary = account_at("Income:Salary")
+    if income is not None and salary is not None:
+        status, content_type, body = fetch("api/register/" + income["guid"])
+        income_register = json.loads(body)
+        salary_entry = next(
+            (child for child in income_register["children"]
+             if child["guid"] == salary["guid"]), None)
+        status, content_type, body = fetch("api/register/" + salary["guid"])
+        salary_register = json.loads(body)
+        check("a child that is itself a parent shows its subtree total, "
+              "not its own balance",
+              salary_entry is not None and
+              money(salary_entry["subtree_balance"]) == money(salary["total"]) and
+              money(salary_register["balance"]) !=
+              money(salary_entry["subtree_balance"]),
+              "%r subtree, %r own" %
+              (salary_entry["subtree_balance"] if salary_entry else None,
+               salary_register["balance"]))
+
 checking = account_at("Assets:Checking")
 check("the fixture has the Assets:Checking leaf", checking is not None)
 if checking is not None:

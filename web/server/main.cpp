@@ -1036,10 +1036,16 @@ register_json (Account* account)
     const AccountFigures figures = account_figures (account);
     const std::vector<Account*> children = account_children (account);
 
+    /* Each child carries the tree's figure for that child -- the same
+     * AccountFigures call the register header makes for the account above,
+     * which itself is account_total_text().  A chooser built from these
+     * entries and a header built from `figures` therefore cannot show two
+     * different numbers for the same account. */
     std::string children_json = "[";
     bool first_child = true;
     for (Account* child : children)
     {
+        const AccountFigures child_figures = account_figures (child);
         if (!first_child)
             children_json += ",";
         first_child = false;
@@ -1047,7 +1053,11 @@ register_json (Account* account)
         children_json += json_escape (xaccAccountGetName (child));
         children_json += "\",\"guid\":\"";
         children_json += json_escape (account_guid_text (child).c_str ());
-        children_json += "\"}";
+        children_json += "\",\"subtree_balance\":\"";
+        children_json += json_escape (child_figures.subtree_text.c_str ());
+        children_json += "\",\"subtree_negative\":";
+        children_json += child_figures.subtree_negative ? "true" : "false";
+        children_json += "}";
     }
     children_json += "]";
 
