@@ -297,7 +297,7 @@ number) and saved; nothing else became possible. Item by item:
 | File > Revert | "the web tier never buffers changes" | still disabled; the reason is now true: unsaved edits live in the engine's copy of the book and no route discards them. |
 | Edit > Cut / Copy / Paste | "the browser owns … the desktop's register widget" | still disabled. The reason now says the register's text cells *are* editable but cut/copy/paste of register cells is not implemented, and that the browser's own cut/copy/paste works inside the cell editor. |
 | Edit > Tax Report Options, the Actions menu, Check & Repair, Business tax/billing tables, Tools price/security editors, Close Book | reasons that named a read-only book or session | reworded to name the missing endpoint or action, which is true in a writable session as well. |
-| Transaction menu note | "the web register is read-only" | "the web register edits description, memo and number only" — the same 14 items stay disabled. |
+| Transaction menu note | "the web register is read-only" | "the web register edits description, memo and number only" — the same 14 items stay disabled (ADR 0015 later enables Blank Transaction; see §4.2c). |
 
 The honesty rule is unchanged; only the sentences had to keep up with the
 register. The page-level dirty state is what File > Save's precondition reads
@@ -326,6 +326,21 @@ have. Item by item:
 The honesty rule is unchanged: an item that cannot act still carries the
 sentence naming what is missing, and the sentence now follows the page model
 instead of the old single-page one.
+
+### 4.2c What ADR 0015 changed
+
+ADR 0015 adds creating a whole transaction from a form (still two steps: create,
+then Save). One item starts acting, and the menu's note says what the rest still
+cannot do:
+
+| item | before | now |
+|---|---|---|
+| Actions > Blank Transaction | disabled: `PAGE_REASONS.register` when no register tab was showing, otherwise "No web equivalent: the web tier has no implementation of this action" | **acts** in a writable session with a register tab showing: it opens the New Transaction dialog. In a read-only session it stays disabled with a reason that names `--writable` (`MENU_NEEDS.canCreate`); with no register tab it keeps the page reason. The label, accelerator hint and page scope are the desktop's (the desktop register page's action, which the web table carries in Actions); the form itself is a web-tier surface (a dialog, not the desktop's blank register row). |
+| Transaction menu note | "the web register edits description, memo and number only" | "Blank Transaction creates a transaction from a form in a writable session; the grid still edits only description, memo and number, so the other transaction actions stay disabled." The creation item lives in Actions, where the table already declared it; the Transaction menu's own 14 items are still all actions the web tier does not have. |
+
+Creating does not make Cut/Copy/Paste/Delete/Void/Enter/Cancel act: those still
+need the spanning grid or a transaction action the web tier does not have, and
+their reasons remain true in a writable session.
 
 ### 4.3 File
 
@@ -386,8 +401,9 @@ These are the menus whose desktop items presume a page or a write path.
 - **Transaction** is register-only and the desktop hides it without one. The
   web keeps it visible, with a note saying "Register page only" and all 14
   items disabled, because the shape of the application is part of what the
-  menu is for (§5.3). The note now adds that the web register edits only
-  description, memo and number, so the transaction actions stay disabled.
+  menu is for (§5.3). The note now says the web register edits only
+  description, memo and number (creating a whole transaction is Actions >
+  Blank Transaction, ADR 0015), so the transaction actions stay disabled.
 - **Actions** has three global submenus that need channels the web lacks
   (Online Actions → aqbanking, Scheduled Transactions → a book editor, Budget
   → a budget editor), then the register/accounts actions

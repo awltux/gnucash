@@ -2201,11 +2201,16 @@ index_html ()
     if (g_server.debug_port == 0)
         return html;
 
-    const std::string marker = "<body>";
+    /* The markup carries no layout: the banner's box is the rule for
+     * #debug-port-banner in web/ui/index.html, where the menu's own top margin
+     * is adjusted next to it.  Keeping layout out of this string means the
+     * banner and the menu can be read and fixed together. */
+    /* The newline matters: a bare "<body>" also occurs in CSS comments that
+     * talk about the body element, and injecting there put the banner inside a
+     * comment where no one could see it.  The tag is on its own line. */
+    const std::string marker = "<body>\n";
     const std::string banner =
-        "<div id=\"debug-port-banner\" role=\"alert\" "
-        "style=\"background:#b00020;color:#fff;padding:.6rem 1rem;"
-        "font:600 14px/1.4 system-ui,sans-serif\">"
+        "<div id=\"debug-port-banner\" role=\"alert\">"
         "Debug mode (--debug-port " + std::to_string (g_server.debug_port) +
         "): no token in the URL. Any local process can drive this UI; with "
         "--writable it can edit and save the book. Development only.</div>";
@@ -2958,6 +2963,687 @@ handle_split_edit (GSocketConnection* connection, const HttpRequest& request,
     send_json (connection, "200 OK", register_row_json (row));
 }
 
+/* ---------------------------------------------------- creating a transaction
+ *
+ * ADR 0015.  A new transaction is built from a form, not from the register
+ * grid: a whole transaction has a date, a number, a description and N splits,
+ * and the grid has no row for a transaction that does not exist yet.
+ *
+ * The body is validated in full before the engine is asked for anything, so a
+ * refused request cannot create half a transaction.  The balance rule stays the
+ * engine's: the pre-check sums the same value fields xaccTransIsBalanced()
+ * reads, and after the commit the route asks xaccTransIsBalanced() itself.  A
+ * transaction the engine calls unbalanced is destroyed again and refused.  The
+ * live verdict the form shows comes from POST /api/transaction/validate, which
+ * runs the same check, so the page never adds the amounts itself.
+ *
+ * What this deliberately does not support: splits in different commodities
+ * (one transaction currency, checked), placeholder and trading accounts (no
+ * amounts of their own / a different balance rule), scheduled transactions and
+ * reconcile state.  See ADR 0015 for why.
+ */
+
+constexpr size_t max_create_splits = 50;
+constexpr size_t max_create_amount_text = 32;
+
+struct CreateSplit
+{
+    Account* account = nullptr;
+    std::string amount_text;
+    gnc_numeric amount{};
+    std::string memo;
+    bool has_memo = false;
+};
+
+struct CreateRequest
+{
+    time64 date = 0;
+    std::string num;
+    std::string description;
+    std::vector<CreateSplit> splits;
+    gnc_commodity* currency = nullptr;
+    gnc_numeric sum = gnc_numeric_zero ();
+    gnc_numeric debit_total = gnc_numeric_zero ();
+};
+
+std::string
+print_amount (gnc_numeric value, gnc_commodity* currency)
+{
+    const gchar* text =
+        xaccPrintAmount (value, gnc_commodity_print_info (currency, TRUE));
+    return text != nullptr ? text : "";
+}
+
+/* A decimal amount: an optional sign, digits, and at most one decimal point.
+ * Fractions ("1/3"), exponents and whitespace are refused rather than being
+ * reinterpreted by the engine's parser. */
+bool
+parse_amount_text (const std::string& text, gnc_numeric& out)
+{
+    if (text.empty () || text.size () > max_create_amount_text)
+        return false;
+
+    size_t index = 0;
+    if (text[0] == '+' || text[0] == '-')
+        ++index;
+    bool digits = false;
+    bool point = false;
+    for (; index < text.size (); ++index)
+    {
+        const char c = text[index];
+        if (c >= '0' && c <= '9')
+            digits = true;
+        else if (c == '.' && !point)
+            point = true;
+        else
+            return false;
+    }
+    if (!digits || (point && text.back () == '.'))
+        return false;
+
+    out = gnc_numeric_from_string (text.c_str ());
+    return gnc_numeric_check (out) == GNC_ERROR_OK;
+}
+
+/* The creation routes' refusal: the edit route's shape plus room for the
+ * figures an unbalanced or unavailable-row answer names. */
+void
+send_create_refusal (GSocketConnection* connection, const char* status,
+                     const char* slug, const std::string& message,
+                     const std::string& field = "",
+                     const std::string& extra = "")
+{
+    std::string body = "{\"error\":" + json_string (slug);
+    body += ",\"message\":" + json_string (message);
+    if (!field.empty ())
+        body += ",\"field\":" + json_string (field);
+    body += extra;
+    body += "}";
+    send_json (connection, status, body);
+}
+
+bool
+parse_create_body (const std::string& body, CreateRequest& request,
+                   EditRefusal& refusal)
+{
+    web::json::Value object;
+    std::string parse_error;
+    if (!web::json::parse (body, object, parse_error))
+    {
+        refusal = {"400 Bad Request", "bad-json",
+                   "the body is not valid JSON: " + parse_error, ""};
+        return false;
+    }
+    if (!object.is_object ())
+    {
+        refusal = {"400 Bad Request", "bad-body",
+                   "the body must be a JSON object describing one transaction, "
+                   "not " + std::string (json_type_name (object)), ""};
+        return false;
+    }
+    if (object.object.empty ())
+    {
+        refusal = {"400 Bad Request", "no-fields",
+                   "the body names no field; a new transaction needs date, "
+                   "description and at least two splits", ""};
+        return false;
+    }
+
+    const web::json::Value* date_value = nullptr;
+    const web::json::Value* number_value = nullptr;
+    const web::json::Value* description_value = nullptr;
+    const web::json::Value* splits_value = nullptr;
+    for (const auto& [name, value] : object.object)
+    {
+        if (name == "date")
+            date_value = &value;
+        else if (name == "number")
+            number_value = &value;
+        else if (name == "description")
+            description_value = &value;
+        else if (name == "splits")
+            splits_value = &value;
+        else
+        {
+            refusal = {"400 Bad Request", "unknown-field",
+                       "unknown field '" + name + "'; a new transaction takes "
+                       "date, number, description and splits", name};
+            return false;
+        }
+    }
+
+    if (date_value == nullptr)
+    {
+        refusal = {"400 Bad Request", "missing-field",
+                   "the body has no 'date'; a new transaction needs the day it "
+                   "was posted, written YYYY-MM-DD", "date"};
+        return false;
+    }
+    if (!date_value->is_string ())
+    {
+        refusal = {"400 Bad Request", "bad-type",
+                   "field 'date' must be a string written YYYY-MM-DD, not " +
+                   std::string (json_type_name (*date_value)), "date"};
+        return false;
+    }
+    if (!parse_iso_date (date_value->string, false, request.date))
+    {
+        refusal = {"400 Bad Request", "bad-date",
+                   "the date must be a real calendar day written YYYY-MM-DD, "
+                   "not '" + date_value->string + "'", "date"};
+        return false;
+    }
+
+    if (number_value != nullptr &&
+        !edit_text_field (*number_value, "number", request.num, refusal.slug,
+                          refusal.message))
+    {
+        refusal.status = "400 Bad Request";
+        refusal.field = "number";
+        return false;
+    }
+    if (description_value != nullptr &&
+        !edit_text_field (*description_value, "description",
+                          request.description, refusal.slug, refusal.message))
+    {
+        refusal.status = "400 Bad Request";
+        refusal.field = "description";
+        return false;
+    }
+
+    if (splits_value == nullptr)
+    {
+        refusal = {"400 Bad Request", "missing-field",
+                   "the body has no 'splits'; a transaction needs at least two "
+                   "splits", "splits"};
+        return false;
+    }
+    if (!splits_value->is_array ())
+    {
+        refusal = {"400 Bad Request", "bad-type",
+                   "field 'splits' must be an array of {account, amount, memo} "
+                   "objects, not " + std::string (json_type_name (*splits_value)),
+                   "splits"};
+        return false;
+    }
+    if (splits_value->array.size () < 2)
+    {
+        refusal = {"400 Bad Request", "too-few-splits",
+                   "a transaction needs at least two splits; the body has " +
+                   std::to_string (splits_value->array.size ()), "splits"};
+        return false;
+    }
+    if (splits_value->array.size () > max_create_splits)
+    {
+        refusal = {"400 Bad Request", "too-many-splits",
+                   "a transaction created here takes at most " +
+                   std::to_string (max_create_splits) + " splits; the body has " +
+                   std::to_string (splits_value->array.size ()), "splits"};
+        return false;
+    }
+
+    QofBook* book = gnc_account_get_book (g_server.root);
+    request.splits.reserve (splits_value->array.size ());
+    for (size_t index = 0; index < splits_value->array.size (); ++index)
+    {
+        const web::json::Value& line = splits_value->array[index];
+        const std::string prefix = "splits[" + std::to_string (index) + "]";
+        if (!line.is_object ())
+        {
+            refusal = {"400 Bad Request", "bad-split",
+                       "each split must be an object with account, amount and "
+                       "memo; " + prefix + " is " +
+                       json_type_name (line), prefix};
+            return false;
+        }
+
+        const web::json::Value* account_value = nullptr;
+        const web::json::Value* amount_value = nullptr;
+        const web::json::Value* memo_value = nullptr;
+        for (const auto& [name, value] : line.object)
+        {
+            if (name == "account")
+                account_value = &value;
+            else if (name == "amount")
+                amount_value = &value;
+            else if (name == "memo")
+                memo_value = &value;
+            else
+            {
+                refusal = {"400 Bad Request", "unknown-split-field",
+                           "unknown split field '" + name + "' in " + prefix +
+                           "; a split takes account, amount and memo",
+                           prefix + "." + name};
+                return false;
+            }
+        }
+
+        if (account_value == nullptr ||
+            (account_value->is_string () && account_value->string.empty ()))
+        {
+            refusal = {"400 Bad Request", "missing-field",
+                       prefix + " has no account; every split needs one",
+                       prefix + ".account"};
+            return false;
+        }
+        if (!account_value->is_string ())
+        {
+            refusal = {"400 Bad Request", "bad-type",
+                       "field '" + prefix + ".account' must be an account "
+                       "GUID string, not " +
+                       std::string (json_type_name (*account_value)),
+                       prefix + ".account"};
+            return false;
+        }
+
+        GncGUID guid;
+        Account* account = nullptr;
+        if (string_to_guid (account_value->string.c_str (), &guid))
+            account = xaccAccountLookup (&guid, book);
+        if (account == nullptr)
+        {
+            refusal = {"400 Bad Request", "unknown-account",
+                       "no such account: " + account_value->string,
+                       prefix + ".account"};
+            return false;
+        }
+        if (xaccAccountGetPlaceholder (account))
+        {
+            refusal = {"400 Bad Request", "placeholder-account",
+                       "account '" + std::string (xaccAccountGetName (account)) +
+                       "' is a placeholder and holds no transactions of its own; "
+                       "choose one of its sub-accounts",
+                       prefix + ".account"};
+            return false;
+        }
+        if (xaccAccountGetType (account) == ACCT_TYPE_TRADING)
+        {
+            refusal = {"400 Bad Request", "unsupported-account",
+                       "account '" + std::string (xaccAccountGetName (account)) +
+                       "' is a trading account; this form creates plain "
+                       "single-currency transactions only",
+                       prefix + ".account"};
+            return false;
+        }
+        gnc_commodity* commodity = xaccAccountGetCommodity (account);
+        if (commodity == nullptr)
+        {
+            refusal = {"400 Bad Request", "account-no-commodity",
+                       "account '" + std::string (xaccAccountGetName (account)) +
+                       "' has no commodity, so it cannot hold an amount",
+                       prefix + ".account"};
+            return false;
+        }
+        if (request.currency == nullptr)
+            request.currency = commodity;
+        else if (!gnc_commodity_equal (request.currency, commodity))
+        {
+            refusal = {"400 Bad Request", "mixed-currency",
+                       "all splits must share one commodity; " + prefix +
+                       " is in " +
+                       std::string (gnc_commodity_get_mnemonic (commodity)) +
+                       " but the transaction is in " +
+                       std::string (gnc_commodity_get_mnemonic (
+                           request.currency)),
+                       prefix + ".account"};
+            return false;
+        }
+
+        if (amount_value == nullptr ||
+            (amount_value->is_string () && amount_value->string.empty ()))
+        {
+            refusal = {"400 Bad Request", "missing-field",
+                       prefix + " has no amount; every split needs one",
+                       prefix + ".amount"};
+            return false;
+        }
+        if (!amount_value->is_string ())
+        {
+            refusal = {"400 Bad Request", "bad-type",
+                       "field '" + prefix + ".amount' must be a decimal amount "
+                       "string, not " +
+                       std::string (json_type_name (*amount_value)),
+                       prefix + ".amount"};
+            return false;
+        }
+
+        CreateSplit split;
+        split.account = account;
+        split.amount_text = amount_value->string;
+        if (!parse_amount_text (split.amount_text, split.amount))
+        {
+            refusal = {"400 Bad Request", "bad-amount",
+                       "amount '" + split.amount_text + "' in " + prefix +
+                       " is not a decimal number (for example 12.34 or -12.34)",
+                       prefix + ".amount"};
+            return false;
+        }
+        if (memo_value != nullptr)
+        {
+            if (!edit_text_field (*memo_value, (prefix + ".memo").c_str (),
+                                  split.memo, refusal.slug, refusal.message))
+            {
+                refusal.status = "400 Bad Request";
+                refusal.field = prefix + ".memo";
+                return false;
+            }
+            split.has_memo = true;
+        }
+        request.splits.push_back (std::move (split));
+    }
+
+    /* The commodity is known now, so each amount can be held to its fraction.
+     * "1.234" is not a smaller number, it is a value the account cannot
+     * represent without rounding, and a silent rounding is exactly what a
+     * creation form must not do. */
+    const gint64 fraction = gnc_commodity_get_fraction (request.currency);
+    const std::string mnemonic = gnc_commodity_get_mnemonic (request.currency);
+    for (size_t index = 0; index < request.splits.size (); ++index)
+    {
+        CreateSplit& split = request.splits[index];
+        const gnc_numeric fixed = gnc_numeric_convert (
+            split.amount, fraction, GNC_HOW_DENOM_FIXED | GNC_HOW_RND_NEVER);
+        if (gnc_numeric_check (fixed) != GNC_ERROR_OK)
+        {
+            refusal = {"400 Bad Request", "bad-amount",
+                       "amount '" + split.amount_text + "' in splits[" +
+                       std::to_string (index) + "] has more decimal places "
+                       "than " + mnemonic + " allows",
+                       "splits[" + std::to_string (index) + "].amount"};
+            return false;
+        }
+        split.amount = fixed;
+    }
+
+    for (const CreateSplit& split : request.splits)
+    {
+        request.sum = gnc_numeric_add (request.sum, split.amount,
+                                       GNC_DENOM_AUTO, GNC_HOW_DENOM_EXACT);
+        if (gnc_numeric_positive_p (split.amount))
+            request.debit_total = gnc_numeric_add (
+                request.debit_total, split.amount, GNC_DENOM_AUTO,
+                GNC_HOW_DENOM_EXACT);
+    }
+    if (gnc_numeric_check (request.sum) != GNC_ERROR_OK ||
+        gnc_numeric_check (request.debit_total) != GNC_ERROR_OK)
+    {
+        refusal = {"400 Bad Request", "bad-amount",
+                   "the amounts add up to a value the engine cannot represent",
+                   "splits"};
+        return false;
+    }
+    return true;
+}
+
+Transaction*
+create_transaction (const CreateRequest& create, EditRefusal& refusal)
+{
+    QofBook* book = gnc_account_get_book (g_server.root);
+    Transaction* transaction = xaccMallocTransaction (book);
+    if (transaction == nullptr)
+    {
+        refusal = {"500 Internal Server Error", "create-failed",
+                   "the engine could not allocate a transaction; nothing was "
+                   "created", ""};
+        return nullptr;
+    }
+
+    xaccTransBeginEdit (transaction);
+    xaccTransSetCurrency (transaction, create.currency);
+    xaccTransSetDatePostedSecsNormalized (transaction, create.date);
+    if (!create.description.empty ())
+        xaccTransSetDescription (transaction, create.description.c_str ());
+    if (!create.num.empty ())
+        xaccTransSetNum (transaction, create.num.c_str ());
+
+    for (const CreateSplit& line : create.splits)
+    {
+        Split* split = xaccMallocSplit (book);
+        xaccSplitSetParent (split, transaction);
+        xaccSplitSetAccount (split, line.account);
+        xaccSplitSetValue (split, line.amount);
+        xaccSplitSetAmount (split, line.amount);
+        if (line.has_memo)
+            xaccSplitSetMemo (split, line.memo.c_str ());
+    }
+    xaccTransCommitEdit (transaction);
+
+    /* The engine's answer, not the pre-check's: if the committed transaction
+     * is not balanced, it is removed again and the route refuses. */
+    if (!xaccTransIsBalanced (transaction))
+    {
+        const std::string imbalance =
+            print_amount (xaccTransGetImbalanceValue (transaction),
+                          create.currency);
+        xaccTransBeginEdit (transaction);
+        xaccTransDestroy (transaction);
+        xaccTransCommitEdit (transaction);
+        refusal = {"400 Bad Request", "unbalanced",
+                   "the engine reports that the committed transaction does not "
+                   "balance (its value sums to " + imbalance + "); it was "
+                   "removed again and nothing was created", ""};
+        return nullptr;
+    }
+    return transaction;
+}
+
+bool
+rows_for_transaction (Transaction* transaction, std::vector<RegisterRow>& rows)
+{
+    for (GList* node = xaccTransGetSplitList (transaction); node != nullptr;
+         node = node->next)
+    {
+        auto* split = static_cast<Split*>(node->data);
+        RegisterRow row;
+        if (!register_row_for_split (split, row))
+            return false;
+        rows.push_back (std::move (row));
+    }
+    return true;
+}
+
+std::string
+created_transaction_json (Transaction* transaction,
+                          const std::vector<RegisterRow>& rows)
+{
+    /* The transaction_body GET /api/transaction returns, plus the rows this
+     * creation produced and the dirty flag.  Appending to the same builder
+     * keeps one transaction shape rather than a second one for creation. */
+    std::string out = transaction_json (transaction);
+    out.pop_back (); // transaction_json's closing brace
+    out += ",\"rows\":[";
+    for (size_t index = 0; index < rows.size (); ++index)
+    {
+        if (index != 0)
+            out += ",";
+        out += register_row_json (rows[index]);
+    }
+    out += "],\"book_dirty\":";
+    out += qof_book_session_not_saved (g_server.book) ? "true" : "false";
+    out += "}";
+    return out;
+}
+
+/* The gate and the body parse the two creation routes share.  Returns true
+ * when `create` holds a valid body; otherwise the refusal has already been
+ * answered and the caller must return without touching the engine. */
+bool
+prepare_create (GSocketConnection* connection, const HttpRequest& request,
+                const char* method_message, const char* read_only_reason,
+                CreateRequest& create)
+{
+    if (request.method != "POST")
+    {
+        send_json (connection, "405 Method Not Allowed",
+                   "{\"error\":\"method\",\"message\":" +
+                   json_string (method_message) + "}");
+        return false;
+    }
+    if (refuse_write (connection))
+        return false;
+    if (qof_book_is_readonly (g_server.book))
+    {
+        send_create_refusal (connection, "403 Forbidden", "book-readonly",
+                             read_only_reason);
+        return false;
+    }
+    if (request.body_too_large)
+    {
+        send_create_refusal (connection, "413 Payload Too Large",
+                             "body-too-large",
+                             "the transaction body is larger than 1 MiB");
+        return false;
+    }
+
+    EditRefusal refusal;
+    if (!parse_create_body (request.body, create, refusal))
+    {
+        send_create_refusal (connection, refusal.status, refusal.slug.c_str (),
+                             refusal.message, refusal.field);
+        return false;
+    }
+    return true;
+}
+
+/* POST /api/transaction with a date, a number, a description and split lines.
+ * Validates the whole body first, then creates through the engine's own
+ * begin/set/commit path and answers with the transaction the read route would
+ * return, the register rows it produced, and whether the book is now dirty. */
+void
+handle_transaction_create (GSocketConnection* connection,
+                           const HttpRequest& request)
+{
+    CreateRequest create;
+    if (!prepare_create (connection, request, "creating a transaction needs POST",
+                         "the book is marked read-only in this process, so it "
+                         "cannot be edited", create))
+        return;
+
+    EditRefusal refusal;
+    /* The pre-check, before the engine is touched: the form's verdict and this
+     * refusal use the same figures, and an unbalanced body creates nothing. */
+    if (!gnc_numeric_zero_p (create.sum))
+    {
+        const std::string sum = print_amount (create.sum, create.currency);
+        const std::string extra =
+            ",\"imbalance\":" + json_string (sum) + ",\"sum\":" +
+            json_string (sum) + ",\"currency\":" +
+            json_string (gnc_commodity_get_mnemonic (create.currency));
+        send_create_refusal (connection, "400 Bad Request", "unbalanced",
+                             "the splits do not balance: they sum to " + sum +
+                             " in " +
+                             gnc_commodity_get_mnemonic (create.currency) +
+                             ", so the transaction was not created",
+                             "", extra);
+        return;
+    }
+
+    Transaction* transaction = create_transaction (create, refusal);
+    if (transaction == nullptr)
+    {
+        send_create_refusal (connection, refusal.status, refusal.slug.c_str (),
+                             refusal.message, refusal.field);
+        return;
+    }
+
+    std::vector<RegisterRow> rows;
+    if (!rows_for_transaction (transaction, rows))
+    {
+        const std::string extra =
+            ",\"transaction_guid\":" +
+            json_string (guid_text (xaccTransGetGUID (transaction)));
+        send_create_refusal (connection, "500 Internal Server Error",
+                             "create-rows-unavailable",
+                             "the transaction was created and the book is "
+                             "dirty, but one of its register rows could not be "
+                             "recomputed", "", extra);
+        return;
+    }
+
+    send_json (connection, "200 OK",
+               created_transaction_json (transaction, rows));
+}
+
+/* POST /api/transaction/validate: the same body and the same checks, with no
+ * engine write.  The form's running sum and balance verdict come from here, so
+ * the page displays the server's answer instead of adding amounts itself.
+ * An unbalanced but well-formed body is 200 with balanced:false; a malformed
+ * body is the same named 400 the create route gives. */
+void
+handle_transaction_validate (GSocketConnection* connection,
+                             const HttpRequest& request)
+{
+    CreateRequest create;
+    if (!prepare_create (connection, request,
+                         "validating a transaction needs POST",
+                         "the book is marked read-only in this process, so a "
+                         "transaction cannot be created", create))
+        return;
+
+    const bool balanced = gnc_numeric_zero_p (create.sum);
+    std::string body = "{\"valid\":true,\"balanced\":";
+    body += balanced ? "true" : "false";
+    body += ",\"sum\":" + json_string (print_amount (create.sum,
+                                                     create.currency));
+    body += ",\"imbalance\":" +
+            json_string (print_amount (create.sum, create.currency));
+    body += ",\"total\":" +
+            json_string (print_amount (create.debit_total, create.currency));
+    body += ",\"currency\":" +
+            json_string (gnc_commodity_get_mnemonic (create.currency));
+    body += ",\"split_count\":" +
+            std::to_string (create.splits.size ()) + "}";
+    send_json (connection, "200 OK", body);
+}
+
+/* GET /api/accounts/options: the accounts the creation form may choose, with
+ * the subtree total the account tree and the register header both show.  It is
+ * a separate route rather than an extra field on /api/accounts because ADR
+ * 0013 keeps the read-only bodies of the existing routes unchanged.  Accounts
+ * the create route refuses (placeholders, trading accounts, no commodity) are
+ * not offered. */
+void
+handle_account_options (GSocketConnection* connection)
+{
+    std::string body = "{\"accounts\":[";
+    bool first = true;
+    GList* descendants = gnc_account_get_descendants_sorted (g_server.root);
+    for (GList* node = descendants; node != nullptr; node = node->next)
+    {
+        auto* account = static_cast<Account*>(node->data);
+        if (account == g_server.root ||
+            xaccAccountGetPlaceholder (account) ||
+            xaccAccountGetType (account) == ACCT_TYPE_ROOT ||
+            xaccAccountGetType (account) == ACCT_TYPE_TRADING)
+            continue;
+        gnc_commodity* commodity = xaccAccountGetCommodity (account);
+        if (commodity == nullptr)
+            continue;
+
+        bool negative = false;
+        const std::string total = account_total_text (account, &negative);
+        gchar* full_name = gnc_account_get_full_name (account);
+
+        if (!first)
+            body += ",";
+        first = false;
+        body += "{\"name\":" + json_string (xaccAccountGetName (account));
+        body += ",\"full_name\":";
+        body += json_string (full_name != nullptr ? full_name : "");
+        g_free (full_name);
+        body += ",\"guid\":" + json_string (account_guid_text (account));
+        body += ",\"total\":" + json_string (total);
+        body += ",\"negative\":";
+        body += negative ? "true" : "false";
+        body += ",\"commodity\":";
+        body += json_string (gnc_commodity_get_mnemonic (commodity));
+        body += "}";
+    }
+    g_list_free (descendants);
+    body += "]}";
+    send_json (connection, "200 OK", body);
+}
+
 /* Accounts the self-test may use: real accounts (not placeholders, not the
  * root) that carry a commodity. */
 void
@@ -3253,6 +3939,24 @@ on_incoming (GSocketService*, GSocketConnection* connection, GObject*, gpointer)
 
         send_response (connection, "200 OK", "application/json",
                        register_json (account));
+    }
+    else if (route == "api/accounts/options")
+    {
+        /* The creation form's account picker.  Separate from /api/accounts so
+         * that route's read-only body stays byte-identical (ADR 0013 §1). */
+        handle_account_options (connection);
+    }
+    else if (route == "api/transaction/validate")
+    {
+        /* The form's live running sum and balance verdict; nothing is
+         * written.  Before the GET prefix below, which would read "validate"
+         * as a transaction GUID. */
+        handle_transaction_validate (connection, request);
+    }
+    else if (route == "api/transaction")
+    {
+        /* ADR 0015: create one whole transaction from the register form. */
+        handle_transaction_create (connection, request);
     }
     else if (route.compare (0, 16, "api/transaction/") == 0)
     {

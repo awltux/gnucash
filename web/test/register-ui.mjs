@@ -292,6 +292,37 @@ check('no cell offers an editor in a read-only session',
       state.cellEditors === 0,
       `${state.editableCells} editable cells`);
 
+// ADR 0015: a read-only session must not offer creation either.  The button
+// is inside the hidden actions row, and the desktop's Blank Transaction item
+// is disabled with the server's own reason, which names --writable.
+const debugBanner = await page.evaluate(() =>
+    document.getElementById('debug-port-banner') === null);
+check('a token-mode page has no --debug-port banner', debugBanner);
+const creation = await page.evaluate(() => {
+    const button = document.getElementById('register-new');
+    return {
+        visible: button ? button.offsetParent !== null : false,
+        dialogOpen: document.getElementById('transaction-dialog')?.open || false,
+    };
+});
+check('a read-only session offers no New Transaction control',
+      !creation.visible && !creation.dialogOpen,
+      `visible=${creation.visible} dialog=${creation.dialogOpen}`);
+await page.locator('#menubar .menu[data-menu="actions"] > .menu-title').click();
+const blankTransaction = await page.evaluate(() => {
+    const item = document.querySelector(
+        '#menubar .menu[data-menu="actions"] [data-item="blank-transaction"]');
+    return {
+        disabled: item ? item.getAttribute('aria-disabled') : null,
+        reason: item ? item.dataset.reason || '' : '',
+    };
+});
+await page.keyboard.press('Escape');
+check('Actions > Blank Transaction is disabled and names --writable',
+      blankTransaction.disabled === 'true' &&
+      /--writable/.test(blankTransaction.reason),
+      blankTransaction.reason || 'no item');
+
 // A click on an editable-looking cell must not start an editor either.
 await page.locator('#register-grid > tbody > tr:not(.detail-band)').first()
     .locator('td').nth(2).click();

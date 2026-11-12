@@ -107,6 +107,44 @@
   #register-dirty-state { color: #8a5a00; font-weight: 600; }
   #register-edit-status.error { color: #a00; }
   #register-readonly { color: #555; margin: 0 0 .5rem; }
+  /* The new-transaction form (ADR 0015): a dialog over the register, not a
+     blank row in the grid.  A spanning-grid entry would have to grow the
+     register's row model; this form is a whole transaction at once. */
+  #transaction-dialog { width: min(54rem, calc(100vw - 2rem));
+      max-height: calc(100vh - 4rem); overflow: auto; padding: 1rem 1.25rem;
+      border: 1px solid #999; border-radius: .3rem;
+      box-shadow: 0 6px 24px rgba(0,0,0,.3); }
+  #transaction-dialog::backdrop { background: rgba(0,0,0,.28); }
+  #transaction-dialog h3 { margin: 0 0 .35rem; font-size: 1.15rem; }
+  #transaction-form fieldset { border: 1px solid #ddd; margin: 0 0 .75rem;
+      padding: .5rem .75rem; }
+  #transaction-form legend { font-weight: 600; padding: 0 .3rem; }
+  .transaction-head { display: flex; gap: .75rem; flex-wrap: wrap;
+      margin: 0 0 .75rem; }
+  .transaction-head label { display: flex; flex-direction: column;
+      font-size: .85rem; color: #444; gap: .15rem; }
+  .transaction-head label.wide { flex: 1 1 20rem; }
+  .transaction-head input { font: inherit; padding: .25rem .35rem;
+      border: 1px solid #bbb; }
+  #transaction-lines { border-collapse: collapse; width: 100%; }
+  #transaction-lines th { text-align: left; font-weight: 600; color: #444;
+      font-size: .85rem; padding: .15rem .3rem; }
+  #transaction-lines td { padding: .15rem .3rem; vertical-align: middle; }
+  #transaction-lines select, #transaction-lines input { font: inherit;
+      width: 100%; box-sizing: border-box; padding: .2rem .3rem;
+      border: 1px solid #bbb; }
+  #transaction-lines td.transaction-line-amount { width: 9rem; }
+  #transaction-lines td.transaction-line-remove { width: 5rem; }
+  #transaction-lines button.transaction-remove { font: inherit;
+      padding: .15rem .4rem; }
+  #transaction-add { font: inherit; margin: .35rem 0 .75rem; }
+  #transaction-verdict { margin: .25rem 0 .5rem; font-weight: 600; }
+  #transaction-verdict.balanced { color: #1b6e1b; }
+  #transaction-verdict.unbalanced { color: #a00; }
+  #transaction-message { color: #a00; margin: .25rem 0 .5rem; }
+  #transaction-actions { display: flex; gap: .75rem; align-items: baseline;
+      border-top: 1px solid #eee; padding-top: .65rem; }
+  #transaction-actions button { font: inherit; padding: .25rem .8rem; }
   /* A transaction's splits are disclosed in place: a band row immediately
      under the row it belongs to, one cell across every column.  It is flat
      and edge to edge -- part of the table, not a card floating below it --
@@ -363,6 +401,17 @@
   #menubar { display: flex; align-items: stretch; gap: 0; margin: -1rem -2rem 1rem;
              padding: 0 2rem; border-bottom: 1px solid #c4c4c4;
              background: #f2f2f2; position: relative; z-index: 10; }
+  /* The --debug-port banner (ADR 0012).  The server injects it as the first
+     child of the body element, so it is above the menu in flow order.  It is
+     styled here, not by an inline style in the C++ string, and the menu's
+     -1rem top margin (which pulls the bar over the body's top margin) is
+     cancelled when the banner precedes it: the banner pushes the bar down
+     instead of being covered by it.  The banner's height is whatever its text
+     needs at any width; no fixed pixel offset is assumed. */
+  #debug-port-banner { background: #b00020; color: #fff;
+      padding: .6rem 2rem; margin: -1rem -2rem 0;
+      font: 600 14px/1.4 system-ui, sans-serif; }
+  #debug-port-banner + #menubar { margin-top: 0; }
   #menubar .menu { position: relative; }
   #menubar .menu-title { font: inherit; color: #222; background: none; border: 0;
                          padding: .4rem .7rem; cursor: default; }
@@ -407,6 +456,7 @@
   @media (max-width: 860px) {
       #menubar { margin: -1rem 0 1rem; padding: 0; }
       #menubar .menu-title { padding: .35rem .3rem; font-size: .85rem; }
+      #debug-port-banner { margin: -1rem 0 0; padding: .6rem 1rem; }
       /* The designer's preview goes beneath the form when there is no room
          for two columns; each stays usable rather than one shrinking away. */
       #reports-shell.designer-mode {
@@ -469,11 +519,51 @@
   <p id="register-context" class="hint" hidden></p>
   <p id="register-readonly" class="hint" hidden></p>
   <p id="register-actions" hidden>
+    <button id="register-new" type="button">New Transaction</button>
     <button id="register-save" type="button">Save</button>
     <span id="register-dirty-state" hidden>Unsaved changes</span>
     <span id="register-edit-status" class="hint" role="status"></span>
   </p>
   <p id="register-message" class="error" role="alert" hidden></p>
+  <!-- ADR 0015: creating a transaction is a form, not a blank row in the
+       grid.  The dialog is a child of the register section so it belongs to
+       the register it creates into; the server still owns validation. -->
+  <dialog id="transaction-dialog" aria-labelledby="transaction-dialog-title">
+    <form id="transaction-form" method="dialog" novalidate>
+      <h3 id="transaction-dialog-title">New transaction</h3>
+      <p class="hint" id="transaction-save-note">Creating puts the transaction
+        in the book and leaves it <strong>unsaved</strong>. Use Save on the
+        register to write the book to its file.</p>
+      <div class="transaction-head">
+        <label>Date
+          <input id="transaction-date" name="date" type="date" required>
+        </label>
+        <label>Number
+          <input id="transaction-number" name="number" type="text"
+                 maxlength="2048">
+        </label>
+        <label class="wide">Description
+          <input id="transaction-description" name="description" type="text"
+                 maxlength="2048">
+        </label>
+      </div>
+      <table id="transaction-lines" aria-label="Transaction splits">
+        <thead>
+          <tr><th scope="col">Account</th><th scope="col">Amount</th>
+              <th scope="col">Memo</th><th scope="col">Remove</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p><button id="transaction-add" type="button">Add line</button></p>
+      <p id="transaction-verdict" class="hint" role="status"
+         aria-live="polite"></p>
+      <p id="transaction-message" class="error" role="alert" hidden></p>
+      <div class="transaction-actions">
+        <button id="transaction-create" type="submit">Create</button>
+        <button id="transaction-cancel" type="button">Cancel</button>
+      </div>
+    </form>
+  </dialog>
   <div id="register-grid-wrap">
   <table id="register-grid" role="grid" aria-labelledby="register-title"
          aria-colcount="8" aria-rowcount="0">
@@ -2605,6 +2695,405 @@ async function saveBook() {
   return true;
 }
 
+/* ---------------------------------------- creating a transaction (ADR 0015) */
+
+// The form is a dialog over the register, not a blank row in the grid: one
+// transaction is a date, a number, a description and N split lines, which is
+// not the shape of a register row.  The balance verdict is the server's
+// (POST /api/transaction/validate), never arithmetic in this file.
+
+const transactionDialog = document.getElementById("transaction-dialog");
+const transactionForm = document.getElementById("transaction-form");
+const transactionDate = document.getElementById("transaction-date");
+const transactionNumber = document.getElementById("transaction-number");
+const transactionDescription = document.getElementById("transaction-description");
+const transactionLines = document.querySelector("#transaction-lines tbody");
+const transactionAdd = document.getElementById("transaction-add");
+const transactionCreate = document.getElementById("transaction-create");
+const transactionCancel = document.getElementById("transaction-cancel");
+const transactionVerdict = document.getElementById("transaction-verdict");
+const transactionMessage = document.getElementById("transaction-message");
+
+// /api/accounts/options accounts, fetched once per page.
+let transactionOptions = null;
+let transactionFormDirty = false;   // a field changed since the form was reset
+let transactionValidation = 0;      // guards overlapping validate requests
+let transactionValidateTimer = null;
+let transactionCreating = false;
+
+// Local calendar day, not UTC: the register's dates are local days and the
+// server takes YYYY-MM-DD as a calendar day, so "today" must not shift across
+// a timezone boundary.
+function localTodayIso() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+async function loadTransactionOptions() {
+  if (transactionOptions !== null) return transactionOptions;
+  const response = await fetch(api("api/accounts/options"));
+  if (!response.ok)
+    throw new Error(`${response.status}: ${await response.text()}`);
+  const body = await response.json();
+  transactionOptions = Array.isArray(body.accounts) ? body.accounts : [];
+  return transactionOptions;
+}
+
+// The picker's label carries the subtree total, the same figure the account
+// tree and the register header show: the server computes it with the same
+// AccountFigures call, so the three cannot disagree.
+function transactionAccountLabel(account) {
+  const total = account.total ? ` — ${account.total}` : "";
+  return `${account.full_name || account.name}${total}`;
+}
+
+function transactionLineCount() {
+  return transactionLines.children.length;
+}
+
+function renumberTransactionLines() {
+  [...transactionLines.children].forEach((tr, index) => {
+    tr.querySelector(".transaction-account")
+      .setAttribute("aria-label", `Account for line ${index + 1}`);
+    tr.querySelector(".transaction-amount")
+      .setAttribute("aria-label", `Amount for line ${index + 1}`);
+    tr.querySelector(".transaction-memo")
+      .setAttribute("aria-label", `Memo for line ${index + 1}`);
+    tr.querySelector(".transaction-remove")
+      .setAttribute("aria-label", `Remove line ${index + 1}`);
+  });
+}
+
+function addTransactionLine(values = {}) {
+  const tr = el("tr", "transaction-line");
+  tr.dataset.line = String(transactionLineCount() + 1);
+
+  const accountCell = el("td");
+  const select = el("select", "transaction-account");
+  const blank = el("option", "", "Choose an account");
+  blank.value = "";
+  select.append(blank);
+  for (const account of transactionOptions || []) {
+    const option = el("option", "", transactionAccountLabel(account));
+    option.value = account.guid;
+    option.dataset.commodity = account.commodity || "";
+    select.append(option);
+  }
+  select.value = values.account || "";
+  accountCell.append(select);
+
+  const amountCell = el("td", "transaction-line-amount");
+  const amount = el("input", "transaction-amount");
+  amount.type = "text";
+  amount.inputMode = "decimal";
+  amount.autocomplete = "off";
+  amount.placeholder = "0.00";
+  amount.value = values.amount || "";
+  amountCell.append(amount);
+
+  const memoCell = el("td");
+  const memo = el("input", "transaction-memo");
+  memo.type = "text";
+  memo.maxLength = 2048;
+  memo.value = values.memo || "";
+  memoCell.append(memo);
+
+  const removeCell = el("td", "transaction-line-remove");
+  const remove = el("button", "transaction-remove", "Remove");
+  remove.type = "button";
+  remove.addEventListener("click", () => {
+    // One line stays: the form can show the "needs at least two" refusal
+    // rather than becoming an empty table with nothing to explain.
+    if (transactionLineCount() <= 1) return;
+    tr.remove();
+    renumberTransactionLines();
+    scheduleTransactionValidation();
+    const next = transactionLines.querySelector("tr");
+    if (next) next.querySelector(".transaction-account").focus();
+  });
+  removeCell.append(remove);
+
+  tr.append(accountCell, amountCell, memoCell, removeCell);
+  transactionLines.append(tr);
+  renumberTransactionLines();
+  return tr;
+}
+
+// Adding a line by button or by Enter does the same three things: append the
+// line, mark the form dirty and ask the server for a new verdict, and put the
+// cursor on the new line's account so the next keystroke is useful.
+function addTransactionLineAndFocus() {
+  addTransactionLine();
+  scheduleTransactionValidation();
+  const last = transactionLines.lastElementChild;
+  if (last) last.querySelector(".transaction-account").focus();
+}
+
+function setTransactionVerdict(text, state) {
+  transactionVerdict.textContent = text;
+  transactionVerdict.classList.toggle("balanced", state === "balanced");
+  transactionVerdict.classList.toggle("unbalanced", state === "unbalanced");
+}
+
+function setTransactionMessage(text, isError) {
+  transactionMessage.textContent = text;
+  transactionMessage.classList.toggle("error", Boolean(isError));
+  transactionMessage.hidden = text === "";
+}
+
+function collectTransactionBody() {
+  const date = transactionDate.value.trim();
+  if (!date)
+    return { incomplete: "Choose the date the transaction was posted." };
+  if (transactionLineCount() < 2)
+    return { incomplete: "A transaction needs at least two lines." };
+
+  const lines = [...transactionLines.children].map((tr) => ({
+    account: tr.querySelector(".transaction-account").value,
+    amount: tr.querySelector(".transaction-amount").value.trim(),
+    memo: tr.querySelector(".transaction-memo").value,
+  }));
+  for (const [index, line] of lines.entries()) {
+    if (!line.account)
+      return { incomplete: `Choose an account for line ${index + 1}.` };
+    if (!line.amount)
+      return { incomplete: `Enter an amount for line ${index + 1}.` };
+  }
+  return {
+    body: {
+      date,
+      number: transactionNumber.value,
+      description: transactionDescription.value,
+      splits: lines,
+    },
+  };
+}
+
+function disableTransactionCreate(reason) {
+  transactionCreate.disabled = true;
+  transactionCreate.title = reason || "";
+}
+
+// The server owns the verdict.  This asks it about the body as typed and puts
+// its figures on screen; the create route then repeats the whole check and
+// refuses an unbalanced body before the engine is touched.
+async function validateTransactionForm() {
+  if (!transactionDialog.open) return;
+  const generation = ++transactionValidation;
+  const collected = collectTransactionBody();
+  if (collected.incomplete) {
+    disableTransactionCreate(collected.incomplete);
+    setTransactionVerdict(collected.incomplete, "");
+    setTransactionMessage("", false);
+    return;
+  }
+
+  let response;
+  try {
+    response = await fetch(api("api/transaction/validate"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collected.body),
+    });
+  } catch (err) {
+    if (generation !== transactionValidation) return;
+    disableTransactionCreate("The server could not be reached.");
+    setTransactionMessage(`Could not validate the transaction: ${err}`, true);
+    return;
+  }
+  const text = await response.text();
+  if (generation !== transactionValidation) return;
+
+  if (!response.ok) {
+    let named = text;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed.error)
+        named = `${parsed.error}: ${parsed.message || ""}`;
+    } catch { /* the raw body is the message */ }
+    disableTransactionCreate(named);
+    setTransactionVerdict("This transaction cannot be created yet.", "");
+    setTransactionMessage(named, true);
+    return;
+  }
+
+  let verdict;
+  try {
+    verdict = JSON.parse(text);
+  } catch (err) {
+    disableTransactionCreate("The server's verdict is not JSON.");
+    setTransactionMessage("Could not read the server's balance verdict.", true);
+    return;
+  }
+
+  const unit = verdict.currency ? ` ${verdict.currency}` : "";
+  const running = `running sum ${verdict.sum}${unit}`;
+  if (verdict.balanced) {
+    transactionCreate.disabled = false;
+    transactionCreate.title = "Create the transaction in the book — it stays " +
+      "unsaved until you use Save";
+    setTransactionVerdict(
+      `Balanced: ${running} over ${verdict.split_count} lines ` +
+      `(debits ${verdict.total}${unit}).`, "balanced");
+    setTransactionMessage("", false);
+  } else {
+    disableTransactionCreate(
+      `The transaction does not balance (off by ${verdict.imbalance}${unit}); ` +
+      "it cannot be created.");
+    setTransactionVerdict(
+      `Does not balance: ${running}; off by ${verdict.imbalance}${unit}.`,
+      "unbalanced");
+    setTransactionMessage("", false);
+  }
+}
+
+function scheduleTransactionValidation() {
+  transactionFormDirty = true;
+  if (!transactionDialog.open) return;
+  clearTimeout(transactionValidateTimer);
+  transactionValidateTimer = setTimeout(validateTransactionForm, 120);
+}
+
+function resetTransactionForm() {
+  transactionDate.value = localTodayIso();
+  transactionNumber.value = "";
+  transactionDescription.value = "";
+  transactionLines.replaceChildren();
+  const current = registerState ? registerState.account.guid : "";
+  addTransactionLine({ account: current });
+  addTransactionLine({});
+  transactionFormDirty = false;
+  setTransactionMessage("", false);
+  setTransactionVerdict("Choose an account and amount for each line; the " +
+                         "balance verdict appears here.", "");
+  disableTransactionCreate("Choose accounts and amounts first.");
+}
+
+async function openCreateTransaction() {
+  if (!sessionWritable || !registerState) {
+    showEditStatus("Creating a transaction needs a writable session: start " +
+                   "gnc-webd with --writable (or GNC_WEBUI_WRITABLE=1).", true);
+    return false;
+  }
+  try {
+    await loadTransactionOptions();
+  } catch (err) {
+    showEditStatus(`Could not load the chooseable accounts: ${err}`, true);
+    return false;
+  }
+  if (!transactionDialog.open) {
+    resetTransactionForm();
+    transactionDialog.showModal();
+    transactionDate.focus();
+    await validateTransactionForm();
+  }
+  return true;
+}
+
+// Escape and Cancel both come here: a form with typed values asks first, so a
+// half-entered transaction cannot disappear by a stray key.
+function closeTransactionForm() {
+  if (!transactionDialog.open) return true;
+  if (transactionFormDirty &&
+      !window.confirm("Discard this new transaction? It has not been created."))
+    return false;
+  transactionDialog.close();
+  transactionFormDirty = false;
+  return true;
+}
+
+async function createTransaction() {
+  if (transactionCreating || !transactionDialog.open) return false;
+  const collected = collectTransactionBody();
+  if (collected.incomplete) {
+    setTransactionMessage(collected.incomplete, true);
+    return false;
+  }
+
+  transactionCreating = true;
+  transactionCreate.disabled = true;
+  setTransactionMessage("", false);
+  let response;
+  try {
+    response = await fetch(api("api/transaction"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collected.body),
+    });
+  } catch (err) {
+    transactionCreating = false;
+    transactionCreate.disabled = false;
+    setTransactionMessage(`Could not create the transaction: ${err}`, true);
+    return false;
+  }
+
+  const text = await response.text();
+  let created = null;
+  try {
+    created = JSON.parse(text);
+  } catch { /* reported below */ }
+  transactionCreating = false;
+
+  if (!response.ok) {
+    const named = created && created.error
+      ? `${created.error}: ${created.message || ""}`
+      : text;
+    transactionCreate.disabled = false;
+    setTransactionMessage(`Could not create the transaction: ${named}`, true);
+    return false;
+  }
+  if (!created || !created.guid) {
+    transactionCreate.disabled = false;
+    setTransactionMessage("Could not create the transaction: the server's " +
+                          "answer is not a transaction.", true);
+    return false;
+  }
+
+  // Created in the engine, not saved to the file.  The page says both.
+  transactionFormDirty = false;
+  transactionDialog.close();
+  bookDirty = true;
+  for (const row of created.rows || [])
+    editedSplits.add(row.guid);
+
+  const ownSplit = (created.splits || []).find((split) =>
+    registerState && split.account_guid === registerState.account.guid);
+  await reloadRegisterAfterEdit(
+    ownSplit ? ownSplit.guid
+             : (created.rows && created.rows[0] ? created.rows[0].guid : null));
+  updateDirtyUi();
+  refreshMenuStates();
+
+  const label = created.num || created.description || created.guid;
+  showEditStatus(`Created transaction ${label} — not saved yet. Save writes ` +
+                 `it to the book.`);
+  return true;
+}
+
+transactionDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeTransactionForm();
+});
+transactionCancel.addEventListener("click", () => closeTransactionForm());
+document.getElementById("register-new")
+  .addEventListener("click", () => openCreateTransaction());
+transactionAdd.addEventListener("click", addTransactionLineAndFocus);
+transactionForm.addEventListener("input", scheduleTransactionValidation);
+transactionForm.addEventListener("change", scheduleTransactionValidation);
+transactionForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  createTransaction();
+});
+// Keyboard-first: Enter adds a line (buttons keep their native Enter), Tab
+// moves in document order through the fields, Escape is the dialog's cancel.
+transactionForm.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey) return;
+  if (event.target.closest("button")) return;
+  event.preventDefault();
+  addTransactionLineAndFocus();
+});
+
 // In-page navigation with unsaved changes: refuse to move until the changes
 // are saved.  OK runs the save and continues only when it succeeded; Cancel
 // stays here.  The engine's copy of the book is what holds the edits, so
@@ -3000,6 +3489,10 @@ document.getElementById("register-save")
 // Escape handling on #menubar, so this only fires for the register.
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  // The creation dialog owns Escape while it is open (its cancel handler
+  // decides whether a dirty form asks first); the register behind it must not
+  // also cancel an editor or a band.
+  if (transactionDialog.open) return;
   if (closeCellEditor(true)) {
     event.preventDefault();
     return;
@@ -4958,6 +5451,11 @@ const MENU_NEEDS = {
   // read-only session and in a writable one with nothing to save.
   canSave: { ok: () => sessionWritable && bookDirty,
              reason: () => saveRefusalReason() },
+  // Transaction > Blank Transaction opens the creation form.  It needs a
+  // writable session and a register to create into; the reason names which
+  // one is missing, and in a read-only session it names --writable.
+  canCreate: { ok: () => sessionWritable && registerState !== null,
+               reason: () => createRefusalReason() },
   // File > Close closes the current page.  On the Book page that is the
   // active register tab; the Accounts tab is pinned, and the Reports page is
   // not a tab, so both say why they cannot be closed.
@@ -4976,8 +5474,18 @@ function saveRefusalReason() {
     return "Read-only session: gnc-webd opened the book read-only, so there " +
            "is nothing to save. Start it with --writable (or " +
            "GNC_WEBUI_WRITABLE=1) and edit a register row to save.";
-  return "Nothing to save: no register row has been edited since the last " +
-         "save.";
+  return "Nothing to save: no register row has been edited or created since " +
+         "the last save.";
+}
+
+// Why Transaction > Blank Transaction cannot open the creation form.
+function createRefusalReason() {
+  if (!sessionWritable)
+    return "Read-only session: gnc-webd opened the book read-only, so a " +
+           "transaction cannot be created. Start it with --writable (or " +
+           "GNC_WEBUI_WRITABLE=1) to enable creating and saving.";
+  return "No register is open: open an account's register first (the " +
+         "Accounts tab's account names open one).";
 }
 
 // Each page module below is the extension point.  `present()` says whether
@@ -5210,8 +5718,9 @@ const MENU_TABLE = [
   {
     id: "transaction", label: "Transaction", mnemonic: "N",
     note: "Register page only: the desktop hides this menu unless a register " +
-          "page is open. The web register edits description, memo and number " +
-          "only, so the transaction actions below stay disabled.",
+          "page is open. The grid edits only description, memo and number " +
+          "(creating a whole transaction is Actions > Blank Transaction, in a " +
+          "writable session), so the transaction actions below stay disabled.",
     items: [
       { label: "Cut Transaction", page: "register" },
       { label: "Copy Transaction", page: "register" },
@@ -5296,7 +5805,8 @@ const MENU_TABLE = [
       { label: "Duplicate Entry", page: "invoice" },
       { label: "Move Entry Up", page: "invoice" },
       { label: "Move Entry Down", page: "invoice" },
-      { label: "Blank Transaction", accel: "Ctrl+B", page: "register" },
+      { id: "blank-transaction", label: "Blank Transaction", accel: "Ctrl+B",
+        page: "register", needs: "canCreate", run: openCreateTransaction },
       { label: "Go to Date", accel: "Ctrl+G", page: "register" },
       { label: "Split Transaction", page: "register" },
       { label: "Edit Exchange Rate", page: "register" },
@@ -5593,8 +6103,9 @@ function showAbout() {
   aboutSession.textContent = !bookLoaded
     ? "The book is not loaded, so the page cannot reach the book at all."
     : sessionWritable
-      ? "Writable session: the register's description, memo and number can be " +
-        "edited and saved (File > Save)."
+      ? "Writable session: a transaction can be created from the register's " +
+        "New Transaction form, and the register's description, memo and " +
+        "number can be edited; File > Save writes the book."
       : "Read-only session: this page cannot change the book.";
   aboutDialog.showModal();
   aboutClose.focus();

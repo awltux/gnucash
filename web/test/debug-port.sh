@@ -142,7 +142,11 @@ request GET "http://127.0.0.1:$DEFAULT_PORT/"
 grep -q 'WARNING' "$TMP/default.log" \
     && fail "the default mode printed a debug warning"
 request GET "${DEFAULT_URL}"
-echo "$BODY" | grep -q 'debug-port-banner' \
+# The banner's box is a rule in index.html now (ADR 0012's banner is styled by
+# the stylesheet, not by an inline style), so the bare id also appears in the
+# CSS of the normal page.  The injected element is what must be absent, and
+# this looks for it exactly as the debug-page check below does.
+echo "$BODY" | grep -q 'id="debug-port-banner"' \
     && fail "the default page carries the debug banner"
 echo "default: token URL works, tokenless / and /api/book are 404, no banner"
 

@@ -24,6 +24,12 @@
 #                                                 editing a cell, the dirty
 #                                                 markers, Save, reload,
 #                                                 unsaved-changes guard
+#   phase 3b a second copy of the demo, --writable
+#                             -> register-create-ui.mjs
+#                                                 the New Transaction form,
+#                                                 the server's balance verdict,
+#                                                 create (not saved), Save,
+#                                                 reload
 #   phase 4  sample1.gnucash, --debug-port
 #                             -> debug-port-ui.mjs
 #                                                 the tokenless URL, the
@@ -64,6 +70,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [ -f "$SRC/web/test/ui-test.mjs" ] || fail "ui-test.mjs not found"
 [ -f "$SRC/web/test/register-ui.mjs" ] || fail "register-ui.mjs not found"
 [ -f "$SRC/web/test/register-edit-ui.mjs" ] || fail "register-edit-ui.mjs not found"
+[ -f "$SRC/web/test/register-create-ui.mjs" ] || fail "register-create-ui.mjs not found"
 [ -f "$SRC/web/test/debug-port-ui.mjs" ] || fail "debug-port-ui.mjs not found"
 [ -f "$SRC/web/test/pages-ui.mjs" ] || fail "pages-ui.mjs not found"
 [ -f "$SRC/web/test/fixture.mjs" ] || fail "fixture.mjs not found"
@@ -201,6 +208,17 @@ start_server "$TMP/demo-edit.gnucash" "$TMP/demo-edit.log" \
     || fail "editable register server did not start"
 echo "server: $URL"
 node "$SRC/web/test/register-edit-ui.mjs" "$URL" || STATUS=1
+
+echo
+echo "== creating a transaction: form, verdict, dirty state, Save, reload"
+# Its own copy again: the create phase writes a transaction, and phase 3's
+# book already carries text edits its own reload check depends on.
+cp "$TMP/demo.gnucash" "$TMP/demo-create.gnucash"
+start_server "$TMP/demo-create.gnucash" "$TMP/demo-create.log" \
+    "$TMP/demo-create-reports.json" --writable \
+    || fail "create-transaction server did not start"
+echo "server: $URL"
+node "$SRC/web/test/register-create-ui.mjs" "$URL" || STATUS=1
 
 echo
 echo "== the tokenless --debug-port URL: banner and natural paths"

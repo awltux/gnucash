@@ -292,6 +292,8 @@ path, no retry, and the book unchanged.
 * Amount editing, with a way to show which other splits a rebalance moved (or a
   rule the register can explain per row).
 * Adding, deleting and voiding transactions and splits; cut/copy/paste; undo;
-  autosave; save-on-exit.
+  autosave; save-on-exit. (ADR 0015 adds creating a whole transaction from a
+  form, still as two steps; deleting, voiding and the spanning grid remain
+  deferred.)
 * Conflict detection when another process writes the book.
 * A dirty indicator that covers edits made in another tab of the same process.

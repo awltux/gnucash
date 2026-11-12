@@ -106,6 +106,52 @@ check('the banner names the --writable risk',
       bannerText.includes('--writable') &&
       bannerText.includes('edit and save the book'), bannerText);
 
+// The banner is the first body child and the menu follows it.  Its height is
+// whatever its text needs, so the property to assert is geometric: the banner
+// is fully inside the viewport and it ends at or before the menu starts, at
+// both the normal width and the width where the menu's margins change.  A
+// screenshot would not say either of those; the boxes do.
+async function bannerGeometry(width) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(() => new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    return page.evaluate(() => {
+        const banner = document.getElementById('debug-port-banner');
+        const menu = document.getElementById('menubar');
+        // A missing box is a failed check, not an exception with no check.
+        if (!banner || !menu)
+            return { banner: null, menu: null, viewport:
+                { width: innerWidth, height: innerHeight }, inlineStyle: null };
+        const b = banner.getBoundingClientRect();
+        const m = menu.getBoundingClientRect();
+        return {
+            banner: { top: b.top, bottom: b.bottom, left: b.left, right: b.right },
+            menu: { top: m.top, bottom: m.bottom, left: m.left, right: m.right },
+            viewport: { width: innerWidth, height: innerHeight },
+            inlineStyle: banner.getAttribute('style'),
+        };
+    });
+}
+
+for (const width of [1280, 800]) {
+    const layout = await bannerGeometry(width);
+    const boxes = layout.banner !== null && layout.menu !== null;
+    check(`the debug banner and the menu do not overlap at ${width}px`,
+          boxes && layout.banner.bottom <= layout.menu.top,
+          boxes ? `banner ${layout.banner.top}-${layout.banner.bottom}, ` +
+                  `menu ${layout.menu.top}-${layout.menu.bottom}`
+                : 'banner or menu missing');
+    check(`the debug banner is fully visible at ${width}px`,
+          boxes && layout.banner.top >= 0 && layout.banner.left >= 0 &&
+          layout.banner.bottom <= layout.viewport.height &&
+          layout.banner.right <= layout.viewport.width,
+          boxes ? JSON.stringify(layout.banner) : 'banner missing');
+    if (width === 1280)
+        check('the banner carries no inline layout (the stylesheet owns it)',
+              layout.inlineStyle === null, String(layout.inlineStyle));
+}
+await page.setViewportSize({ width: 1280, height: 900 });
+
 const book = await page.evaluate(async () => {
     const response = await fetch('/api/book');
     return { status: response.status, body: await response.json() };
